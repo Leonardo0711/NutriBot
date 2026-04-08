@@ -55,11 +55,12 @@ QUÉ NO PUEDES HACER (REGLAS ABSOLUTAS E INQUEBRANTABLES):
 4. NUNCA des planes alimenticios clínicos.
 5. Si el usuario insiste en temas médicos graves, refiérelo siempre a EsSalud con calidez.
 
-DATOS DEL USUARIO (CONFIRMACIÓN OBLIGATORIA):
-- Si tienes datos del perfil en el bloque [DATOS ACTUALES DEL PERFIL DEL USUARIO], menciónalos SIEMPRE antes de dar cualquier recomendación: "Considerando que mides X y pesas Y...".
-- Si NO tienes datos de peso o talla en dicho bloque y el usuario te pide un menú o recomendación específica, NO la des completa aún. Explícale por qué necesitas sus datos para calcular su IMC y pídeselos amablemente.
+DATOS DEL USUARIO (REGLA DE ORO):
+- Si el usuario te pide una RECOMENDACIÓN o MENÚ y tienes datos en el bloque [DATOS ACTUALES DEL PERFIL DEL USUARIO], debes EMPEZAR tu respuesta resumiendo los datos que vas a usar: "Considerando que tienes [Edad] años, pesas [Peso]kg, mides [Talla]cm y (solo si aplica) tienes alergia a [Alergia]...". 
+- Si no hay alergias o enfermedades relevantes (o dicen "NINGUNA"), NO las menciones.
+- Si NO tienes datos de peso o talla y te piden un menú, NO lo des completo aún. Explica que necesitas esos datos para calcular su IMC y ser preciso.
 
-TONO: Breve, práctico, amigable, cálido (usa "bonito", "querido/a" si fluye, emojis cálidos). Máximo 3-4 oraciones por respuesta. 🍏✨💪🏾"""
+TONO: Breve, práctico, amigable, cálido y muy peruano. Máximo 3 oraciones por respuesta. 🍏✨💪🏾"""
 
 
 async def process_inbox() -> int:
@@ -213,6 +214,19 @@ async def _process_single_message(
     is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer"])
     is_short_greeting = len(v_text) < 25 and any(w in v_text for w in ["hola", "buenas", "buenos", "empezar", "arrancar", "nutribot", "que tal", "holis"])
     
+    # Detección semántica de intención de personalización
+    is_requesting_personalization = any(w in v_text for w in ["personalizar", "completar mi perfil", "mis datos", "cambiar mi peso", "actualizar perfil", "personaliza"])
+    if not is_requesting_personalization and len(v_text) > 10:
+        # Validación semántica con el LLM si no es obvio por palabras clave
+        pers_prompt = f"¿El usuario está expresando deseo de completar su perfil, cambiar sus datos o personalizar más sus respuestas? Responde SOLO 'YES' o 'NO'.\n\nUSUARIO: '{normalized.text}'"
+        pers_resp = await openai_client.chat.completions.create(
+            model=openai_model,
+            messages=[{"role": "user", "content": pers_prompt}],
+            max_tokens=5,
+            temperature=0
+        )
+        is_requesting_personalization = "YES" in pers_resp.choices[0].message.content.strip().upper()
+    
     # ─── Transacción ACID única ───
     async with factory() as session:
         async with session.begin():
@@ -252,7 +266,24 @@ async def _process_single_message(
                         # El flow devolvió control al chat libre (interrupción detectada)
                         onboarding_interception_happened = False
 
-            # Caso B: Saludo o Petición de Menú → iniciar onboarding si elegible
+            # Caso B: Pedido explícito de personalización (NUEVO)
+            if not onboarding_interception_happened and is_requesting_personalization:
+                logger.info("Manual personalization request detected for user=%s", state.usuario_id)
+                from application.advance_onboarding_flow import _find_next_missing_step
+                res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
+                p_map = res_p.mappings().fetchone() or {}
+                
+                # Buscamos el siguiente paso IGNORANDO los previos 'skips'
+                next_step = await _find_next_missing_step(session, user.id, p_map, ignore_skips=True)
+                if next_step:
+                    state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
+                    state.onboarding_step = next_step
+                    onboarding_interception_happened = True
+                    reply = await advance_onboarding_flow(normalized.text, state, session, openai_client, openai_model, p_map)
+                else:
+                    reply = "¡Ya tengo tu perfil completo! 😊 Si quieres cambiar algún dato específico (como tu peso), solo dímelo directamente."
+
+            # Caso C: Saludo o Petición de Menú → iniciar onboarding si elegible
             if not is_annoyed and not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
                 # Consultar perfil completo incluyendo skipped_fields
                 res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})

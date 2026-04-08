@@ -417,7 +417,7 @@ async def _save_profile_field(session: AsyncSession, uid: int, field: str, value
     )
 
 
-async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profile: Optional[dict] = None) -> Optional[str]:
+async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profile: Optional[dict] = None, ignore_skips: bool = False) -> Optional[str]:
     """Busca el primer paso de la lista que no tiene valor en el perfil. Siempre consulta DB si no se pasa cache."""
     p = cached_profile
     if p is None:
@@ -449,8 +449,9 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
         col = col_map.get(step.value)
         if not col: continue
         
-        # Saltamos si el usuario ya decidió omitir este campo explícitamente
-        if skipped.get(step.value):
+        # Saltamos si el usuario ya decidió omitir este campo explícitamente, 
+        # A MENOS que se haya pedido ignorar los skips (personalización manual).
+        if not ignore_skips and skipped.get(step.value):
             continue
 
         val = p.get(col)
