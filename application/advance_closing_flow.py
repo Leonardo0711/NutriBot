@@ -56,7 +56,7 @@ FORM_QUESTIONS: dict[str, str] = {
     "esperando_p10": "Del 1 al 5, ¿recomendarías este chatbot a amigos o familia? 👨‍👩‍👧‍👦",
     "esperando_nps": "Del 1 al 10, ¿qué probabilidad hay de que recomiendes NutriBot? ⭐",
     "esperando_comentario": "💭 ¿Tienes algún comentario o sugerencia para mejorar?",
-    "esperando_autorizacion": "📋 Por último, ¿autorizas que usemos tus respuestas de forma anónima para mejorar NutriBot? (Sí o No)",
+    "esperando_autorizacion": "📋 Por último, ¿autorizas que usemos tus respuestas de forma anónima para ayudar a mejorar NutriBot y que sea más útil para todos? (Sí o No)",
 }
 
 # ─── Validaciones por campo ───
@@ -206,7 +206,7 @@ async def _try_start_form(session: AsyncSession, state: ConversationState) -> Op
         state.mode = "collecting_usability"
         state.awaiting_question_code = current_state
         question = FORM_QUESTIONS.get(current_state, "")
-        return f"¡Antes de irte! 😊 Me quedaron unas preguntitas pendientes de la vez pasada, ¿te parece si las completamos rápido?\n\n{question}"
+        return f"¡Antes de irte! 😊 Me quedaron unas preguntitas pendientes de la última vez que me ayudan mucho a mejorar NutriBot. ¿Te parece si las completamos rápido?\n\n{question}"
 
     # No tiene progreso → crear nuevo
     first_state = FORM_STATES_ORDER[0]
@@ -263,23 +263,28 @@ async def _process_form_response(
         state.awaiting_question_code = None
         return None
 
-    # Detectar si el usuario cambió de tema (SEMÁNTICO)
-    interruption_prompt = f"""Analiza si el usuario está respondiendo a la pregunta de usabilidad '{FORM_QUESTIONS.get(current_state, '')}' o si ha cambiado de tema para preguntar otra cosa o pedir ayuda.
-    Responde SOLO: 'ANSWER' o 'INTERRUPTION'.
-    
+    # Clasificación semántica del tipo de respuesta
+    intent_prompt = f"""Analiza la respuesta del usuario a la pregunta: '{FORM_QUESTIONS.get(current_state, '')}'.
+    Clasifica la intención en una de estas categorías:
+    - ANSWER: El usuario está dando un dato, una respuesta (ej: un número, un correo, 'si', 'no se').
+    - WHY_QUESTION: El usuario está preguntando el motivo o para qué sirve esa pregunta (ej: '¿para que lo quieres?', 'por que pides eso?', 'que uso tiene?').
+    - INTERRUPTION: El usuario ha cambiado radicalmente de tema para hablar de otra cosa o pedir ayuda.
+
     USUARIO: "{user_text}"
+    Responde SOLO la palabra de la categoría.
     """
     
     int_resp = await openai_client.chat.completions.create(
         model=openai_model,
-        messages=[{"role": "system", "content": "Eres un detector de cambios de tema."},
-                  {"role": "user", "content": interruption_prompt}],
-        max_tokens=5,
+        messages=[{"role": "system", "content": "Analista de intenciones conversacionales."},
+                  {"role": "user", "content": intent_prompt}],
+        max_tokens=10,
         temperature=0
     )
-    is_interruption = "INTERRUPTION" in int_resp.choices[0].message.content.strip().upper()
+    final_intent = int_resp.choices[0].message.content.strip().upper()
+    logger.info("advance_closing: intent detected: %s for user=%s", final_intent, state.usuario_id)
 
-    if is_interruption and len(vl) > 10:
+    if "INTERRUPTION" in final_intent and len(vl) > 10:
         # Pausamos el formulario y devolvemos control al chat libre
         state.mode = "active_chat"
         # Mantenemos el question_code para retomar luego
@@ -307,19 +312,20 @@ async def _process_form_response(
 
     parciales = progress.respuestas_parciales or {}
 
-    # Detectar rechazo/salto suave (solo para campos específicos cortos)
+    # Detectar rechazo/salto suave o pregunta de por qué
     skip_words = ["no", "paso", "saltar", "skip", "no quiero", "siguiente"]
     is_skip = vl in skip_words or (vl.startswith("no") and len(vl) <= 12)
+    is_why = "WHY_QUESTION" in final_intent
 
     cleaned_value = None
 
-    if is_skip:
+    if is_skip or is_why:
         # Lógica de persuasión para campos clave
         field_key = current_state.replace("esperando_", "")
         persuasion_key = f"{field_key}_persuaded"
 
         if not parciales.get(persuasion_key):
-            # Aún no persuadimos, intentarlo
+            # Aún no persuadimos, intentarlo UNA SOLA VEZ
             parciales[persuasion_key] = True
             
             # Actualizar DB con el intento
@@ -329,13 +335,13 @@ async def _process_form_response(
             )
 
             if current_state == "esperando_correo":
-                return "Solo pedimos el correo para avisarte de próximas campañas de salud o nutrición cerca a ti. ✉️ ¿Te animas a compartirlo?"
+                return "Es para avisarte sobre campañas de salud, jornadas de nutrición cerca de ti y consejos exclusivos para tu perfil nutricional. ¡Es súper útil! ✉️ ¿Te animas a compartirlo?"
             elif current_state == "esperando_asegurado":
-                return "Saber si eres asegurado nos ayuda a darte información sobre servicios específicos de EsSalud 🏥. ¿Te gustaría comentarlo?"
+                return "Saber si eres asegurado nos ayuda a darte información sobre servicios específicos de salud preventiva en EsSalud 🏥. ¿Te gustaría comentarlo?"
             else:
-                return "Entiendo, pero tus respuestas nos ayudan muchísimo a mejorar a NutriBot para todos. 🌟 ¿Te animas a darnos este dato?"
+                return "Entiendo, pero tus respuestas son vitales para mejorar este servicio para todos. 🌟 ¿Te gustaría darnos este dato?"
         
-        # Si ya fue persuadido y estamos en el bloque de identidad, saltar al bloque de mejora
+        # Si ya fue persuadido o si ya dijo que no tras preguntar por qué, saltar bloque
         is_identity_block = current_state in ("esperando_correo", "esperando_asegurado")
         if is_identity_block:
             next_state = "esperando_p1"
@@ -344,7 +350,7 @@ async def _process_form_response(
                 {"next": next_state, "uid": state.usuario_id}
             )
             state.awaiting_question_code = next_state
-            return f"Entiendo, no te preocupes. 😊 ¿Me podrías ayudar al menos a mejorar NutriBot con unas preguntitas rápidas sobre tu experiencia? Solo te tomará un minuto.\n\n{FORM_QUESTIONS[next_state]}"
+            return f"Entiendo, no te preocupes. 😊 ¿Me podrías ayudar al menos a mejorar NutriBot con unas preguntitas rápidas sobre tu experiencia? Me ayudará mucho a darte un mejor servicio.\n\n{FORM_QUESTIONS[next_state]}"
         
         is_valid = True
     else:

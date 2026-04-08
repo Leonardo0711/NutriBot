@@ -257,42 +257,54 @@ async def advance_onboarding_flow(
     err_msg = None
     
     if current_step in [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value]:
-        # Usar LLM para extraer el dato frío de lenguaje natural
-        extractions = {
-            OnboardingStep.EDAD.value: "Extract age as integer. Return only number or 'NONE'.",
-            OnboardingStep.PESO.value: "Extract weight. Target kg. Handle 'quilos', 'kilos', 'lib', 'lbs'. If lbs, convert to kg (1 lb = 0.45kg). Return only number or 'NONE'.",
-            OnboardingStep.ALTURA.value: "Extract height. Target cm. Handle 'mts', 'metros', 'cms', 'centimetros', 'ft', 'in'. Return only number or 'NONE'."
-        }
-        
-        extract_resp = await openai_client.chat.completions.create(
-            model=openai_model,
-            messages=[{"role": "system", "content": extractions[current_step]},
-                      {"role": "user", "content": user_text}],
-            max_tokens=10,
-            temperature=0
-        )
-        val_str = extract_resp.choices[0].message.content.strip()
-        logger.info("advance_onboarding: LLM extraction for %s: '%s' → '%s'", current_step, user_text[:30], val_str)
-        
-        if val_str.upper() != "NONE":
-            try:
-                # Validamos rangos básicos
-                f_val = float(re.sub(r"[^\d\.]", "", val_str))
-                if current_step == OnboardingStep.EDAD.value and 5 <= f_val <= 120:
-                    cleaned_value = str(int(f_val))
-                elif current_step == OnboardingStep.PESO.value and 20 <= f_val <= 400:
-                    cleaned_value = str(round(f_val, 2))
-                elif current_step == OnboardingStep.ALTURA.value and 40 <= f_val <= 250:
-                    cleaned_value = str(round(f_val, 2))
-            except Exception:
-                logger.warning("advance_onboarding: failed to parse LLM value '%s'", val_str)
+        # 1. Intento de extracción rápida por Regex (para casos como "90}")
+        if current_step == OnboardingStep.EDAD.value:
+            m = re.search(r"(\d+)", vl)
+            if m: cleaned_value = m.group(1)
+        elif current_step == OnboardingStep.PESO.value:
+            w = _parse_weight(vl)
+            if w: cleaned_value = str(w)
+        elif current_step == OnboardingStep.ALTURA.value:
+            h = _parse_height(vl)
+            if h: cleaned_value = str(h)
+
+        # 2. Si falló el regex, usar LLM para lenguaje natural ("pesos setenta kg", etc.)
+        if cleaned_value is None:
+            extractions = {
+                OnboardingStep.EDAD.value: "Extract age as integer. Ignore typos, punctuation or extra characters (e.g. '90}' -> 90). Return only number or 'NONE'.",
+                OnboardingStep.PESO.value: "Extract weight. Target kg. Handle 'quilos', 'kilos', 'lib', 'lbs'. If lbs, convert to kg (1 lb = 0.45kg). Ignore noise like braces or typos. Return only number or 'NONE'.",
+                OnboardingStep.ALTURA.value: "Extract height. Target cm. Handle 'mts', 'metros', 'cms', 'centimetros', 'ft', 'in'. Ignore noise. Return only number or 'NONE'."
+            }
+            
+            extract_resp = await openai_client.chat.completions.create(
+                model=openai_model,
+                messages=[{"role": "system", "content": extractions[current_step]},
+                          {"role": "user", "content": user_text}],
+                max_tokens=10,
+                temperature=0
+            )
+            val_str = extract_resp.choices[0].message.content.strip()
+            logger.info("advance_onboarding: LLM extraction for %s: '%s' → '%s'", current_step, user_text[:30], val_str)
+            
+            if val_str.upper() != "NONE":
+                try:
+                    # Validamos rangos básicos
+                    f_val = float(re.sub(r"[^\d\.]", "", val_str))
+                    if current_step == OnboardingStep.EDAD.value and 5 <= f_val <= 120:
+                        cleaned_value = str(int(f_val))
+                    elif current_step == OnboardingStep.PESO.value and 20 <= f_val <= 400:
+                        cleaned_value = str(round(f_val, 2))
+                    elif current_step == OnboardingStep.ALTURA.value and 40 <= f_val <= 250:
+                        cleaned_value = str(round(f_val, 2))
+                except Exception:
+                    logger.warning("advance_onboarding: failed to parse LLM value '%s'", val_str)
 
         if cleaned_value is None:
             # Solo si no es opcional o no dijo "saltar"
-            if "saltar" in vl or "paso" in vl or "no" in vl:
+            if "saltar" in vl or "paso" in vl or "omitir" in vl or "no" in vl:
                 cleaned_value = None # Se guarda NULL
             else:
-                return f"No logré captar ese dato (intenté extraer {current_step}). ¿Podrías decírmelo de forma más clara? (O escribe 'saltar') 😊"
+                return f"No logré captar ese dato (intenté extraer {current_step}). ¿Podrías decírmelo de forma más clara? 😊"
 
     else:
         # Texto libre (Alergias, etc.) - ESTANDARIZACIÓN CON LLM
