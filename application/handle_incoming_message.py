@@ -383,16 +383,19 @@ async def _process_single_message(
             # ─── AdvanceClosingFlow: solo si NO fue interceptado por onboarding ───
             if onboarding_interception_happened:
                 final_reply = reply
-                addon = None
             else:
+                # Capturamos el modo ORIGINAL antes de que advance_closing_flow pueda cambiarlo
+                original_mode = state.mode
                 addon = await advance_closing_flow(
                     session, state, normalized.text, openai_client, openai_model
                 )
                 
                 if addon:
-                    if state.mode in ("collecting_usability", "collecting_profile") or state.onboarding_status in (OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value):
+                    # Si ya estaba en modo captura de datos (o acaba de entrar), el addon es la respuesta principal
+                    if original_mode in ("collecting_usability", "collecting_profile") or state.mode in ("collecting_usability", "collecting_profile"):
                         final_reply = addon
                     else:
+                        # Si es una despedida casual inicial, pegamos el intro del LLM + el addon del formulario
                         final_reply = f"{reply}\n\n{addon}"
                 else:
                     final_reply = reply

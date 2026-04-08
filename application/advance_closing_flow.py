@@ -40,23 +40,23 @@ FORM_STATES_ORDER = [
     "esperando_autorizacion",
 ]
 
-# Preguntas del formulario con sus textos amigables
+# Preguntas del formulario con sus textos amigables (Orden según imágenes, en 1ra persona)
 FORM_QUESTIONS: dict[str, str] = {
     "esperando_correo": "📧 Para empezar, ¿me podrías compartir tu correo electrónico?",
     "esperando_asegurado": "🏥 ¿Eres asegurado/a de EsSalud? (Sí, No, o No sé)",
-    "esperando_p1": "Del 1 al 5, ¿qué tan fácil te resultó usar el chatbot? 🤔",
-    "esperando_p2": "Del 1 al 5, ¿qué tan claras fueron mis respuestas? 💬",
-    "esperando_p3": "Del 1 al 5, ¿la información nutricional que te di fue útil? 🥗",
-    "esperando_p4": "Del 1 al 5, ¿qué tan rápido respondí a tus preguntas? ⚡",
-    "esperando_p5": "Del 1 al 5, ¿te sentiste cómodo/a hablando conmigo? 😊",
-    "esperando_p6": "Del 1 al 5, ¿confías en la información nutricional que te doy? 🔬",
-    "esperando_p7": "Del 1 al 5, ¿el chatbot se adaptó bien a tus necesidades? 🎯",
-    "esperando_p8": "Del 1 al 5, ¿qué tan buena fue tu experiencia enviándome audios? 🎙️",
-    "esperando_p9": "Del 1 al 5, ¿qué te pareció poder enviarme fotos de tu comida? 📸",
-    "esperando_p10": "Del 1 al 5, ¿recomendarías este chatbot a amigos o familia? 👨‍👩‍👧‍👦",
-    "esperando_nps": "Del 1 al 10, ¿qué probabilidad hay de que recomiendes NutriBot? ⭐",
-    "esperando_comentario": "💭 ¿Tienes algún comentario o sugerencia para mejorar?",
-    "esperando_autorizacion": "📋 Por último, ¿autorizas que usemos tus respuestas de forma anónima para ayudar a mejorar NutriBot y que sea más útil para todos? (Sí o No)",
+    "esperando_p1": "Del 1 al 5, ¿sientes que mi personalidad fue realista y atractiva? 😊",
+    "esperando_p2": "Del 1 al 5, ¿expliqué bien mi propósito y alcance? 🎯",
+    "esperando_p3": "Del 1 al 5, ¿fui fácil de navegar? 🗺️",
+    "esperando_p4": "Del 1 al 5, ¿sientes que te entendí bien? 🧠",
+    "esperando_p5": "Del 1 al 5, ¿mis respuestas te parecieron útiles, apropiadas e informativas? 🥗",
+    "esperando_p6": "Del 1 al 5, ¿manejé bien los errores o equivocaciones? ⚙️",
+    "esperando_p7": "Del 1 al 5, ¿fui muy fácil de usar? ✨",
+    "esperando_p8": "Del 1 al 5, (si escuchaste audios) ¿mis respuestas por ese medio se hicieron con claridad? 🎙️",
+    "esperando_p9": "Del 1 al 5, (si enviaste fotos) ¿pude reconocer bien el contexto de lo que me mostraste? 📸",
+    "esperando_p10": "Del 1 al 5, ¿me enfoqué solo en responderte preguntas sobre nutrición? 🥦",
+    "esperando_nps": "⭐ En una escala del 1 al 10, ¿qué tan probable es que me recomiendes a un amigo o familiar?",
+    "esperando_comentario": "💭 (Opcional) ¿Qué te gustó o no te gustó de mí en esta primera interacción?",
+    "esperando_autorizacion": "📋 Por último, ¿autorizas el uso anónimo y agregado de tus respuestas para fines de investigación científica y evaluación de mi herramienta? (Sí autorizo / No autorizo)",
 }
 
 # ─── Validaciones por campo ───
@@ -290,9 +290,9 @@ async def _process_form_response(
         # Mantenemos el question_code para retomar luego
         return None
 
-    # Detectar cancelación global
-    cancel_words = ["cancelar", "para", "ya no", "no quiero responder", "detener", "salir"]
-    if any(w in vl for w in cancel_words) and len(vl) < 30:
+    # Detectar cancelación global (solo palabras muy claras de parada)
+    cancel_words = ["cancelar", "detener", "salir", "parar encuesta", "stop survey", "no quiero participar"]
+    if any(w in vl for w in cancel_words) and len(vl) < 40:
         state.mode = "active_chat"
         state.awaiting_question_code = None
         return "¡Entendido! Lo dejamos por ahora. Si tienes alguna duda, estaré por aquí. 🍏"
@@ -404,15 +404,19 @@ async def _process_form_response(
     # Avanzar al siguiente estado
     current_idx = FORM_STATES_ORDER.index(current_state)
     next_state = None
+    media_addon = ""
 
     for i in range(current_idx + 1, len(FORM_STATES_ORDER)):
         candidate = FORM_STATES_ORDER[i]
-        # Saltar p8 si no usó audio
+        # Si candidato es p8 (audio) y no lo usó -> sugerir y saltar
         if candidate == "esperando_p8" and not progress.uso_audio:
+            media_addon += "\n\n🎙️ **PD:** Veo que aún no hemos probado enviarnos audios. ¡Es súper práctico para consultas largas! Si gustas, puedes probarlo en nuestra próxima charla. 😊"
             continue
-        # Saltar p9 si no usó imagen
+        # Si candidato es p9 (imagen) y no lo usó -> sugerir y saltar
         if candidate == "esperando_p9" and not progress.uso_imagen:
+            media_addon += "\n\n📸 **PD:** Por cierto, ¿viste que puedes enviarme fotos de tu comida? Me ayuda mucho a darte consejos más visuales. ¡Anímate a probarlo pronto! 🥦"
             continue
+            
         next_state = candidate
         break
 
@@ -424,43 +428,65 @@ async def _process_form_response(
         )).scalar()
 
         # Formulario completado
-        await session.execute(
-            text("""
-                UPDATE formulario_en_progreso
-                SET estado_actual = 'completado',
-                    respuestas_parciales = :parciales,
-                    completado_en = :now,
-                    actualizado_en = :now
-                WHERE usuario_id = :uid
-            """),
-            {"uid": state.usuario_id, "parciales": json.dumps(parciales), "now": get_now_peru()},
-        )
+        # REGLA: Solo mover a la tabla final si tenemos datos ESENCIALES
+        has_essential = all([
+            parciales.get("correo") and "@" in parciales.get("correo"),
+            parciales.get("edad"),
+            parciales.get("asegurado")
+        ])
+        
+        if has_essential:
+            await session.execute(
+                text("""
+                    UPDATE formulario_en_progreso
+                    SET estado_actual = 'completado',
+                        respuestas_parciales = :parciales,
+                        completado_en = :now,
+                        actualizado_en = :now
+                    WHERE usuario_id = :uid
+                """),
+                {"uid": state.usuario_id, "parciales": json.dumps(parciales), "now": get_now_peru()},
+            )
 
-        # Guardar respuestas finales
-        await session.execute(
-            text("""
-                INSERT INTO respuestas_formulario
-                    (formulario_id, usuario_id, correo, telefono, edad,
-                     asegurado_essalud, comentario, autorizo_uso_investigacion, puntaje_nps)
-                VALUES (:fid, :uid, :correo, :tel, :edad, :aseg, :com, :aut, :nps)
-                ON CONFLICT (formulario_id, usuario_id) DO NOTHING
-            """),
-            {
-                "fid": progress.formulario_id,
-                "uid": state.usuario_id,
-                "correo": parciales.get("correo", "no_proporcionado@na.com"),
-                "tel": user_phone,
-                "edad": int(parciales["edad"]) if parciales.get("edad") else None,
-                "aseg": parciales.get("asegurado"),
-                "com": parciales.get("comentario"),
-                "aut": parciales.get("autorizacion", "").lower().startswith("s") if parciales.get("autorizacion") else None,
-                "nps": int(parciales["nps"]) if parciales.get("nps") else None,
-            },
-        )
-
-        state.mode = "active_chat"
-        state.awaiting_question_code = None
-        return "🎉 ¡Listo, muchas gracias por completar la encuesta! Tus respuestas nos ayudan mucho a mejorar. ¡Que tengas un excelente día! 💪🥦"
+            # Guardar respuestas finales
+            await session.execute(
+                text("""
+                    INSERT INTO respuestas_formulario
+                        (formulario_id, usuario_id, correo, telefono, edad,
+                         asegurado_essalud, comentario, autorizo_uso_investigacion, puntaje_nps)
+                    VALUES (:fid, :uid, :correo, :tel, :edad, :aseg, :com, :aut, :nps)
+                    ON CONFLICT (formulario_id, usuario_id) DO NOTHING
+                """),
+                {
+                    "fid": progress.formulario_id,
+                    "uid": state.usuario_id,
+                    "correo": parciales.get("correo"),
+                    "tel": user_phone,
+                    "edad": int(parciales["edad"]) if parciales.get("edad") else None,
+                    "aseg": parciales.get("asegurado"),
+                    "com": parciales.get("comentario"),
+                    "aut": parciales.get("autorizacion", "").lower().startswith("s") if parciales.get("autorizacion") else None,
+                    "nps": int(parciales["nps"]) if parciales.get("nps") else None,
+                },
+            )
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return "🎉 ¡Listo, muchas gracias por completar la encuesta! Tus respuestas nos ayudan mucho a mejorar NutriBot. ¡Que tengas un excelente día! 💪🥦"
+        else:
+            # No tiene esenciales -> Quedarse en 'parcial' y no mover a respuestas final
+            await session.execute(
+                text("""
+                    UPDATE formulario_en_progreso
+                    SET estado_actual = 'parcialmente_completado',
+                        respuestas_parciales = :parciales,
+                        actualizado_en = :now
+                    WHERE usuario_id = :uid
+                """),
+                {"uid": state.usuario_id, "parciales": json.dumps(parciales), "now": get_now_peru()},
+            )
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return "¡Muchas gracias por tus respuestas! 😊 He guardado tus comentarios para seguir mejorando. En nuestra próxima charla, si gustas, terminaremos de completar un par de datitos que nos faltan. ¡Un abrazo! ✨"
 
     # Avanzar estado
     await session.execute(
@@ -477,4 +503,5 @@ async def _process_form_response(
     state.awaiting_question_code = next_state
     state.turns_since_last_prompt = 0
     question = FORM_QUESTIONS[next_state]
-    return f"✅ ¡Anotado! Siguiente pregunta:\n\n{question}"
+    prefix = f"{media_addon}\n\n" if media_addon else ""
+    return f"✅ ¡Anotado! {prefix}Siguiente pregunta:\n\n{question}"

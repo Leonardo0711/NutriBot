@@ -19,25 +19,42 @@ EXTRACTION_PROMPT = """Analiza el siguiente mensaje de un usuario de WhatsApp y 
 Solo extrae datos que el usuario mencione sobre SÍ MISMO (no sobre terceros).
 
 Campos a buscar:
-- correo: dirección de email
-- edad: edad en años  
-- region: departamento/región de Perú
+- edad: edad en años
 - peso: peso en kg
-- asegurado: si es asegurado de EsSalud (si/no)
-- autorizo: si autoriza uso de datos para investigación (si/no)
+- altura: altura en cm
+- alergias: alergias o intolerancias alimentarias (ej: maní, mariscos, gluten, lactosa)
+- enfermedades: condiciones de salud relevantes (ej: diabetes, hipertensión)
+- tipo_dieta: tipo de dieta que sigue (ej: vegano, vegetariano, keto)
+- objetivo_nutricional: qué busca lograr (ej: bajar peso, ganar masa, comer sano)
+- region: departamento/región de Perú (ej: Lima, Callao, Arequipa)
+- provincia: provincia (ej: Lima, Callao, Cusco)
+- distrito: distrito (ej: Miraflores, San Borja, Los Olivos)
 
 Para cada dato encontrado, indica:
 - field_code: el código del campo
 - raw_value: el valor exacto extraído
-- confidence: float entre 0 y 1 (qué tan seguro estás de que se refiere a sí mismo)
+- confidence: float entre 0 y 1 (qué tan seguro estás de que se refiere a sí mismo y el dato es claro)
 - evidence_text: el fragmento textual exacto que lo sustenta
 
 Responde en JSON puro, sin markdown. Si no se encontró ningún dato, responde con un array vacío.
-Ejemplo: [{"field_code": "edad", "raw_value": "32", "confidence": 0.95, "evidence_text": "tengo 32 años"}]
+Ejemplo: [{"field_code": "alergias", "raw_value": "Mani", "confidence": 0.95, "evidence_text": "soy alergico al mani"}]
 
 Mensaje del usuario:
 """
 
+# Mapeo de field_code a columnas de la tabla perfil_nutricional
+FIELD_TO_COL = {
+    "edad": "edad",
+    "peso": "peso_kg",
+    "altura": "altura_cm",
+    "alergias": "alergias",
+    "enfermedades": "enfermedades",
+    "tipo_dieta": "tipo_dieta",
+    "objetivo_nutricional": "objetivo_nutricional",
+    "region": "region",
+    "provincia": "provincia",
+    "distrito": "distrito"
+}
 
 async def process_extractions() -> int:
     """
@@ -90,19 +107,23 @@ async def _extract_single(job, factory, client: AsyncOpenAI, model: str) -> None
     """Extrae datos de perfil de un texto individual."""
     prompt = EXTRACTION_PROMPT + job.raw_text
 
-    response = await client.responses.create(
+    response = await client.chat.completions.create(
         model=model,
-        input=prompt,
-        instructions="Responde SOLO con un array JSON válido, sin markdown ni explicaciones.",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=500,
+        temperature=0,
     )
 
-    raw_output = response.output_text.strip()
+    raw_output = response.choices[0].message.content.strip()
 
     # Parsear JSON de la respuesta
     try:
         # Limpiar posibles backticks
         if raw_output.startswith("```"):
-            raw_output = raw_output.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            if "\n" in raw_output:
+                raw_output = raw_output.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            else:
+                raw_output = raw_output.strip("`")
         extractions = json.loads(raw_output)
     except (json.JSONDecodeError, IndexError):
         logger.warning("LLM retornó JSON inválido para job %s: %s", job.id, raw_output[:200])
@@ -111,14 +132,19 @@ async def _extract_single(job, factory, client: AsyncOpenAI, model: str) -> None
     if not isinstance(extractions, list):
         extractions = []
 
-    # Persistir extracciones con confianza suficiente
+    # Persistir y SINCRONIZAR directamente con perfil_nutricional si hay alta confianza
     async with factory() as session:
         async with session.begin():
             for ext in extractions:
+                field_code = ext.get("field_code", "").lower()
+                raw_value = str(ext.get("raw_value", ""))
                 confidence = float(ext.get("confidence", 0))
+                evidence = ext.get("evidence_text", "")
+                
                 if confidence < 0.7:
-                    continue  # Descarte por baja confianza
+                    continue  # Descarte total
 
+                # 1. Guardar log de extracción
                 status = "confirmed" if confidence >= 0.85 else "tentative"
                 await session.execute(
                     text("""
@@ -128,13 +154,38 @@ async def _extract_single(job, factory, client: AsyncOpenAI, model: str) -> None
                     """),
                     {
                         "uid": job.usuario_id,
-                        "fc": ext.get("field_code", ""),
-                        "rv": ext.get("raw_value", ""),
+                        "fc": field_code,
+                        "rv": raw_value,
                         "conf": confidence,
-                        "ev": ext.get("evidence_text", ""),
+                        "ev": evidence,
                         "st": status,
                     },
                 )
+
+                # 2. Sincronización Directa a Perfil (si confianza >= 0.9)
+                col_name = FIELD_TO_COL.get(field_code)
+                if confidence >= 0.9 and col_name:
+                    logger.info("extract_profile: sinking direct update for user=%s, field=%s, value=%s", job.usuario_id, col_name, raw_value)
+                    
+                    # Casting si es numérico
+                    val_to_save = raw_value
+                    if col_name in ("peso_kg", "altura_cm"):
+                        try:
+                            val_to_save = float(raw_value.replace(",", "."))
+                        except Exception: pass
+                    elif col_name == "edad":
+                        try:
+                            val_to_save = int(raw_value)
+                        except Exception: pass
+
+                    await session.execute(
+                        text(f"""
+                            INSERT INTO perfil_nutricional (usuario_id, {col_name}, actualizado_en)
+                            VALUES (:uid, :val, NOW())
+                            ON CONFLICT (usuario_id) DO UPDATE SET {col_name} = :val, actualizado_en = NOW()
+                        """),
+                        {"uid": job.usuario_id, "val": val_to_save}
+                    )
 
             # Marcar job como done
             await session.execute(
@@ -143,9 +194,8 @@ async def _extract_single(job, factory, client: AsyncOpenAI, model: str) -> None
             )
 
     logger.debug(
-        "Extracción completada job=%s: %d campos extraídos",
-        job.id,
-        len([e for e in extractions if float(e.get("confidence", 0)) >= 0.7]),
+        "Extracción completada job=%s: %d campos procesados",
+        job.id, len(extractions)
     )
 
 
