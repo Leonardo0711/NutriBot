@@ -83,12 +83,12 @@ class OnboardingStep(str, Enum):
 ONBOARDING_STEPS_ORDER = [
     OnboardingStep.INVITACION,
     OnboardingStep.EDAD,
+    OnboardingStep.PESO,
+    OnboardingStep.ALTURA,
     OnboardingStep.ALERGIAS,
     OnboardingStep.ENFERMEDADES,
     OnboardingStep.TIPO_DIETA,
     OnboardingStep.OBJETIVO,
-    OnboardingStep.PESO,
-    OnboardingStep.ALTURA,
     OnboardingStep.REGION,
 ]
 

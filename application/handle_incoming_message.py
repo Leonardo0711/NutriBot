@@ -233,8 +233,13 @@ async def _process_single_message(
                 state.usuario_id, state.onboarding_status, state.onboarding_step, state.version
             )
 
+            # --- Detección de Frustración / Pedido Directo ---
+            is_annoyed = any(w in v_text for w in ["ya te dije", "deja de preguntar", "no me preguntes", "qué molesto", "que molesto", "responde", "dame el menú", "dame el menu", "solo quiero"])
+            if is_annoyed:
+                logger.info("Frustration detected for user=%s, bypassing onboarding interception this turn", state.usuario_id)
+
             # Caso A: Ya está en el flujo de onboarding
-            if state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
+            if not is_annoyed and state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
                 is_long_interruption = len(v_text) > 60 and ("?" in v_text or "como" in v_text or "que" in v_text or "ayuda" in v_text)
                 if not is_long_interruption:
                     onboarding_interception_happened = True
@@ -248,37 +253,57 @@ async def _process_single_message(
                         onboarding_interception_happened = False
 
             # Caso B: Saludo o Petición de Menú → iniciar onboarding si elegible
-            if not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
+            if not is_annoyed and not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
+                # Consultar perfil completo incluyendo skipped_fields
+                res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
+                p_map = res_p.mappings().fetchone() or {}
+                skipped = p_map.get("skipped_fields", {}) if isinstance(p_map.get("skipped_fields"), dict) else {}
+
+                # ¿Faltan datos ESENCIALES? (Edad, Peso, Talla)
+                missing_essential = []
+                if not p_map.get("edad") and not skipped.get("edad"): missing_essential.append("edad")
+                if not p_map.get("peso_kg") and not skipped.get("peso_kg"): missing_essential.append("peso_kg")
+                if not p_map.get("altura_cm") and not skipped.get("altura_cm"): missing_essential.append("altura_cm")
+
                 if is_asking_for_recommendation:
-                    from application.advance_onboarding_flow import _find_next_missing_step
-                    res = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
-                    p_map = res.mappings().fetchone() or {}
-                    
-                    intro = "¡Claro! 🥗 Me encantaría darte una recomendación a tu medida."
-                    known_parts = []
-                    if p_map.get("edad"): known_parts.append(f"Edad: {p_map['edad']} años")
-                    if p_map.get("peso_kg"): known_parts.append(f"Peso: {p_map['peso_kg']}kg")
-                    if p_map.get("alergias") and p_map['alergias'] != "NINGUNA": known_parts.append(f"Alergias: {p_map['alergias']}")
-                    
-                    if known_parts:
-                        intro += f" 😊 Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
-                    
-                    missing_step = await _find_next_missing_step(session, user.id, p_map)
-                    
-                    if missing_step:
-                        step_name = missing_step
-                        if missing_step == "edad": step_name = "edad"
-                        elif missing_step == "peso_kg": step_name = "peso"
-                        elif missing_step == "altura_cm": step_name = "talla (estatura)"
-                        
-                        reply = f"{intro}\n\nPero para que mi sugerencia sea 100% precisa y calcular tu IMC, solo me faltaría completar un par de datos más. ¿Te parece si empezamos por tu **{step_name}**? 🙏"
-                        state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
-                        state.onboarding_step = missing_step
-                        state.onboarding_last_invited_at = get_now_peru()
-                        state.version += 1
+                    if not missing_essential:
+                        # Ya tenemos lo básico para el IMC, no interceptamos. El LLM responderá.
+                        logger.info("User asked for recommendation but already has essential data. Bypassing interception.")
+                        onboarding_interception_happened = False
                     else:
-                        reply = f"{intro}\n\n¡Veo que ya tengo todo lo necesario! Dame un momento y te preparo algo especial. 🥦✨"
-                    onboarding_interception_happened = True
+                        from application.advance_onboarding_flow import _find_next_missing_step
+                        
+                        intro = "¡Claro! 🥗 Me encantaría darte una recomendación a tu medida."
+                        known_parts = []
+                        if p_map.get("edad"): known_parts.append(f"Edad: {p_map['edad']} años")
+                        if p_map.get("peso_kg"): known_parts.append(f"Peso: {p_map['peso_kg']}kg")
+                        if p_map.get("altura_cm"): known_parts.append(f"Talla: {p_map['altura_cm']}cm")
+                        
+                        if known_parts:
+                            intro += f" 😊 Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
+                        
+                        missing_step = await _find_next_missing_step(session, user.id, p_map)
+                        
+                        if missing_step:
+                            step_name = missing_step
+                            if missing_step == "edad": step_name = "edad"
+                            elif missing_step == "peso_kg": step_name = "peso"
+                            elif missing_step == "altura_cm": step_name = "talla (estatura)"
+                            
+                            # Solo mencionar IMC si nos falta peso o talla
+                            if "peso_kg" in missing_essential or "altura_cm" in missing_essential:
+                                reply = f"{intro}\n\nPero para que mi sugerencia sea 100% precisa y calcular tu IMC, solo me faltaría completar un par de datos más. ¿Te parece si empezamos por tu **{step_name}**? 🙏"
+                            else:
+                                reply = f"{intro}\n\nSolo me faltaría completar un pequeño detalle para ser más preciso. ¿Te parece si confirmamos tu **{step_name}**? 😊"
+                                
+                            state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
+                            state.onboarding_step = missing_step
+                            state.onboarding_last_invited_at = get_now_peru()
+                            state.version += 1
+                            onboarding_interception_happened = True
+                        else:
+                            # Esto no debería pasar si missing_essential es verdadero, pero por seguridad:
+                            onboarding_interception_happened = False
 
                 elif is_short_greeting:
                     if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:

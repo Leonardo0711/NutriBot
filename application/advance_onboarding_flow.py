@@ -317,9 +317,22 @@ async def advance_onboarding_flow(
             cleaned_value = "NINGUNA"
 
     # Guardar
-    if cleaned_value is not None or ("saltar" in vl or "no" in vl):
+    # Guardar
+    if cleaned_value is not None:
         await _save_profile_field(session, state.usuario_id, current_step, cleaned_value)
         logger.info("advance_onboarding: saved %s=%s for user=%s", current_step, cleaned_value, state.usuario_id)
+    elif "saltar" in vl or "paso" in vl or "omitir" in vl or "luego" in vl or "siguiente" in vl:
+        # Omisión explícita
+        await _mark_field_as_skipped(session, state.usuario_id, current_step)
+        logger.info("advance_onboarding: marked %s as skipped for user=%s", current_step, state.usuario_id)
+    elif "no" in vl and len(vl) < 10:
+        # Un "no" corto suele ser omisión o "no tengo" dependiendo del campo
+        if current_step in [OnboardingStep.ALERGIAS.value, OnboardingStep.ENFERMEDADES.value, OnboardingStep.TIPO_DIETA.value]:
+            # En estos campos "no" suele significar "ninguna"
+            await _save_profile_field(session, state.usuario_id, current_step, "NINGUNA")
+        else:
+            # En edad/peso/talla un "no" es omisión
+            await _mark_field_as_skipped(session, state.usuario_id, current_step)
 
     # Avanzar al siguiente paso REALMENTE vacío (FORZAMOS RE-CONSULTA)
     next_step = await _find_next_missing_step(session, state.usuario_id)
@@ -403,6 +416,11 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
         logger.debug("_find_next_missing_step: no profile found for user=%s, returning 'edad'", uid)
         return OnboardingStep.EDAD.value
 
+    # Metadata de campos omitidos
+    skipped = p.get("skipped_fields", {})
+    if not isinstance(skipped, dict):
+        skipped = {}
+
     col_map = {
         OnboardingStep.EDAD.value: "edad",
         OnboardingStep.ALERGIAS.value: "alergias",
@@ -419,6 +437,10 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
         col = col_map.get(step.value)
         if not col: continue
         
+        # Saltamos si el usuario ya decidió omitir este campo explícitamente
+        if skipped.get(step.value):
+            continue
+
         val = p.get(col)
         # Consideramos vacío si es None o string vacío (o placeholder que no sea estandarizado)
         if val is None or (isinstance(val, str) and len(val.strip()) == 0):
@@ -427,3 +449,23 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
 
     logger.debug("_find_next_missing_step: user=%s, all fields filled!", uid)
     return None
+
+
+async def _mark_field_as_skipped(session: AsyncSession, uid: int, field: str):
+    """Marca un campo como omitido explícitamente en el JSONB."""
+    # Asegurarse de que el registro existe primero con el upsert normal pero val=NULL
+    sql_init = """
+        INSERT INTO perfil_nutricional (usuario_id, actualizado_en)
+        VALUES (:uid, :upd)
+        ON CONFLICT (usuario_id) DO NOTHING
+    """
+    await session.execute(text(sql_init), {"uid": uid, "upd": get_now_peru()})
+
+    # Ahora actualizamos el JSONB
+    sql_skip = f"""
+        UPDATE perfil_nutricional 
+        SET skipped_fields = skipped_fields || jsonb_build_object(:field, true),
+            actualizado_en = :upd
+        WHERE usuario_id = :uid
+    """
+    await session.execute(text(sql_skip), {"uid": uid, "field": field, "upd": get_now_peru()})
