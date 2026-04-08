@@ -1,0 +1,29 @@
+# ──────────────────────────────────────────────
+# Nutribot Backend — Docker Compose
+# 
+# Asume que PostgreSQL y Evolution API ya corren
+# en la VPS (ya sea nativos o en sus propios containers).
+# Este compose solo levanta el backend de Nutribot.
+# ──────────────────────────────────────────────
+services:
+  nutribot-backend:
+    build: .
+    container_name: nutribot-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Usar red easypanel-nutribot para conectar con la DB y Evolution
+    networks:
+      - easypanel-nutribot
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  easypanel-nutribot:
+    external: true

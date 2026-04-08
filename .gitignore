@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.vscode/
+.idea/
+*.tar.gz
+backend.tar.gz
+backend_deploy.tar.gz
