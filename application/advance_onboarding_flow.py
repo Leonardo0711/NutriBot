@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER
 from domain.utils import get_now_peru
+from domain.parsers import parse_weight, parse_height, parse_age, standardize_text_list
 
 logger = logging.getLogger(__name__)
 
@@ -33,40 +34,6 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
     OnboardingStep.OBJETIVO.value: "¿Cuál es tu principal objetivo nutricional? (Ej. comer más sano, bajar de peso, subir masa muscular, controlar mi azúcar...) 🎯",
     OnboardingStep.REGION.value: "Por último, ¿en qué región y provincia de Perú te encuentras? (Esto es para avisarte de campañas de salud cerca de ti) 📍"
 }
-
-def _parse_weight(val: str) -> Optional[float]:
-    v = val.lower().strip()
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|kilo|lb|libra)?", v)
-    if not match: return None
-    num = float(match.group(1))
-    unit = match.group(2)
-    if unit and ("lb" in unit or "lib" in unit):
-        return round(num * 0.453592, 2)
-    return round(num, 2)
-
-def _parse_height(val: str) -> Optional[float]:
-    v = val.lower().strip()
-    
-    # Check for ft/in like 5'4" first
-    ft_in_match = re.search(r"(\d+)\s*'\s*(\d+)\s*\"", v)
-    if ft_in_match:
-        ft = int(ft_in_match.group(1))
-        inches = int(ft_in_match.group(2))
-        return round((ft * 30.48) + (inches * 2.54), 2)
-    
-    match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(cm|m|metro)?", v)
-    if not match: return None
-    num_str = match.group(1).replace(",", ".")
-    num = float(num_str)
-    unit = match.group(2)
-    
-    if not unit:
-        # Guesses based on value
-        if num < 3.0: return round(num * 100, 2)
-        else: return round(num, 2)
-    if "m" in unit and "cm" not in unit:
-        return round(num * 100, 2)
-    return round(num, 2)
 
 
 def _validate_onboarding_field(step: str, raw_value: str) -> tuple[bool, Optional[str], Optional[str]]:
@@ -87,15 +54,15 @@ def _validate_onboarding_field(step: str, raw_value: str) -> tuple[bool, Optiona
     
     elif step == OnboardingStep.PESO:
         if is_skip: return True, None, None
-        w = _parse_weight(v)
-        if w and 10 <= w <= 300:
+        w = parse_weight(v)
+        if w:
             return True, str(w), None
         return False, None, "No logré captar el peso. ¿Podrías decirlo en kilos o libras? (O escribe 'saltar' si prefieres no decirlo aún)"
     
     elif step == OnboardingStep.ALTURA:
         if is_skip: return True, None, None
-        h = _parse_height(v)
-        if h and 40 <= h <= 250:
+        h = parse_height(v)
+        if h:
             return True, str(h), None
         return False, None, "No logré captar la estatura. ¿Podrías decirlo en centímetros o metros? (O escribe 'saltar' si prefieres no decirlo aún)"
 
@@ -257,16 +224,17 @@ async def advance_onboarding_flow(
     err_msg = None
     
     if current_step in [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value]:
-        # 1. Intento de extracción rápida por Regex (para casos como "90}")
+        # 1. Intento de extracción rápida por Regex (usando parsers centralizados)
         if current_step == OnboardingStep.EDAD.value:
-            m = re.search(r"(\d+)", vl)
-            if m: cleaned_value = m.group(1)
+            cleaned_value = parse_age(vl)
         elif current_step == OnboardingStep.PESO.value:
-            w = _parse_weight(vl)
-            if w: cleaned_value = str(w)
+            cleaned_value = parse_weight(vl)
         elif current_step == OnboardingStep.ALTURA.value:
-            h = _parse_height(vl)
-            if h: cleaned_value = str(h)
+            cleaned_value = parse_height(vl)
+
+        # Si el parser devolvió un número, lo pasamos a string para el resto del flujo
+        if cleaned_value is not None:
+            cleaned_value = str(cleaned_value)
 
         # 2. Si falló el regex, usar LLM para lenguaje natural ("pesos setenta kg", etc.)
         if cleaned_value is None:
@@ -307,26 +275,8 @@ async def advance_onboarding_flow(
                 return f"No logré captar ese dato (intenté extraer {current_step}). ¿Podrías decírmelo de forma más clara? 😊"
 
     else:
-        # Texto libre (Alergias, etc.) - ESTANDARIZACIÓN CON LLM
-        standard_prompt = f"""Estandariza la respuesta del usuario para el campo '{current_step}'.
-        Reglas:
-        1. Si el usuario dice que no tiene nada, responde 'NINGUNA'.
-        2. Si menciona una condición, responde SOLO el nombre en MAYÚSCULAS (ej: DIABETES, INTOLERANTE A LA LACTOSA).
-        3. Si menciona varias, sepáralas por comas.
-        4. No pongas frases como 'El usuario tiene...' ni explicaciones. Solo el valor canónico.
-        
-        USUARIO: "{user_text}"
-        """
-        std_resp = await openai_client.chat.completions.create(
-            model=openai_model,
-            messages=[{"role": "system", "content": "Analista de datos médicos/nutricionales experto en estandarización."},
-                      {"role": "user", "content": standard_prompt}],
-            max_tokens=40,
-            temperature=0
-        )
-        cleaned_value = std_resp.choices[0].message.content.strip().upper()
-        if any(w in cleaned_value for w in ["NINGUNA", "NO TENGO", "NO TENGO NINGUNA", "NO TENGO NADA"]):
-            cleaned_value = "NINGUNA"
+        # Texto libre (Alergias, etc.) - ESTANDARIZACIÓN CON PARSER UNIVERSAL
+        cleaned_value = standardize_text_list(user_text)
 
     # Guardar
     # Guardar
@@ -400,16 +350,15 @@ async def _save_profile_field(session: AsyncSession, uid: int, field: str, value
         DO UPDATE SET {db_col} = EXCLUDED.{db_col}, actualizado_en = EXCLUDED.actualizado_en
     """
     
-    # Casting correct types con protección para None
+    # El valor ya viene normalizado del flujo anterior (parse_weight, etc.)
+    # Solo aseguramos el casting final para la DB si es necesario, pero sin lógica de limpieza extra
     query_val = value
-    try:
-        if value is not None and db_col in ("peso_kg", "altura_cm"):
-            query_val = float(re.sub(r"[^\d\.]", "", str(value)))
-        elif value is not None and db_col == "edad":
-            query_val = int(re.sub(r"\D", "", str(value)))
-    except Exception:
-        logger.warning(f"Error casting {value} for column {db_col}. Saving as None.")
-        query_val = None
+    if db_col in ("peso_kg", "altura_cm") and value is not None:
+        try: query_val = float(value)
+        except Exception: query_val = None
+    elif db_col == "edad" and value is not None:
+        try: query_val = int(value)
+        except Exception: query_val = None
 
     await session.execute(
         text(sql),

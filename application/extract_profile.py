@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 
+import re
 from openai import AsyncOpenAI
 from sqlalchemy import text
 
@@ -162,30 +163,10 @@ async def _extract_single(job, factory, client: AsyncOpenAI, model: str) -> None
                     },
                 )
 
-                # 2. Sincronización Directa a Perfil (si confianza >= 0.9)
-                col_name = FIELD_TO_COL.get(field_code)
-                if confidence >= 0.9 and col_name:
-                    logger.info("extract_profile: sinking direct update for user=%s, field=%s, value=%s", job.usuario_id, col_name, raw_value)
-                    
-                    # Casting si es numérico
-                    val_to_save = raw_value
-                    if col_name in ("peso_kg", "altura_cm"):
-                        try:
-                            val_to_save = float(raw_value.replace(",", "."))
-                        except Exception: pass
-                    elif col_name == "edad":
-                        try:
-                            val_to_save = int(raw_value)
-                        except Exception: pass
-
-                    await session.execute(
-                        text(f"""
-                            INSERT INTO perfil_nutricional (usuario_id, {col_name}, actualizado_en)
-                            VALUES (:uid, :val, NOW())
-                            ON CONFLICT (usuario_id) DO UPDATE SET {col_name} = :val, actualizado_en = NOW()
-                        """),
-                        {"uid": job.usuario_id, "val": val_to_save}
-                    )
+                # 3. La sincronización directa a Perfil ahora es SÍNCRONA
+                # en handle_incoming_message (via SyncProfileProcessor).
+                # Ya no es necesario que el worker lo haga para evitar race conditions.
+                logger.debug("extract_profile: extraction logged, bypassing direct sink to perfil_nutricional (handled by sync layer)")
 
             # Marcar job como done
             await session.execute(

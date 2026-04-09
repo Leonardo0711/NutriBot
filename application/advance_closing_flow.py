@@ -59,62 +59,169 @@ FORM_QUESTIONS: dict[str, str] = {
     "esperando_autorizacion": "📋 Por último, ¿autorizas el uso anónimo y agregado de tus respuestas para fines de investigación científica y evaluación de mi herramienta? (Sí autorizo / No autorizo)",
 }
 
-# ─── Validaciones por campo ───
-def _validate_field(state_name: str, raw_value: str) -> tuple[bool, Optional[str], Optional[str]]:
-    """
-    Valida la respuesta del usuario para el campo actual.
-    Returns: (is_valid, cleaned_value, error_message)
-    """
-    v = raw_value.strip()
+# Mensajes de persuasión por campo
+PERSUASION_MESSAGES: dict[str, str] = {
+    "esperando_correo": "Es para avisarte sobre campañas de salud, jornadas de nutrición cerca de ti y consejos exclusivos para tu perfil nutricional. ¡Es súper útil! ✉️ ¿Te animas a compartirlo?",
+    "esperando_asegurado": "Saber si eres asegurado nos ayuda a darte información sobre servicios específicos de salud preventiva en EsSalud 🏥. ¿Te gustaría comentarlo?",
+}
+PERSUASION_DEFAULT = "Entiendo, pero tus respuestas son vitales para mejorar este servicio para todos. 🌟 ¿Te gustaría darnos este dato?"
 
-    if state_name == "esperando_correo":
-        if re.match(r"^\S+@\S+\.\S+$", v):
-            return True, v.lower(), None
-        return False, None, "Hmm, ese correo no parece válido 🤔 ¿Podrías revisarlo? Ejemplo: tunombre@gmail.com"
 
-    elif state_name == "esperando_asegurado":
-        vl = v.lower().strip()
-        if any(x in vl for x in ["sí", "si", "yes"]):
-            return True, "Si", None
-        elif "no sé" in vl or "no se" in vl or "nose" in vl:
-            return True, "No se", None
-        elif "no" in vl:
-            return True, "No", None
-        return False, None, "¿Podrías responder 'Sí', 'No' o 'No sé'? 🏥"
+# ═══════════════════════════════════════════════════════════════
+# Clase: SurveyResponseExtractor
+# Separa la extracción de datos en un "fast path" (regex) y
+# un "slow path" (LLM) para minimizar la latencia.
+# ═══════════════════════════════════════════════════════════════
+class SurveyResponseExtractor:
+    """Extrae intención y valor limpio de las respuestas del usuario a la encuesta."""
 
-    elif state_name.startswith("esperando_p"):
+    # Palabras que claramente indican un salto/rechazo
+    _SKIP_EXACT = {"paso", "saltar", "skip", "no quiero", "siguiente", "prefiero no"}
+    # Cancelación global (frases extremas)
+    _CANCEL_PHRASES = ["cancelar todo", "detener bot", "salir de todo", "stop survey"]
+    # Palabras afirmativas (para booleanos)
+    _YES_WORDS = re.compile(
+        r"\b(s[ií1]|yes|yeah|claro|por supuesto|obvio|dale|ok[ay]*|chi|chii|afirmativo|autorizo|acepto|normal)\b",
+        re.IGNORECASE,
+    )
+    _NO_WORDS = re.compile(
+        r"\b(no(?:\s+(?:autorizo|acepto|quiero))?|nop[e]?|nel|negativo|rechazo)\b",
+        re.IGNORECASE,
+    )
+    _NO_SE_WORDS = re.compile(r"\b(no\s*s[eé]|nose|ni idea)\b", re.IGNORECASE)
+    # Regex para detectar preguntas de "por qué"
+    _WHY_PATTERN = re.compile(
+        r"(\bpara\s*qu[eé]\b|\bpor\s*qu[eé]\b|\bqu[eé]\s*uso\b|\bpara\s*que\s*sirve\b|\bpor\s*que\s*lo\s*pide|\bpara\s*que\s*es\b|\bcomo\s*para\s*que\b|\bpara\b\?)",
+        re.IGNORECASE,
+    )
+
+    def __init__(self, openai_client: AsyncOpenAI, model: str):
+        self._client = openai_client
+        self._model = model
+
+    # ─── Fast Path: respuestas obvias sin IA ───
+    def try_fast_extract(self, state_name: str, raw: str) -> Optional[dict]:
+        """
+        Intenta extraer la intención y el valor sin llamar al LLM.
+        Retorna {"intent": ..., "value": ...} o None si necesita IA.
+        """
+        v = raw.strip()
+        vl = v.lower()
+
+        # Cancelación global
+        if any(w in vl for w in self._CANCEL_PHRASES) and len(vl) < 30:
+            return {"intent": "CANCEL", "value": None}
+
+        # Pregunta de "¿por qué?" / "¿para qué?"
+        if self._WHY_PATTERN.search(vl) and len(vl) < 60:
+            return {"intent": "WHY", "value": None}
+
+        # Skip exacto
+        if vl in self._SKIP_EXACT:
+            return {"intent": "SKIP", "value": None}
+
+        # ─── Por tipo de campo ───
+        if state_name == "esperando_correo":
+            match = re.search(r"[\w.+-]+@[\w.-]+\.\w{2,}", v)
+            if match:
+                return {"intent": "ANSWER", "value": match.group(0).lower()}
+            return None  # Necesita IA para limpiar
+
+        if state_name in ("esperando_asegurado",):
+            if self._NO_SE_WORDS.search(vl):
+                return {"intent": "ANSWER", "value": "No se"}
+            if self._YES_WORDS.search(vl) and not self._NO_WORDS.search(vl):
+                return {"intent": "ANSWER", "value": "Si"}
+            if self._NO_WORDS.search(vl):
+                return {"intent": "ANSWER", "value": "No"}
+            return None
+
+        if state_name == "esperando_autorizacion":
+            if self._YES_WORDS.search(vl):
+                return {"intent": "ANSWER", "value": "Si"}
+            if self._NO_WORDS.search(vl) and "todo bien" not in vl:
+                return {"intent": "ANSWER", "value": "No"}
+            return None
+
+        if state_name.startswith("esperando_p"):
+            digits = re.sub(r"\D", "", v)
+            if digits:
+                num = int(digits)
+                if 1 <= num <= 5:
+                    return {"intent": "ANSWER", "value": str(num)}
+            return None
+
+        if state_name == "esperando_nps":
+            digits = re.sub(r"\D", "", v)
+            if digits:
+                num = int(digits)
+                if 1 <= num <= 10:
+                    return {"intent": "ANSWER", "value": str(num)}
+            return None
+
+        if state_name == "esperando_comentario":
+            # Cualquier texto es un comentario válido
+            return {"intent": "ANSWER", "value": v if vl not in ("no", "nada", "ninguno") else None}
+
+        return None
+
+    # ─── Slow Path: extracción con IA ───
+    async def extract_with_ai(self, state_name: str, user_text: str) -> dict:
+        """Usa el LLM para clasificar la intención y extraer el valor."""
+        field_type = "EMAIL" if state_name == "esperando_correo" else \
+                     "BOOLEAN (Si/No/No se)" if state_name in ("esperando_asegurado", "esperando_autorizacion") else \
+                     "NUMBER (1-5)" if state_name.startswith("esperando_p") else \
+                     "NUMBER (1-10)" if state_name == "esperando_nps" else \
+                     "TEXT (Comentario)"
+
+        prompt = f"""Analiza la respuesta del usuario a: "{FORM_QUESTIONS.get(state_name, '')}".
+
+Categorízala:
+- ANSWER: Responde (errores ortográficos, símbolos, frases coloquiales como 'si normal', 'chi', 'claro que si' ALL cuentan como respuestas).
+- WHY: Pregunta por el motivo.
+- SKIP: Rechaza explícitamente participar.
+- INTERRUPT: Cambia de tema radicalmente.
+
+Si es ANSWER, extrae valor puro ({field_type}):
+- EMAIL: Solo la dirección (ej: "ok, x@y.com" -> x@y.com)
+- BOOLEAN: 'Si', 'No' o 'No se'
+- NUMBER: Solo el dígito
+- TEXT: Texto limpio
+
+JSON: {{"intent": "CATEGORIA", "value": "VALOR"}}
+
+USUARIO: "{user_text}" """
+
         try:
-            score = int(re.sub(r"\D", "", v))
-            if 1 <= score <= 5:
-                return True, str(score), None
-        except ValueError:
-            pass
-        return False, None, "Solo necesito un número del 1 al 5 ✋"
+            resp = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": "Analista de encuestas. Lenguaje natural con errores."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            return json.loads(resp.choices[0].message.content)
+        except Exception as e:
+            logger.error("Error en IA survey extractor: %s", e)
+            return {"intent": "ANSWER", "value": user_text}
 
-    elif state_name == "esperando_nps":
-        try:
-            score = int(re.sub(r"\D", "", v))
-            if 1 <= score <= 10:
-                return True, str(score), None
-        except ValueError:
-            pass
-        return False, None, "Solo necesito un número del 1 al 10 ⭐"
+    # ─── Método principal ───
+    async def extract(self, state_name: str, user_text: str) -> dict:
+        """Intenta fast-path y cae a IA si es necesario."""
+        fast = self.try_fast_extract(state_name, user_text)
+        if fast is not None:
+            logger.debug("Survey fast-path: state=%s → %s", state_name, fast)
+            return fast
 
-    elif state_name == "esperando_comentario":
-        return True, v if v.lower() not in ("no", "nada", "ninguno") else None, None
-
-    elif state_name == "esperando_autorizacion":
-        vl = v.lower().strip()
-        if any(x in vl for x in ["sí", "si", "yes"]):
-            return True, "Si", None
-        elif "no" in vl:
-            return True, "No", None
-        return False, None, "¿Sí o No? 📋"
-
-    return True, v, None
+        logger.debug("Survey slow-path (AI): state=%s, text=%s", state_name, user_text[:50])
+        return await self.extract_with_ai(state_name, user_text)
 
 
-# ─── Closure Score ───
+# ═══════════════════════════════════════════════════════════════
+# Closure Score
+# ═══════════════════════════════════════════════════════════════
 CLOSURE_EVAL_PROMPT = """Evalúa si el siguiente mensaje del usuario indica intención de terminar/despedirse de la conversación.
 Responde SOLO con un número entero del 0 al 100 (0 = no se despide, 100 = claramente se despide).
 Ejemplos de despedida: "gracias chau", "ya me voy", "hasta luego", "bye", "eso era todo"
@@ -139,6 +246,9 @@ async def evaluate_closure_score(client: AsyncOpenAI, model: str, user_text: str
         return 0
 
 
+# ═══════════════════════════════════════════════════════════════
+# Orquestador principal del flujo de cierre
+# ═══════════════════════════════════════════════════════════════
 async def advance_closing_flow(
     session: AsyncSession,
     state: ConversationState,
@@ -247,6 +357,9 @@ async def _check_pending_form(session: AsyncSession, state: ConversationState) -
     return f"😊 ¡Hola de nuevo! Nos quedaron unas preguntitas pendientes, ¿te animas a completarlas?\n\n{question}"
 
 
+# ═══════════════════════════════════════════════════════════════
+# Procesador de respuestas del formulario
+# ═══════════════════════════════════════════════════════════════
 async def _process_form_response(
     session: AsyncSession,
     state: ConversationState,
@@ -254,71 +367,35 @@ async def _process_form_response(
     openai_client: AsyncOpenAI,
     openai_model: str,
 ) -> Optional[str]:
-    """Procesa la respuesta del usuario al formulario activo con detección de interrupciones y extracción semántica."""
+    """Procesa la respuesta del usuario al formulario activo."""
     current_state = state.awaiting_question_code
-    vl = user_text.lower().strip()
-    
+
     if not current_state or current_state not in FORM_QUESTIONS:
         state.mode = "active_chat"
         state.awaiting_question_code = None
         return None
 
-    # Prompt Unificado de Intención y Extracción Semántica (IA-Driven)
-    field_type = "EMAIL" if current_state == "esperando_correo" else \
-                 "BOOLEAN (Si/No/No se)" if current_state in ("esperando_asegurado", "esperando_autorizacion") else \
-                 "NUMBER (1-5)" if current_state.startswith("esperando_p") else \
-                 "NUMBER (1-10)" if current_state == "esperando_nps" else \
-                 "TEXT (Comentario)"
-    
-    intent_prompt = f"""Analiza la respuesta del usuario a la pregunta: "{FORM_QUESTIONS.get(current_state, '')}".
-    
-    Categoriza la intención:
-    - ANSWER: El usuario responde (aunque incluya texto extra, símbolos, errores ortográficos como 's1', 'chi', 't1p0' o frases amables).
-    - WHY: El usuario pregunta el motivo o para qué sirve la pregunta.
-    - SKIP: El usuario indica explícitamente que no quiere participar o saltar (ej: "paso", "no quiero", "saltar ahora").
-    - INTERRUPT: El usuario cambia de tema radicalmente pidiendo ayuda de otra cosa.
+    # ─── Extracción (fast-path + fallback IA) ───
+    extractor = SurveyResponseExtractor(openai_client, openai_model)
+    result_data = await extractor.extract(current_state, user_text)
 
-    Si es ANSWER, extrae el valor puro en formato {field_type}. 
-    - EMAIL: Extrae solo la dirección limpia (ej: "ok, x@y.com" -> x@y.com).
-    - BOOLEAN: Responde SOLO 'Si', 'No' o 'No se'. ("no todo bien" es ANSWER/Si, no es SKIP).
-    - NUMBER: Responde SOLO el dígito numérico.
-    - TEXT: Limpia símbolos innecesarios pero mantén el sentimiento original.
-
-    Responde en formato JSON:
-    {{"intent": "CATEGORIA", "value": "VALOR_EXTRAIDO"}}
-    
-    USUARIO: "{user_text}" """
-
-    try:
-        resp = await openai_client.chat.completions.create(
-            model=openai_model,
-            messages=[{"role": "system", "content": "Analista de encuestas experto en lenguaje natural y errores ortográficos."},
-                      {"role": "user", "content": intent_prompt}],
-            response_format={"type": "json_object"},
-            temperature=0
-        )
-        data = json.loads(resp.choices[0].message.content)
-        intent = data.get("intent", "ANSWER").upper()
-        extracted_value = data.get("value")
-    except Exception as e:
-        logger.error(f"Error en extracción semántica: {e}")
-        intent = "ANSWER"
-        extracted_value = user_text 
+    intent = result_data.get("intent", "ANSWER").upper()
+    extracted_value = result_data.get("value")
 
     logger.info("advance_closing: intent=%s, extracted=%s for user=%s", intent, extracted_value, state.usuario_id)
 
-    if "INTERRUPT" in intent and len(vl) > 15:
-        state.mode = "active_chat"
-        return None
-
-    # Detectar cancelación global (solo palabras extremas)
-    cancel_words = ["cancelar todo", "detener bot", "salir de todo", "stop survey"]
-    if any(w in vl for w in cancel_words) and len(vl) < 30:
+    # Cancelación total
+    if intent == "CANCEL":
         state.mode = "active_chat"
         state.awaiting_question_code = None
         return "¡Entendido! Lo dejamos por ahora. Si tienes alguna duda, estaré por aquí. 🍏"
 
-    # Obtener el progreso para validaciones y persuasiones
+    # Interrupción (cambio de tema)
+    if intent == "INTERRUPT":
+        state.mode = "active_chat"
+        return None
+
+    # ─── Obtener progreso del formulario ───
     result = await session.execute(
         text("SELECT id, formulario_id, respuestas_parciales, uso_audio, uso_imagen FROM formulario_en_progreso WHERE usuario_id = :uid"),
         {"uid": state.usuario_id},
@@ -331,85 +408,74 @@ async def _process_form_response(
     parciales = progress.respuestas_parciales or {}
     field_key = current_state.replace("esperando_", "")
 
-    if intent == "WHY" or intent == "SKIP":
+    # ─── WHY / SKIP → Persuasión ───
+    if intent in ("WHY", "SKIP"):
         persuasion_key = f"{field_key}_persuaded"
 
         if not parciales.get(persuasion_key):
-            # Aún no persuadimos, intentarlo UNA SOLA VEZ
             parciales[persuasion_key] = True
             await session.execute(
                 text("UPDATE formulario_en_progreso SET respuestas_parciales = :p WHERE usuario_id = :uid"),
-                {"p": json.dumps(parciales), "uid": state.usuario_id}
+                {"p": json.dumps(parciales), "uid": state.usuario_id},
             )
+            return PERSUASION_MESSAGES.get(current_state, PERSUASION_DEFAULT)
 
-            if current_state == "esperando_correo":
-                return "Es para avisarte sobre campañas de salud, jornadas de nutrición cerca de ti y consejos exclusivos para tu perfil nutricional. ¡Es súper útil! ✉️ ¿Te animas a compartirlo?"
-            elif current_state == "esperando_asegurado":
-                return "Saber si eres asegurado nos ayuda a darte información sobre servicios específicos de salud preventiva en EsSalud 🏥. ¿Te gustaría comentarlo?"
-            else:
-                return "Entiendo, pero tus respuestas son vitales para mejorar este servicio para todos. 🌟 ¿Te gustaría darnos este dato?"
-        
-        # Ya persuadido -> saltar bloque si es identidad o seguir
+        # Ya persuadido → saltar bloque identidad
         if current_state in ("esperando_correo", "esperando_asegurado"):
             next_state = "esperando_p1"
             await session.execute(
                 text("UPDATE formulario_en_progreso SET estado_actual = :next WHERE usuario_id = :uid"),
-                {"next": next_state, "uid": state.usuario_id}
+                {"next": next_state, "uid": state.usuario_id},
             )
             state.awaiting_question_code = next_state
             return f"Entiendo, no te preocupes. 😊 ¿Me podrías ayudar al menos a mejorar NutriBot con unas preguntitas rápidas sobre tu experiencia? Me ayudará mucho a darte un mejor servicio.\n\n{FORM_QUESTIONS[next_state]}"
-        
+
         cleaned_value = None
     else:
-        # Es ANSWER -> usar el valor extraído por el LLM
+        # ─── ANSWER → usar valor extraído ───
         cleaned_value = extracted_value
 
-        # Validación final básica (sanity check)
+        # Sanity checks finales
         if current_state == "esperando_correo" and ("@" not in str(cleaned_value) or "." not in str(cleaned_value)):
-             return "Hmm, ese correo no parece válido 🤔 ¿Podrías revisarlo? Ejemplo: tunombre@gmail.com"
-        
-        if (current_state.startswith("esperando_p") or current_state == "esperando_nps") and not str(cleaned_value).isdigit():
-             return f"¡Muchas gracias por tu comentario! 😊 Pero para poder registrar tu experiencia, ¿me podrías dar un número del 1 al {'10' if current_state == 'esperando_nps' else '5'}?"
+            return "Hmm, ese correo no parece válido 🤔 ¿Podrías revisarlo? Ejemplo: tunombre@gmail.com"
 
-    # Guardar respuesta exitosa (sea valor real o salto)
-    field_key = current_state.replace("esperando_", "")
+        if (current_state.startswith("esperando_p") or current_state == "esperando_nps") and not str(cleaned_value).isdigit():
+            max_val = "10" if current_state == "esperando_nps" else "5"
+            return f"¡Muchas gracias por tu comentario! 😊 Pero para poder registrar tu experiencia, ¿me podrías dar un número del 1 al {max_val}?"
+
+    # ─── Guardar respuesta ───
     if cleaned_value is not None:
         parciales[field_key] = cleaned_value
 
-    # Avanzar al siguiente estado
+    # ─── Avanzar al siguiente estado ───
     current_idx = FORM_STATES_ORDER.index(current_state)
     next_state = None
     media_addon = ""
 
     for i in range(current_idx + 1, len(FORM_STATES_ORDER)):
         candidate = FORM_STATES_ORDER[i]
-        # Si candidato es p8 (audio) y no lo usó -> sugerir y saltar
         if candidate == "esperando_p8" and not progress.uso_audio:
-            media_addon += "\n\n🎙️ **PD:** Veo que aún no hemos probado enviarnos audios. ¡Es súper práctico para consultas largas! Si gustas, puedes probarlo en nuestra próxima charla. 😊"
+            media_addon += "\n\n🎙️ *PD:* Veo que aún no hemos probado enviarnos audios. ¡Es súper práctico para consultas largas! Si gustas, puedes probarlo en nuestra próxima charla. 😊"
             continue
-        # Si candidato es p9 (imagen) y no lo usó -> sugerir y saltar
         if candidate == "esperando_p9" and not progress.uso_imagen:
-            media_addon += "\n\n📸 **PD:** Por cierto, ¿viste que puedes enviarme fotos de tu comida? Me ayuda mucho a darte consejos más visuales. ¡Anímate a probarlo pronto! 🥦"
+            media_addon += "\n\n📸 *PD:* Por cierto, ¿viste que puedes enviarme fotos de tu comida? Me ayuda mucho a darte consejos más visuales. ¡Anímate a probarlo pronto! 🥦"
             continue
-            
         next_state = candidate
         break
 
     if next_state is None:
-        # Recuperar teléfono del usuario desde la DB directamente
+        # ─── Formulario completado ───
         user_phone = (await session.execute(
             text("SELECT numero_whatsapp FROM usuarios WHERE id = :uid"),
-            {"uid": state.usuario_id}
+            {"uid": state.usuario_id},
         )).scalar()
 
-        # Formulario completado
-        # REGLA: Solo mover a la tabla final si tenemos datos ESENCIALES
         has_essential = all([
             parciales.get("correo") and "@" in parciales.get("correo"),
             parciales.get("edad"),
-            parciales.get("asegurado")
+            parciales.get("asegurado"),
         ])
-        
+
         if has_essential:
             await session.execute(
                 text("""
@@ -423,7 +489,6 @@ async def _process_form_response(
                 {"uid": state.usuario_id, "parciales": json.dumps(parciales), "now": get_now_peru()},
             )
 
-            # Guardar respuestas finales
             await session.execute(
                 text("""
                     INSERT INTO respuestas_formulario
@@ -448,7 +513,6 @@ async def _process_form_response(
             state.awaiting_question_code = None
             return "🎉 ¡Listo, muchas gracias por completar la encuesta! Tus respuestas nos ayudan mucho a mejorar NutriBot. ¡Que tengas un excelente día! 💪🥦"
         else:
-            # No tiene esenciales -> Quedarse en 'parcial' y no mover a respuestas final
             await session.execute(
                 text("""
                     UPDATE formulario_en_progreso
@@ -463,7 +527,7 @@ async def _process_form_response(
             state.awaiting_question_code = None
             return "¡Muchas gracias por tus respuestas! 😊 He guardado tus comentarios para seguir mejorando. En nuestra próxima charla, si gustas, terminaremos de completar un par de datitos que nos faltan. ¡Un abrazo! ✨"
 
-    # Avanzar estado
+    # ─── Avanzar estado ───
     await session.execute(
         text("""
             UPDATE formulario_en_progreso

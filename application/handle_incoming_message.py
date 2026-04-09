@@ -29,6 +29,7 @@ from application.advance_closing_flow import advance_closing_flow
 from application.advance_onboarding_flow import advance_onboarding_flow
 from domain.value_objects import OnboardingStatus, OnboardingStep
 from domain.utils import get_now_peru
+from application.sync_profile_processor import process_profile_sync
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +198,23 @@ async def _process_single_message(
         p = result.fetchone()
         if p:
             parts = []
-            if p.edad: parts.append(f"Edad: {p.edad}")
+            if p.edad: parts.append(f"Edad: {p.edad} años")
             if p.peso_kg: parts.append(f"Peso: {p.peso_kg}kg")
             if p.altura_cm: parts.append(f"Talla: {p.altura_cm}cm")
-            if p.alergias: parts.append(f"Alergias/Intolerancias: {p.alergias}")
-            if p.enfermedades: parts.append(f"Condiciones: {p.enfermedades}")
+            if p.tipo_dieta and p.tipo_dieta.upper() != "NINGUNA": parts.append(f"Tipo de dieta: {p.tipo_dieta}")
+            if p.alergias and p.alergias.upper() != "NINGUNA": parts.append(f"Alergias/Intolerancias: {p.alergias}")
+            if p.enfermedades and p.enfermedades.upper() not in ("NINGUNA", "NULL", ""): parts.append(f"Condiciones: {p.enfermedades}")
+            if p.restricciones_alimentarias: parts.append(f"Restricciones: {p.restricciones_alimentarias}")
             if p.objetivo_nutricional: parts.append(f"Objetivo: {p.objetivo_nutricional}")
+            if p.region: parts.append(f"Región: {p.region}")
+            if p.distrito: parts.append(f"Distrito: {p.distrito}")
             if parts:
                 profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
+                logger.info("Perfil inyectado para user=%s: %s", user.id, profile_text)
+            else:
+                logger.info("Perfil vacío para user=%s", user.id)
+        else:
+            logger.info("Sin perfil registrado para user=%s", user.id)
 
     # ─── Pre-compute text analysis (before transaction) ───
     reply = None
@@ -242,15 +252,41 @@ async def _process_single_message(
             # ─── Decidir onboarding DENTRO de la transacción con estado fresco ───
             onboarding_interception_happened = False
 
-            logger.debug(
-                "TX state: user=%s, onboarding_status=%s, step=%s, version=%s",
-                state.usuario_id, state.onboarding_status, state.onboarding_step, state.version
+            # --- NUEVA CAPA: Extracción Síncrona Universal ---
+            # Extraemos datos AHORA para usarlos en este turno y que queden guardados
+            extracted_data = await process_profile_sync(
+                normalized.text, user.id, session, openai_client, openai_model
             )
+            if extracted_data:
+                logger.info("Sync extraction update: %s", extracted_data)
+                # Refrescamos profile_text para que el LLM tenga los datos recien guardados
+                res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
+                p = res_p.mappings().fetchone()
+                if p:
+                    parts = []
+                    if p.get("edad"): parts.append(f"Edad: {p['edad']} años")
+                    if p.get("peso_kg"): parts.append(f"Peso: {p['peso_kg']}kg")
+                    if p.get("altura_cm"): parts.append(f"Talla: {p['altura_cm']}cm")
+                    if p.get("tipo_dieta") and p.get("tipo_dieta").upper() != "NINGUNA": parts.append(f"Tipo de dieta: {p['tipo_dieta']}")
+                    if p.get("alergias") and p.get("alergias").upper() != "NINGUNA": parts.append(f"Alergias/Intolerancias: {p['alergias']}")
+                    if p.get("enfermedades") and p.get("enfermedades").upper() not in ("NINGUNA", "NULL", ""): parts.append(f"Condiciones: {p['enfermedades']}")
+                    if p.get("restricciones_alimentarias"): parts.append(f"Restricciones: {p['restricciones_alimentarias']}")
+                    if p.get("objetivo_nutricional"): parts.append(f"Objetivo: {p['objetivo_nutricional']}")
+                    if p.get("region"): parts.append(f"Región: {p['region']}")
+                    if p.get("distrito"): parts.append(f"Distrito: {p['distrito']}")
+                    if parts:
+                        profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
+                        logger.info("Contexto de perfil REFRESCO para user=%s", user.id)
 
             # --- Detección de Frustración / Pedido Directo ---
             is_annoyed = any(w in v_text for w in ["ya te dije", "deja de preguntar", "no me preguntes", "qué molesto", "que molesto", "responde", "dame el menú", "dame el menu", "solo quiero"])
             if is_annoyed:
                 logger.info("Frustration detected for user=%s, bypassing onboarding interception this turn", state.usuario_id)
+
+            logger.debug(
+                "TX state: user=%s, onboarding_status=%s, step=%s, version=%s",
+                state.usuario_id, state.onboarding_status, state.onboarding_step, state.version
+            )
 
             # Caso A: Ya está en el flujo de onboarding
             if not is_annoyed and state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
@@ -355,6 +391,7 @@ async def _process_single_message(
                     normalized=normalized,
                     instructions=SYSTEM_INSTRUCTIONS + profile_text,
                     rag_context=rag_text,
+                    profile_context=profile_text if profile_text else None,
                 )
 
                 # Post-LLM Hook: proponer onboarding si elegible
@@ -374,7 +411,19 @@ async def _process_single_message(
                         state.onboarding_last_invited_at = get_now_peru()
                         state.version += 1
 
-            # Encolar extracción de perfil
+            # ─── Registrar uso de medios (audio/imagen) ───
+            if normalized.used_audio:
+                await session.execute(
+                    text("UPDATE formulario_en_progreso SET uso_audio = TRUE WHERE usuario_id = :uid"),
+                    {"uid": user.id},
+                )
+            if normalized.image_base64:
+                await session.execute(
+                    text("UPDATE formulario_en_progreso SET uso_imagen = TRUE WHERE usuario_id = :uid"),
+                    {"uid": user.id},
+                )
+
+            # El Job de extracción se mantiene como backup/log, pero el síncrono ya hizo el trabajo pesado
             await session.execute(
                 text("INSERT INTO extraction_jobs (usuario_id, raw_text) VALUES (:uid, :txt)"),
                 {"uid": user.id, "txt": normalized.text},

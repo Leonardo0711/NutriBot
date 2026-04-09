@@ -31,6 +31,7 @@ class OpenAIResponsesAdapter(LLMService):
         normalized: NormalizedMessage,
         instructions: str,
         rag_context: Optional[str] = None,
+        profile_context: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Genera una respuesta del LLM.
@@ -38,14 +39,14 @@ class OpenAIResponsesAdapter(LLMService):
         - CRÍTICO: Reenvía el bloque completo de instructions maestras en CADA solicitud.
           previous_response_id NO hereda las directivas del sistema de turnos anteriores.
         - Encadena turnos usando previous_response_id para mantener contexto.
-        - Inyecta contexto RAG como parte del input si corresponde.
+        - Inyecta contexto RAG y perfil como parte del input si corresponde.
 
         Returns:
             (reply_text, new_response_id)
         """
         try:
             # Construir el input del usuario
-            user_input = self._build_user_input(normalized, rag_context)
+            user_input = self._build_user_input(normalized, rag_context, profile_context)
 
             # Construir los parámetros de la solicitud
             params = {
@@ -77,13 +78,23 @@ class OpenAIResponsesAdapter(LLMService):
             raise
 
     def _build_user_input(
-        self, normalized: NormalizedMessage, rag_context: Optional[str]
+        self,
+        normalized: NormalizedMessage,
+        rag_context: Optional[str],
+        profile_context: Optional[str] = None,
     ) -> list[dict]:
         """
         Construye el array de input para la Responses API.
-        Soporta texto plano e imágenes (Vision).
+        Soporta texto plano, imágenes (Vision), RAG y perfil del usuario.
         """
         parts: list[dict] = []
+
+        # Perfil del usuario (SIEMPRE visible para el LLM)
+        if profile_context:
+            parts.append({
+                "role": "user",
+                "content": profile_context,
+            })
 
         # Contexto RAG si hay
         if rag_context:
