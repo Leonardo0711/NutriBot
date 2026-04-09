@@ -1,6 +1,6 @@
 """
 Nutribot Backend — Main Application
-FastAPI con lifespan para arrancar/detener workers de background.
+FastAPI con lifespan para arrancar/detener workers de background usando OOP.
 """
 from __future__ import annotations
 
@@ -10,13 +10,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from config import get_settings
 from infrastructure.db.connection import dispose_engine
-from infrastructure.workers.sweepers import sweep_zombies
 from interface.webhook_controller import router as webhook_router
-from application.handle_incoming_message import process_inbox
-from application.deliver_reply import deliver_pending_messages
-from application.extract_profile import process_extractions
+from di import container
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,8 +39,8 @@ async def lifespan(app: FastAPI):
     """
     Lifespan: arranca workers de background al iniciar y los detiene al cerrar.
     """
-    settings = get_settings()
-    logger.info("Nutribot Backend iniciando...")
+    settings = container.settings
+    logger.info("Nutribot Backend iniciando (OOP Refactor)...")
     logger.info("Workers: inbox=%.1fs, outbox=%.1fs, extraction=%.1fs, sweeper=%.1fs",
                 settings.inbox_poll_interval_seconds,
                 settings.outbox_poll_interval_seconds,
@@ -56,28 +52,28 @@ async def lifespan(app: FastAPI):
     # Sweeper de zombies
     tasks.append(
         asyncio.create_task(
-            _periodic_task(sweep_zombies, settings.sweeper_interval_seconds, "sweeper")
+            _periodic_task(container.sweeper_worker.sweep_zombies, settings.sweeper_interval_seconds, "sweeper")
         )
     )
 
     # Worker: Inbox (procesa webhooks pendientes)
     tasks.append(
         asyncio.create_task(
-            _periodic_task(process_inbox, settings.inbox_poll_interval_seconds, "inbox")
+            _periodic_task(container.inbox_worker.process_inbox, settings.inbox_poll_interval_seconds, "inbox")
         )
     )
 
     # Worker: Outbox (envía respuestas + TTS)
     tasks.append(
         asyncio.create_task(
-            _periodic_task(deliver_pending_messages, settings.outbox_poll_interval_seconds, "outbox")
+            _periodic_task(container.outbox_worker.deliver_pending_messages, settings.outbox_poll_interval_seconds, "outbox")
         )
     )
 
     # Worker: Extraction (extrae perfil en background)
     tasks.append(
         asyncio.create_task(
-            _periodic_task(process_extractions, settings.extraction_poll_interval_seconds, "extraction")
+            _periodic_task(container.extraction_worker.process_extractions, settings.extraction_poll_interval_seconds, "extraction")
         )
     )
 
@@ -101,7 +97,7 @@ async def lifespan(app: FastAPI):
 # ──────────────────────────────────────────────
 app = FastAPI(
     title="Nutribot Backend",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -110,4 +106,4 @@ app.include_router(webhook_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "2.1.0", "refactor": "oop"}

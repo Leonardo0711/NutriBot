@@ -40,6 +40,7 @@ class ConversationState:
     reply_resolved_something: bool = False
     profile_completion_pct: int = 0
     usability_completion_pct: int = 0
+    meaningful_interactions_count: int = 0
     last_openai_response_id: Optional[str] = None
     onboarding_status: str = "not_started"
     onboarding_step: Optional[str] = None

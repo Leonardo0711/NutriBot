@@ -38,6 +38,16 @@ def parse_height(val: str) -> Optional[float]:
             return round((ft * 30.48) + (inches * 2.54), 2)
         except (ValueError, TypeError): pass
     
+    # Soporte para "1 con 70", "1 con 7" (Muy común en Perú)
+    con_match = re.search(r"(\d+)\s+con\s+(\d+)", v)
+    if con_match:
+        try:
+            m = int(con_match.group(1))
+            cm = int(con_match.group(2))
+            if cm < 10: cm = cm * 10 
+            return float(m * 100 + cm)
+        except: pass
+
     # Formato estándar: "1.70 m", "170 cm", "170"
     match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(cm|m|metro)?", v)
     if not match: return None
