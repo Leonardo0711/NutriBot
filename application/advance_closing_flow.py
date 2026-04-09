@@ -279,7 +279,17 @@ async def advance_closing_flow(
             score, state.usuario_id, state.turns_since_last_prompt,
         )
 
-        if score >= 60:
+        if score >= 75:  # Más estricto para no interrumpir
+            # --- GUARDIA DE SOLAPAMIENTO ---
+            # Si el usuario acaba de terminar o actualizar su perfil (vía Onboarding), 
+            # no le lanzamos la encuesta inmediatamente para no saturar.
+            from domain.utils import get_now_peru
+            now = get_now_peru()
+            diff = now - state.onboarding_updated_at
+            if diff.total_seconds() < 300: # 5 minutos de enfriamiento
+                logger.info("ClosingFlow: Cooldown active (last onboarding update was %ds ago). Skipping survey.", diff.total_seconds())
+                return None
+
             # Intentar iniciar formulario
             addon = await _try_start_form(session, state)
             return addon
@@ -516,7 +526,7 @@ async def _process_form_response(
             await session.execute(
                 text("""
                     UPDATE formulario_en_progreso
-                    SET estado_actual = 'parcialmente_completado',
+                    SET estado_actual = 'completado',
                         respuestas_parciales = :parciales,
                         actualizado_en = :now
                     WHERE usuario_id = :uid

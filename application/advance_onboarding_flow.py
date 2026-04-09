@@ -31,8 +31,10 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
     OnboardingStep.TIPO_DIETA.value: "¿Sigues algún tipo de dieta especial? (Ej: Vegana, Keto, Sin gluten, o ninguna) 🥗",
     OnboardingStep.ALERGIAS.value: "¿Tienes alguna alergia o intolerancia alimentaria? 🍎",
     OnboardingStep.ENFERMEDADES.value: "¿Padeces alguna condición de salud relevante? (Ej: Diabetes, Hipertensión) 🏥",
+    OnboardingStep.RESTRICCIONES.value: "¿Tienes alguna **restricción alimentaria** por religión, ética o gusto personal? (Ej: No como cerdo, no como carnes rojas, no me gusta el brócoli...) 🚫",
     OnboardingStep.OBJETIVO.value: "¿Cuál es tu principal objetivo nutricional? (Ej. comer más sano, bajar de peso, subir masa muscular, controlar mi azúcar...) 🎯",
-    OnboardingStep.REGION.value: "Por último, ¿en qué región y provincia de Perú te encuentras? (Esto es para avisarte de campañas de salud cerca de ti) 📍"
+    OnboardingStep.PROVINCIA.value: "¿En qué **provincia** de Perú te encuentras? 😊",
+    OnboardingStep.DISTRITO.value: "¿Y en qué **distrito** vives? (Para recomendaciones locales) 🏠"
 }
 
 
@@ -106,7 +108,8 @@ async def advance_onboarding_flow(
     session: AsyncSession,
     openai_client: AsyncOpenAI,
     openai_model: str,
-    current_profile: Optional[dict] = None
+    current_profile: Optional[dict] = None,
+    treat_ninguna_as_missing: bool = False
 ) -> Optional[str]:
     """
     Controla la máquina de estados del onboarding opcional usando LLM para extracción robusta.
@@ -208,6 +211,14 @@ async def advance_onboarding_flow(
         )
         is_interruption = "INTERRUPTION" in int_resp.choices[0].message.content.strip().upper()
 
+    # BYPASS CRÍTICO: Si el usuario está pidiendo una recomendación/menú clara,
+    # pausamos el onboarding y NO llamamos al extractor para no sobreescribir datos por error.
+    is_rec_intent = any(w in vl for w in ["menu", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación"])
+    if is_rec_intent:
+        logger.info("advance_onboarding: recommendation intent detected, bypassing extraction to protect data.")
+        _set_onboarding_state(state, OnboardingStatus.PAUSED, state.onboarding_step)
+        return None
+
     if is_interruption and not any(w in vl for w in ["saltar", "paso", "no"]):
         # Abandono natural a mitad del formulario: pausamos
         logger.info("advance_onboarding: interruption detected for user=%s, pausing", state.usuario_id)
@@ -219,107 +230,68 @@ async def advance_onboarding_flow(
         logger.warning("advance_onboarding: no current_step for user=%s, returning None", state.usuario_id)
         return None
 
-    # Extracción robusta para campos numéricos
-    cleaned_value = None
-    err_msg = None
-    
-    if current_step in [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value]:
-        # 1. Intento de extracción rápida por Regex (usando parsers centralizados)
-        if current_step == OnboardingStep.EDAD.value:
-            cleaned_value = parse_age(vl)
-        elif current_step == OnboardingStep.PESO.value:
-            cleaned_value = parse_weight(vl)
-        elif current_step == OnboardingStep.ALTURA.value:
-            cleaned_value = parse_height(vl)
+    # 2. Extracción Multi-campo (Usando la lógica central del SyncProfileProcessor)
+    # Esto permite que si el usuario dice "no enfermedades pero sí alergia al maní", se guarden ambos correctamente.
+    from application.sync_profile_processor import process_profile_sync
+    extracted = await process_profile_sync(
+        user_text, state.usuario_id, session, openai_client, openai_model,
+        current_step=current_step
+    )
+    logger.info("advance_onboarding: multi-intent extraction results: %s", extracted)
 
-        # Si el parser devolvió un número, lo pasamos a string para el resto del flujo
-        if cleaned_value is not None:
-            cleaned_value = str(cleaned_value)
+    # Si no se extrajo nada y no es un "no/saltar", pedimos aclaración
+    if not extracted and not ("saltar" in vl or "paso" in vl or "omitir" in vl or "no" in vl):
+         return f"No logré captar ese dato para tu perfil. ¿Podrías decírmelo de forma más clara? 😊"
 
-        # 2. Si falló el regex, usar LLM para lenguaje natural ("pesos setenta kg", etc.)
-        if cleaned_value is None:
-            extractions = {
-                OnboardingStep.EDAD.value: "Extract age as integer. Ignore typos, punctuation or extra characters (e.g. '90}' -> 90). Return only number or 'NONE'.",
-                OnboardingStep.PESO.value: "Extract weight. Target kg. Handle 'quilos', 'kilos', 'lib', 'lbs'. If lbs, convert to kg (1 lb = 0.45kg). Ignore noise like braces or typos. Return only number or 'NONE'.",
-                OnboardingStep.ALTURA.value: "Extract height. Target cm. Handle 'mts', 'metros', 'cms', 'centimetros', 'ft', 'in'. Ignore noise. Return only number or 'NONE'."
-            }
-            
-            extract_resp = await openai_client.chat.completions.create(
-                model=openai_model,
-                messages=[{"role": "system", "content": extractions[current_step]},
-                          {"role": "user", "content": user_text}],
-                max_tokens=10,
-                temperature=0
-            )
-            val_str = extract_resp.choices[0].message.content.strip()
-            logger.info("advance_onboarding: LLM extraction for %s: '%s' → '%s'", current_step, user_text[:30], val_str)
-            
-            if val_str.upper() != "NONE":
-                try:
-                    # Validamos rangos básicos
-                    f_val = float(re.sub(r"[^\d\.]", "", val_str))
-                    if current_step == OnboardingStep.EDAD.value and 5 <= f_val <= 120:
-                        cleaned_value = str(int(f_val))
-                    elif current_step == OnboardingStep.PESO.value and 20 <= f_val <= 400:
-                        cleaned_value = str(round(f_val, 2))
-                    elif current_step == OnboardingStep.ALTURA.value and 40 <= f_val <= 250:
-                        cleaned_value = str(round(f_val, 2))
-                except Exception:
-                    logger.warning("advance_onboarding: failed to parse LLM value '%s'", val_str)
-
-        if cleaned_value is None:
-            # Solo si no es opcional o no dijo "saltar"
-            if "saltar" in vl or "paso" in vl or "omitir" in vl or "no" in vl:
-                cleaned_value = None # Se guarda NULL
-            else:
-                return f"No logré captar ese dato (intenté extraer {current_step}). ¿Podrías decírmelo de forma más clara? 😊"
-
-    else:
-        # Texto libre (Alergias, etc.) - ESTANDARIZACIÓN CON PARSER UNIVERSAL
-        cleaned_value = standardize_text_list(user_text)
-
-    # Guardar
-    # Guardar
-    if cleaned_value is not None:
-        await _save_profile_field(session, state.usuario_id, current_step, cleaned_value)
-        logger.info("advance_onboarding: saved %s=%s for user=%s", current_step, cleaned_value, state.usuario_id)
-    elif "saltar" in vl or "paso" in vl or "omitir" in vl or "luego" in vl or "siguiente" in vl:
-        # Omisión explícita
+    # Si el usuario dijo explícitamente "saltar" o similar para el paso actual y no hubo extracción
+    if not extracted and ("saltar" in vl or "paso" in vl or "omitir" in vl or "luego" in vl or "siguiente" in vl):
         await _mark_field_as_skipped(session, state.usuario_id, current_step)
         logger.info("advance_onboarding: marked %s as skipped for user=%s", current_step, state.usuario_id)
-    elif "no" in vl and len(vl) < 10:
-        # Un "no" corto suele ser omisión o "no tengo" dependiendo del campo
-        if current_step in [OnboardingStep.ALERGIAS.value, OnboardingStep.ENFERMEDADES.value, OnboardingStep.TIPO_DIETA.value]:
-            # En estos campos "no" suele significar "ninguna"
-            await _save_profile_field(session, state.usuario_id, current_step, "NINGUNA")
-        else:
-            # En edad/peso/talla un "no" es omisión
-            await _mark_field_as_skipped(session, state.usuario_id, current_step)
 
-    # Avanzar al siguiente paso REALMENTE vacío (FORZAMOS RE-CONSULTA)
-    next_step = await _find_next_missing_step(session, state.usuario_id)
+    # Avanzar al siguiente paso REALMENTE vacío (LINEALIDAD ESTRICTA + MEMORIA DE TURNO)
+    # Ignoramos los campos que el usuario YA mencionó en este mensaje (extracted.keys())
+    # Esto evita preguntar "¿Tienes restricciones?" justo después de que el usuario dijo "no tengo restricciones"
+    updated_cols = list(extracted.keys()) if extracted else []
+    
+    current_idx = -1
+    for i, s in enumerate(ONBOARDING_STEPS_ORDER):
+        if s.value == current_step:
+            current_idx = i
+            break
+            
+    next_step = await _find_next_missing_step(
+        session, 
+        state.usuario_id, 
+        treat_ninguna_as_missing=treat_ninguna_as_missing, 
+        start_from_idx=current_idx + 1,
+        ignore_cols=updated_cols
+    )
     logger.info("advance_onboarding: after save, next_missing_step=%s for user=%s", next_step, state.usuario_id)
 
     if next_step:
         _set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
         
-        # Obtener resumen de lo que ya sabemos para confirmar
-        res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
-        p = res_p.mappings().fetchone() or {}
+        # Respuesta conversacional basada en si hubo extracciones previas
+        if updated_cols:
+            transition = "¡Perfecto! Ya anoté esos detalles. ✍️"
+            if len(updated_cols) == 1 and updated_cols[0] == "region":
+                transition = "¡Qué bueno! Me encanta esa zona. 📍"
+            
+            return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         
-        summary_parts = []
-        if p.get("edad"): summary_parts.append(f"Edad: {p['edad']}")
-        if p.get("peso_kg"): summary_parts.append(f"Peso: {p['peso_kg']}kg")
-        if p.get("altura_cm"): summary_parts.append(f"Talla: {p['altura_cm']}cm")
-        
-        question = ONBOARDING_QUESTIONS[next_step]
-        if summary_parts:
-            # Solo mencionamos si ya hay algo guardado
-            confirmation = " (Tengo registrado: " + ", ".join(summary_parts) + ")"
-            return f"¡Entendido!{confirmation}. Ahora, {question[0].lower() + question[1:]}"
-        
-        return question
+        # Si no hubo extracción nueva pero avanzamos
+        return f"Entendido. 😊 Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
     else:
+        # VALIDACIÓN FINAL: Antes de cerrar, aseguramos que Provincia y Distrito estén REALMENTE en la DB
+        res_final = await session.execute(text("SELECT provincia, distrito FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
+        p_final = res_final.fetchone()
+        if p_final and (not p_final.provincia or not p_final.distrito):
+            # Forzamos que falten
+            force_step = OnboardingStep.PROVINCIA.value if not p_final.provincia else OnboardingStep.DISTRITO.value
+            _set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, force_step)
+            logger.warning("Final guard: found missing location for user=%s, force-prompting %s", state.usuario_id, force_step)
+            return f"¡Casi terminamos! 🎯 Solo un pequeño detalle final: {ONBOARDING_QUESTIONS[force_step].lower()}"
+
         _set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
         return "¡Excelente, perfil completado! 🎯 Muchas gracias por tu tiempo. Esto me ayudará a darte recomendaciones mucho más precisas. ¿En qué más puedo ayudarte hoy?"
 
@@ -331,11 +303,14 @@ async def _save_profile_field(session: AsyncSession, uid: int, field: str, value
         OnboardingStep.EDAD.value: "edad",
         OnboardingStep.ALERGIAS.value: "alergias",
         OnboardingStep.ENFERMEDADES.value: "enfermedades",
+        OnboardingStep.RESTRICCIONES.value: "restricciones_alimentarias",
         OnboardingStep.TIPO_DIETA.value: "tipo_dieta",
         OnboardingStep.OBJETIVO.value: "objetivo_nutricional",
         OnboardingStep.PESO.value: "peso_kg",
         OnboardingStep.ALTURA.value: "altura_cm",
-        OnboardingStep.REGION.value: "region"
+        OnboardingStep.REGION.value: "region",
+        OnboardingStep.PROVINCIA.value: "provincia",
+        OnboardingStep.DISTRITO.value: "distrito"
     }
     
     db_col = col_map.get(field)
@@ -366,7 +341,7 @@ async def _save_profile_field(session: AsyncSession, uid: int, field: str, value
     )
 
 
-async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profile: Optional[dict] = None, ignore_skips: bool = False) -> Optional[str]:
+async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profile: Optional[dict] = None, ignore_skips: bool = False, treat_ninguna_as_missing: bool = False, skip_step: Optional[str] = None, start_from_idx: Optional[int] = None, ignore_cols: Optional[list[str]] = None) -> Optional[str]:
     """Busca el primer paso de la lista que no tiene valor en el perfil. Siempre consulta DB si no se pasa cache."""
     p = cached_profile
     if p is None:
@@ -386,17 +361,29 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
         OnboardingStep.EDAD.value: "edad",
         OnboardingStep.ALERGIAS.value: "alergias",
         OnboardingStep.ENFERMEDADES.value: "enfermedades",
+        OnboardingStep.RESTRICCIONES.value: "restricciones_alimentarias",
         OnboardingStep.TIPO_DIETA.value: "tipo_dieta",
         OnboardingStep.OBJETIVO.value: "objetivo_nutricional",
         OnboardingStep.PESO.value: "peso_kg",
         OnboardingStep.ALTURA.value: "altura_cm",
-        OnboardingStep.REGION.value: "region"
+        OnboardingStep.REGION.value: "region",
+        OnboardingStep.PROVINCIA.value: "provincia",
+        OnboardingStep.DISTRITO.value: "distrito"
     }
 
     # Recorremos los pasos (saltando INVITACION que es el 0)
-    for step in ONBOARDING_STEPS_ORDER[1:]:
+    # start_from_idx permite asegurar linealidad
+    base_idx = start_from_idx if start_from_idx is not None else 1
+    for step in ONBOARDING_STEPS_ORDER[base_idx:]:
+        if skip_step and step.value == skip_step:
+            continue
+            
         col = col_map.get(step.value)
         if not col: continue
+
+        # IGNORAR si ya se mencionó/actualizó en este turno (Memoria de turno)
+        if ignore_cols and col in ignore_cols:
+            continue
         
         # Saltamos si el usuario ya decidió omitir este campo explícitamente, 
         # A MENOS que se haya pedido ignorar los skips (personalización manual).
@@ -404,8 +391,14 @@ async def _find_next_missing_step(session: AsyncSession, uid: int, cached_profil
             continue
 
         val = p.get(col)
-        # Consideramos vacío si es None o string vacío (o placeholder que no sea estandarizado)
-        if val is None or (isinstance(val, str) and len(val.strip()) == 0):
+        # Consideramos vacío si es None o string vacío
+        is_empty = val is None or (isinstance(val, str) and len(val.strip()) == 0)
+        
+        # Si se solicita explícitamente (onboarding manual), tratamos "NINGUNA" como algo a completar
+        if treat_ninguna_as_missing and isinstance(val, str) and val.upper() == "NINGUNA":
+            is_empty = True
+
+        if is_empty:
             logger.debug("_find_next_missing_step: user=%s, missing field %s (col=%s)", uid, step.value, col)
             return step.value
 

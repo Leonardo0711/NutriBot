@@ -57,11 +57,12 @@ QUÉ NO PUEDES HACER (REGLAS ABSOLUTAS E INQUEBRANTABLES):
 5. Si el usuario insiste en temas médicos graves, refiérelo siempre a EsSalud con calidez.
 
 DATOS DEL USUARIO (REGLA DE ORO):
-- Si el usuario te pide una RECOMENDACIÓN o MENÚ y tienes datos en el bloque [DATOS ACTUALES DEL PERFIL DEL USUARIO], debes EMPEZAR tu respuesta resumiendo los datos que vas a usar: "Considerando que tienes [Edad] años, pesas [Peso]kg, mides [Talla]cm y (solo si aplica) tienes alergia a [Alergia]...". 
-- Si no hay alergias o enfermedades relevantes (o dicen "NINGUNA"), NO las menciones.
-- Si NO tienes datos de peso o talla y te piden un menú, NO lo des completo aún. Explica que necesitas esos datos para calcular su IMC y ser preciso.
+- Si el usuario te pide una RECOMENDACIÓN o MENÚ y existen datos de peso, talla o edad en el bloque [DATOS ACTUALES DEL PERFIL DEL USUARIO], DEBES EMPEZAR tu respuesta citándolos: "Considerando que tienes [Edad] años, pesas [Peso]kg y mides [Talla]cm...". Si el dato dice "Pendiente", NO lo menciones.
+- SOLO menciona ALERGIAS, ENFERMEDADES o RESTRICCIONES si tienen un valor real (distinto a "Pendiente" o "Ninguna"). Si no hay nada relevante, ignóralos en tu respuesta para no ser repetitivo.
+- Si NO tienes datos de peso o talla y te piden un menú, NO lo des completo. Explica cálidamente que necesitas esos datos para calcular su IMC y darle porciones exactas.
+- REGLA DE PRIVACIDAD: No menciones datos que el usuario no te ha dado aún; di simplemente que con más datos serías más preciso.
 
-TONO: Breve, práctico, amigable, cálido y muy peruano. Máximo 3 oraciones por respuesta. 🍏✨💪🏾"""
+TONO: Breve (máx 3-4 oraciones), práctico, cálido y muy peruano. 🍏✨💪🏾"""
 
 
 async def process_inbox() -> int:
@@ -188,7 +189,7 @@ async def _process_single_message(
     # ─── Snapshot aislado del estado y perfil ───
     state_snapshot = await conv_repo.get_state_no_lock(user.id)
     
-    # Obtener perfil para inyectar al LLM
+    # Obtener perfil para inyectar al LLM (Versión Exhaustiva)
     profile_text = ""
     async with factory() as session:
         result = await session.execute(
@@ -196,25 +197,51 @@ async def _process_single_message(
             {"uid": user.id}
         )
         p = result.fetchone()
+        
+        # Función auxiliar para formatear valores vacíos o NINGUNA
+        def fmt(val, unit=""):
+            if val is None or (isinstance(val, str) and val.strip() == ""):
+                return "⚠️ Pendiente"
+            if isinstance(val, str) and val.upper() == "NINGUNA":
+                return "Ninguna ℹ️"
+            return f"{val}{unit}"
+
         if p:
-            parts = []
-            if p.edad: parts.append(f"Edad: {p.edad} años")
-            if p.peso_kg: parts.append(f"Peso: {p.peso_kg}kg")
-            if p.altura_cm: parts.append(f"Talla: {p.altura_cm}cm")
-            if p.tipo_dieta and p.tipo_dieta.upper() != "NINGUNA": parts.append(f"Tipo de dieta: {p.tipo_dieta}")
-            if p.alergias and p.alergias.upper() != "NINGUNA": parts.append(f"Alergias/Intolerancias: {p.alergias}")
-            if p.enfermedades and p.enfermedades.upper() not in ("NINGUNA", "NULL", ""): parts.append(f"Condiciones: {p.enfermedades}")
-            if p.restricciones_alimentarias: parts.append(f"Restricciones: {p.restricciones_alimentarias}")
-            if p.objetivo_nutricional: parts.append(f"Objetivo: {p.objetivo_nutricional}")
-            if p.region: parts.append(f"Región: {p.region}")
-            if p.distrito: parts.append(f"Distrito: {p.distrito}")
-            if parts:
-                profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
-                logger.info("Perfil inyectado para user=%s: %s", user.id, profile_text)
-            else:
-                logger.info("Perfil vacío para user=%s", user.id)
+            parts = [
+                f"Edad: {fmt(p.edad, ' años')}",
+                f"Peso: {fmt(p.peso_kg, 'kg')}",
+                f"Talla: {fmt(p.altura_cm, 'cm')}",
+                f"Tipo de dieta: {fmt(p.tipo_dieta)}",
+                f"Alergias: {fmt(p.alergias)}",
+                f"Enfermedades: {fmt(p.enfermedades)}",
+                f"Restricciones: {fmt(p.restricciones_alimentarias)}",
+                f"Objetivo: {fmt(p.objetivo_nutricional)}",
+                f"Ubicación: {fmt(p.distrito or p.provincia or p.region)}"
+            ]
+            profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
+            
+            # Formato humano para el resumen que ve el usuario
+            def human_fmt(val, unit=""):
+                if val is None or (isinstance(val, str) and val.strip() == ""):
+                    return "No registrado"
+                if isinstance(val, str) and val.upper() == "NINGUNA":
+                    return "Ninguna"
+                return f"{val}{unit}"
+            
+            user_friendly_summary = f"""• Edad: {human_fmt(p.edad, " años")}
+• Peso: {human_fmt(p.peso_kg, "kg")}
+• Talla: {human_fmt(p.altura_cm, "cm")}
+• Alergias: {human_fmt(p.alergias)}
+• Enfermedades: {human_fmt(p.enfermedades)}
+• Objetivo: {human_fmt(p.objetivo_nutricional)}"""
+            
+            logger.info("Perfil inyectado para user=%s: %s", user.id, profile_text)
         else:
-            logger.info("Sin perfil registrado para user=%s", user.id)
+            # Si no hay perfil
+            parts = [f"{label}: ⚠️ Pendiente" for label in ["Edad", "Peso", "Talla", "Tipo de dieta", "Alergias", "Enfermedades", "Restricciones", "Objetivo", "Región", "Provincia", "Distrito"]]
+            profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
+            user_friendly_summary = "Aún no tengo datos registrados sobre ti."
+            logger.info("Perfil vacío para user=%s", user.id)
 
     # ─── Pre-compute text analysis (before transaction) ───
     reply = None
@@ -252,30 +279,34 @@ async def _process_single_message(
             # ─── Decidir onboarding DENTRO de la transacción con estado fresco ───
             onboarding_interception_happened = False
 
-            # --- NUEVA CAPA: Extracción Síncrona Universal ---
-            # Extraemos datos AHORA para usarlos en este turno y que queden guardados
-            extracted_data = await process_profile_sync(
-                normalized.text, user.id, session, openai_client, openai_model
-            )
-            if extracted_data:
-                logger.info("Sync extraction update: %s", extracted_data)
-                # Refrescamos profile_text para que el LLM tenga los datos recien guardados
-                res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
-                p = res_p.mappings().fetchone()
-                if p:
-                    parts = []
-                    if p.get("edad"): parts.append(f"Edad: {p['edad']} años")
-                    if p.get("peso_kg"): parts.append(f"Peso: {p['peso_kg']}kg")
-                    if p.get("altura_cm"): parts.append(f"Talla: {p['altura_cm']}cm")
-                    if p.get("tipo_dieta") and p.get("tipo_dieta").upper() != "NINGUNA": parts.append(f"Tipo de dieta: {p['tipo_dieta']}")
-                    if p.get("alergias") and p.get("alergias").upper() != "NINGUNA": parts.append(f"Alergias/Intolerancias: {p['alergias']}")
-                    if p.get("enfermedades") and p.get("enfermedades").upper() not in ("NINGUNA", "NULL", ""): parts.append(f"Condiciones: {p['enfermedades']}")
-                    if p.get("restricciones_alimentarias"): parts.append(f"Restricciones: {p['restricciones_alimentarias']}")
-                    if p.get("objetivo_nutricional"): parts.append(f"Objetivo: {p['objetivo_nutricional']}")
-                    if p.get("region"): parts.append(f"Región: {p['region']}")
-                    if p.get("distrito"): parts.append(f"Distrito: {p['distrito']}")
-                    if parts:
-                        profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
+            # --- EXTRACCIÓN SÍNCRONA PROTEGIDA ---
+            # SOLO extraer datos si el usuario NO está pidiendo una recomendación ni saludando.
+            # Esto evita que el extractor borre datos existentes al procesar "dame un menú".
+            extracted_data = {}
+            is_profile_relevant_message = not is_asking_for_recommendation and not is_short_greeting
+            if is_profile_relevant_message:
+                extracted_data = await process_profile_sync(
+                    normalized.text, user.id, session, openai_client, openai_model,
+                    current_step=state.onboarding_step
+                )
+                if extracted_data:
+                    logger.info("Sync extraction update: %s", extracted_data)
+                    # Refrescamos profile_text para que el LLM tenga los datos recién guardados
+                    res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
+                    p_fresh = res_p.mappings().fetchone()
+                    if p_fresh:
+                        fresh_parts = [
+                            f"Edad: {fmt(p_fresh.get('edad'), ' años')}",
+                            f"Peso: {fmt(p_fresh.get('peso_kg'), 'kg')}",
+                            f"Talla: {fmt(p_fresh.get('altura_cm'), 'cm')}",
+                            f"Tipo de dieta: {fmt(p_fresh.get('tipo_dieta'))}",
+                            f"Alergias: {fmt(p_fresh.get('alergias'))}",
+                            f"Enfermedades: {fmt(p_fresh.get('enfermedades'))}",
+                            f"Restricciones: {fmt(p_fresh.get('restricciones_alimentarias'))}",
+                            f"Objetivo: {fmt(p_fresh.get('objetivo_nutricional'))}",
+                            f"Ubicación: {fmt(p_fresh.get('distrito') or p_fresh.get('provincia') or p_fresh.get('region'))}"
+                        ]
+                        profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(fresh_parts)
                         logger.info("Contexto de perfil REFRESCO para user=%s", user.id)
 
             # --- Detección de Frustración / Pedido Directo ---
@@ -297,27 +328,29 @@ async def _process_single_message(
                     res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
                     p_dict = res_p.mappings().fetchone() or {}
                     
-                    reply = await advance_onboarding_flow(normalized.text, state, session, openai_client, openai_model, p_dict)
+                    reply = await advance_onboarding_flow(normalized.text, state, session, openai_client, openai_model, p_dict, treat_ninguna_as_missing=True)
                     if reply is None:
                         # El flow devolvió control al chat libre (interrupción detectada)
                         onboarding_interception_happened = False
 
-            # Caso B: Pedido explícito de personalización (NUEVO)
+            # Caso B: Pedido explícito de personalización (Dinamismo mejorado)
             if not onboarding_interception_happened and is_requesting_personalization:
                 logger.info("Manual personalization request detected for user=%s", state.usuario_id)
                 from application.advance_onboarding_flow import _find_next_missing_step
                 res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": user.id})
                 p_map = res_p.mappings().fetchone() or {}
                 
-                # Buscamos el siguiente paso IGNORANDO los previos 'skips'
-                next_step = await _find_next_missing_step(session, user.id, p_map, ignore_skips=True)
+                next_step = await _find_next_missing_step(session, user.id, p_map, ignore_skips=True, treat_ninguna_as_missing=True)
+                
                 if next_step:
+                    intro = "¡Claro! 🥗 Vamos a chequear tu perfil para que mis consejos sean 100% precisos."
+                    reply = f"{intro}\n\nEsto es lo que tengo registrado:\n{user_friendly_summary}\n\n¿Deseas corregir algún dato o prefieres que completemos lo pendiente? Empecemos por confirmar tu **{next_step}**... 😊"
+                    
                     state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
                     state.onboarding_step = next_step
                     onboarding_interception_happened = True
-                    reply = await advance_onboarding_flow(normalized.text, state, session, openai_client, openai_model, p_map)
                 else:
-                    reply = "¡Ya tengo tu perfil completo! 😊 Si quieres cambiar algún dato específico (como tu peso), solo dímelo directamente."
+                    reply = f"¡Ya tengo tu perfil completo! 😊\n\n{user_friendly_summary}\n\nSi quieres cambiar algún dato específico (como tu peso o talla), solo dímelo directamente en cualquier momento."
 
             # Caso C: Saludo o Petición de Menú → iniciar onboarding si elegible
             if not is_annoyed and not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
@@ -386,12 +419,41 @@ async def _process_single_message(
 
             # Si no fue interceptado por onboarding, usar LLM
             if not onboarding_interception_happened and reply is None:
+                # Si acabamos de extraer datos, le pedimos al LLM que confirme brevemente
+                extra_instr = ""
+                if extracted_data:
+                    confirm_list = []
+                    for k, v in extracted_data.items():
+                        c_name = k
+                        if k == "peso_kg": c_name = "peso"
+                        elif k == "altura_cm": c_name = "talla"
+                        elif k == "restricciones_alimentarias": c_name = "restricciones"
+                        elif k == "objetivo_nutricional": c_name = "objetivo"
+                        confirm_list.append(f"{c_name} a '{v}'")
+                    
+                    extra_instr = f"\n\n[INSTRUCCIÓN CRÍTICA: El sistema acaba de actualizar estos datos del perfil: {', '.join(confirm_list)}. DEBES empezar tu respuesta confirmando de forma breve y natural que ya guardaste esta información (ej: '¡Listo! Ya registré tu nuevo peso...'). NO ignores esta instrucción.]"
+
+                # CONSTRUCCIÓN DEL PROMPT FINAL
+                final_instructions = SYSTEM_INSTRUCTIONS + extra_instr
+                
+                final_profile_context = None
+                if profile_text:
+                    final_profile_context = profile_text
+                    if is_asking_for_recommendation:
+                        final_profile_context = f"""[ALERTA DE SISTEMA - REGLA OBLIGATORIA]
+Antes de dar cualquier menú, receta o recomendación, DEBES empezar tu respuesta citando el perfil del usuario así:
+"Considerando que tienes [Edad] años, pesas [Peso]kg y mides [Talla]cm..."
+Menciona datos adicionales solo si existen y no dicen "Ninguna".
+Si falta el peso o talla, NO des el menú: pídeselos primero.
+
+{profile_text}"""
+
                 reply, new_response_id = await llm_service.generate_reply(
                     state=state_snapshot,
                     normalized=normalized,
-                    instructions=SYSTEM_INSTRUCTIONS + profile_text,
+                    instructions=final_instructions,
                     rag_context=rag_text,
-                    profile_context=profile_text if profile_text else None,
+                    profile_context=final_profile_context,
                 )
 
                 # Post-LLM Hook: proponer onboarding si elegible
@@ -456,21 +518,35 @@ async def _process_single_message(
                 else "text"
             )
 
-            # Encolar mensaje de salida
-            await session.execute(
-                text("""
-                    INSERT INTO outgoing_messages
-                        (idempotency_key, usuario_id, phone, content_type, content)
-                    VALUES (:ikey, :uid, :ph, :ctype, :txt)
-                """),
-                {
-                    "ikey": f"reply:{msg.provider_message_id}:{outbound_type}",
-                    "uid": user.id,
-                    "ph": msg.phone,
-                    "ctype": outbound_type,
-                    "txt": final_reply,
-                },
-            )
+            # Encolar mensaje de salida (con Guardia de Idempotencia y Rollback)
+            try:
+                await session.execute(
+                    text("""
+                        INSERT INTO outgoing_messages
+                            (idempotency_key, usuario_id, phone, content_type, content)
+                        VALUES (:ikey, :uid, :ph, :ctype, :txt)
+                    """),
+                    {
+                        "ikey": f"reply:{msg.provider_message_id}:{outbound_type}",
+                        "uid": user.id,
+                        "ph": msg.phone,
+                        "ctype": outbound_type,
+                        "txt": final_reply,
+                    },
+                )
+            except Exception as e:
+                # Si falla por UniqueViolation, lo ignoramos PERO debemos hacer ROLLBACK 
+                # del SAVEPOINT o manejar la transacción rota.
+                if "UniqueViolation" in str(e) or "duplicate key" in str(e).lower():
+                    logger.warning("Idempotency hit for message %s, skipping insert.", msg.provider_message_id)
+                    # simplemente capturamos y dejamos que el middleware o el commit final fallen si es grave.
+                    # Pero para EVITAR 'InFailedSQLTransactionError' en el UPDATE siguiente:
+                    await session.rollback()
+                    # Re-iniciamos transacción para el commit final de estado (opcional dependiendo del flujo)
+                    # Pero el estatus del mensaje inbox es prioritario.
+                    return 
+                else:
+                    raise
 
             # Marcar inbox como done
             await session.execute(

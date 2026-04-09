@@ -78,6 +78,9 @@ class OnboardingStep(str, Enum):
     PESO = "peso_kg"
     ALTURA = "altura_cm"
     REGION = "region"
+    PROVINCIA = "provincia"
+    DISTRITO = "distrito"
+    RESTRICCIONES = "restricciones_alimentarias"
 
 
 ONBOARDING_STEPS_ORDER = [
@@ -87,9 +90,11 @@ ONBOARDING_STEPS_ORDER = [
     OnboardingStep.ALTURA,
     OnboardingStep.ALERGIAS,
     OnboardingStep.ENFERMEDADES,
+    OnboardingStep.RESTRICCIONES,
     OnboardingStep.TIPO_DIETA,
     OnboardingStep.OBJETIVO,
-    OnboardingStep.REGION,
+    OnboardingStep.PROVINCIA,
+    OnboardingStep.DISTRITO,
 ]
 
 class ExtractionStatus(str, Enum):

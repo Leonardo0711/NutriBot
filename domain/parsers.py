@@ -81,6 +81,17 @@ def standardize_text_list(val: str) -> str:
     
     # Limpiar conectores comunes y normalizar separadores
     v = v.replace(" Y ", ", ").replace(" - ", ", ").replace(" / ", ", ")
+    
+    # Limpiar prefijos conversacionales comunes
+    prefixes = [
+        "NO COMO ", "NO PUEDO COMER ", "SOY ALERGICO AL ", "SOY ALERGICO A LA ", 
+        "SOY ALERGICO A ", "TENGO ", "PADESCO DE ", "SUFRO DE ", "MI OBJETIVO ES ",
+        "QUIERO ", "DEBO "
+    ]
+    for p in prefixes:
+        if v.startswith(p):
+            v = v[len(p):]
+
     parts = [p.strip() for p in v.split(",") if p.strip()]
     
     if not parts: return "NINGUNA"
