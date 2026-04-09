@@ -213,6 +213,12 @@ class MessageOrchestratorService:
                         citation += " tus datos actuales"
                     citation += ":"
 
+                    # Extra instruction to prioritize current request over profile restrictions
+                    extra_instr += """
+                    [REGLA DE PERSONALIZACIÓN]
+                    PRIORIDAD DE PETICIÓN: Si el usuario pide explícitamente algo que está en sus restricciones o alergias (ej: pide receta de pescado teniendo restricción de pescado), CUMPLE con la petición pero adviértele brevemente sobre su restricción registrada. Su deseo actual manda sobre su perfil previo.
+                    """
+
                     final_profile_context = f"""[INSTRUCCIÓN CRÍTICA DE FORMATO]
 Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no agregues 'Hola' antes de esto):
 "{citation}"

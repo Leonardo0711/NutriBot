@@ -65,14 +65,14 @@ class ProfileExtractionService:
     EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intención del usuario para Nutribot.
 REGLAS CRÍTICAS:
 1. PRIORIDAD ABSOLUTA: Si el usuario menciona un dato (ej: 'mido 1.71', 'mi peso es 80'), EXTRAELO siempre.
-2. RESTRICCIONES ALIMENTARIAS: Frases como 'no me gusta el X', 'no como Y', 'no soporto Z', 'evito el W' son datos de RESTRICCIONES ALIMENTARIAS. Extrae solo el alimento (X, Y, Z, W).
+2. RESTRICCIONES ALIMENTARIAS: Solo extrae si hay una negación explícita (ej: 'no me gusta el X', 'no como Y', 'no soporto Z', 'evito el W'). Extrae solo el alimento (X, Y, Z, W).
 3. ALERGIAS vs RESTRICCIONES: Si el usuario dice 'soy alérgico a X', es una alergia. Si dice 'no me gusta X', es una restricción_alimentaria.
-4. ASUNCIÓN AGRESIVA: Si dice '1.71', es altura. Si dice '80', es peso.
+4. PETICIONES vs DATOS (REGLA DE ORO): Si el usuario PIDE algo (ej: 'dame una receta de pescado', 'quiero un menú con pollo'), NO extraigas ese alimento como restricción o alergia, incluso si el paso actual es 'restricciones'. Ignora los alimentos mencionados en tono de deseo o petición de acción.
 5. NEGACIÓN TOTAL: Si el usuario dice 'ninguna', 'nada', 'no tengo', 'no' a una pregunta sobre salud/alergia/restricción, DEBES extraer el valor exacto 'NINGUNA' para ese campo.
-6. SENTIDO COMÚN MÉDICO: Ignora o corrige datos que sean científicamente imposibles o bromas (ej: 'diabetes tipo 20', 'peso 2 kilos', 'mido 5 metros'). Extrae solo lo que tenga sentido.
-7. FORMATO: Responde SOLO un objeto JSON PLANO (flat). Ejemplo: {"restricciones_alimentarias": "pescado", "objetivo_nutricional": "bajar de peso"}.
+6. SENTIDO COMÚN MÉDICO: Ignora datos imposibles o bromas (ej: 'diabetes tipo 20', 'supermegatension', 'peso 2 kilos'). NO intentes mapear bromas a términos médicos reales.
+7. FORMATO: Responde SOLO un objeto JSON PLANO. Ejemplo: {"restricciones_alimentarias": "pescado", "objetivo_nutricional": "bajar de peso"}.
 8. CONTEXTO: Si el dato es ambiguo (ej: 'mariscos'), asume que responde al 'Paso Actual'.
-9. Si el usuario corrige un dato previo (ej: 'perdón, peso 70'), extrae el nuevo valor.
+9. Si el usuario corrige un dato previo, extrae el nuevo valor.
 """
 
 
@@ -152,7 +152,14 @@ REGLAS CRÍTICAS:
                 if isinstance(clean_val, str) and clean_val.upper() == "NINGUNA":
                     # If the current field matches the step we are asking about, ALWAYS allow NINGUNA
                     col_name = config["col"]
-                    is_current_step = current_step and (col_name == current_step or key_norm == current_step.lower() or (current_step == "peso" and col_name == "peso_kg"))
+                    is_current_step = False
+                    if current_step:
+                        cs_low = current_step.lower()
+                        # Allow partial matches and common aliases
+                        is_current_step = (col_name == cs_low or cs_low in col_name or col_name in cs_low or 
+                                          (cs_low == "peso" and col_name == "peso_kg") or
+                                          (cs_low == "altura" and col_name == "altura_cm") or
+                                          (cs_low == "restricciones" and col_name == "restricciones_alimentarias"))
                     
                     if not is_current_step:
                         field_mentions = [key, col_name, "alergia", "enfermedad", "restriccion", "dieta", "objetivo", "correo", "asegurado"]
