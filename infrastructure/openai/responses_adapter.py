@@ -32,6 +32,7 @@ class OpenAIResponsesAdapter(LLMService):
         instructions: str,
         rag_context: Optional[str] = None,
         profile_context: Optional[str] = None,
+        history: Optional[list[dict]] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Genera una respuesta del LLM.
@@ -45,8 +46,8 @@ class OpenAIResponsesAdapter(LLMService):
             (reply_text, new_response_id)
         """
         try:
-            # Construir el input del usuario
-            user_input = self._build_user_input(normalized, rag_context, profile_context)
+            # Construir el input del usuario e historial
+            user_input = self._build_user_input(normalized, rag_context, profile_context, history)
 
             # Construir los parámetros de la solicitud
             params = {
@@ -82,12 +83,20 @@ class OpenAIResponsesAdapter(LLMService):
         normalized: NormalizedMessage,
         rag_context: Optional[str],
         profile_context: Optional[str] = None,
+        history: Optional[list[dict]] = None,
     ) -> list[dict]:
         """
         Construye el array de input para la Responses API.
         Soporta texto plano, imágenes (Vision), RAG y perfil del usuario.
         """
         parts: list[dict] = []
+
+        # Historial reciente (Conciencia Total)
+        if history:
+            parts.append({
+                "role": "user",
+                "content": "[HISTORIAL RECIENTE PARA CONTEXTO]\n" + "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
+            })
 
         # Perfil del usuario (SIEMPRE visible para el LLM)
         if profile_context:

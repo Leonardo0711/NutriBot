@@ -32,10 +32,39 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
     OnboardingStep.OBJETIVO.value: "¿Cuál es tu **objetivo principal** al usar Nutribot? 🎯 (Ej. *Bajar de peso*, *Ganar masa muscular*, *Controlar mi glucemia*, o simplemente *Comer más sano*)",
     OnboardingStep.PROVINCIA.value: "¿En qué **provincia** de Perú te encuentras actualmente? 😊",
     OnboardingStep.DISTRITO.value: "¿Y en qué **distrito** vives específicamente? 🏠 (Para darte recomendaciones locales)"
-
 }
 
 class OnboardingService:
+    SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
+
+REGLAS DE INTENCIÓN:
+1. ANSWER: El usuario provee el dato solicitado (ej: '30 años', '80kg', 'no tengo alergias').
+2. DOUBT: El usuario está confundido o hace una petición de chat/nutrición EN LUGAR de responder (ej: 'dame un menú', '¿para qué sirve?').
+3. SKIP: El usuario pide saltar la pregunta.
+4. GREETING: Saludo inicial.
+5. RESET/STOP: Comandos de sistema.
+
+REGLAS DE ORO (CRÍTICAS):
+- PETICIONES DE COMIDA = DOUBT: Si el usuario pide un menú, receta o consejo (ej: 'Dame un menú marino', 'Dame dieta para bajar peso') MIENTRAS estás en un paso de perfil, clasifica SIEMPRE como DOUBT. NUNCA lo extraigas como 'Ninguna' o como dato de perfil.
+- BLINDAJE DE ALERGIAS: Si el paso es ALERGIAS y el usuario pide comida, NUNCA devuelvas 'Ninguna'. Es preferible clasificar como DOUBT y pedir aclaración.
+- COHERENCIA MÉDICA: Rechaza datos absurdos (ej: Hepatitis Z).
+- Si tienes dudas entre ANSWER y DOUBT por una petición de comida, elige DOUBT.
+
+EXAMPLES:
+- Paso: ALERGIAS | Usuario: 'Dame un menú marino porfavor' -> Intent: DOUBT, Data: {}, Explanation: 'No puedo anotar eso como alergia. Primero dime si tienes alergias, luego te doy el menú.'
+- Paso: ALERGIAS | Usuario: 'No tengo ninguna' -> Intent: ANSWER, Data: {'alergias': 'Ninguna'}
+- Paso: PESO | Usuario: '80kg y dame un menú' -> Intent: DOUBT, Data: {}, Explanation: 'Por favor, primero solo el peso para que sea exacto.'
+- Paso: EDAD | Usuario: 'No sé, ¿importa?' -> Intent: DOUBT
+
+FORMATO DE SALIDA (JSON):
+{
+  "intent": "ANSWER|DOUBT|SKIP|GREETING|RESET|STOP",
+  "data": {"campo": "valor"} o {},
+  "explanation": "Breve respuesta amable (máx 15 palabras).",
+  "confidence": 0.0-1.0
+}
+"""
+
     def __init__(self, openai_client: AsyncOpenAI, openai_model: str, profile_extractor: ProfileExtractionService):
         self._openai_client = openai_client
         self._openai_model = openai_model
@@ -101,14 +130,62 @@ class OnboardingService:
         state: ConversationState,
         session: AsyncSession,
         treat_ninguna_as_missing: bool = False,
-        pre_extracted_data: Optional[dict] = None
+        pre_extracted_data: Optional[dict] = None,
+        history: Optional[list[dict]] = None
     ) -> Optional[str]:
         if state.onboarding_status not in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
             return None
 
         vl = user_text.lower().strip()
+        current_step = state.onboarding_step
+
+        # --- NEW Switchboard Logic (The Unified Brain) ---
+        analysis = await self._analyze_turn(user_text, current_step, history)
+        intent = analysis["intent"]
         
-        if state.onboarding_step == OnboardingStep.INVITACION.value:
+        if intent == "RESET" or user_text.strip() == "/reset":
+            # Handle reset (clean up DB for this user) - Logic to be implemented or called
+            await self._handle_system_reset(state.usuario_id, session)
+            self._set_onboarding_state(state, OnboardingStatus.INVITED, OnboardingStep.INVITACION.value)
+            return "¡Entendido! He borrado tus datos de perfil para que podamos empezar de cero cuando gustes. 🔄\n\n¿Quieres que empecemos ahora?"
+
+        if current_step and current_step != OnboardingStep.INVITACION.value:
+            # --- MODO OBSTINADO (Prioritarios) ---
+            PRIORITARY_STEPS = ["edad", "peso", "talla", "alergias"]
+            if current_step in PRIORITARY_STEPS and intent == "DOUBT":
+                prompts = {
+                    "edad": "tu **edad**",
+                    "peso": "tu **peso**",
+                    "talla": "tu **talla (estatura)**",
+                    "alergias": "si tienes alguna **alergia o restricción**"
+                }
+                campo_lindo = prompts.get(current_step, current_step)
+                return f"Entiendo que tienes una consulta, pero para poder darte una recomendación segura y que realmente te sirva, primero necesito completar tu perfil básico. 😊\n\n¿Me podrías decir {campo_lindo}, por favor?"
+            # -------------------------------------
+
+            if intent == "DOUBT":
+                # Let the general LLM handle the explanation for continuity
+                return None
+            
+            if intent == "SKIP":
+                await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+                # Fall through to advance step logic below
+            
+            if intent == "GREETING":
+                # Let general LLM greet, we will append anchor later
+                return None
+
+            if intent == "STOP":
+                self._set_onboarding_state(state, OnboardingStatus.PAUSED, current_step)
+                return "De acuerdo, pausamos aquí. Si quieres seguir más tarde, solo dime 'continuar'. 👋"
+            
+            # --- Frustration Bypass Check ---
+            if intent in ["DOUBT", "GREETING", "ANSWER"]:
+                if self._check_frustration(history, current_step):
+                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos **saltarlo** por ahora y seguir con lo demás para no estancarnos. ¿Te parece?\n\nO si gustas, dime tu **{current_step}** para continuar."
+        # -----------------------------------------------
+
+        if current_step == OnboardingStep.INVITACION.value:
             prompt = f"""Analiza la respuesta del usuario a una invitación de 'Personalizar perfil nutricional'.
             Responde SOLO con una palabra: ACCEPT, REJECT o OTHER.
             USUARIO: "{user_text}"
@@ -155,73 +232,31 @@ class OnboardingService:
         if not current_step:
             return None
 
-        # Use pre_extracted_data if available, otherwise call LLM
-        if pre_extracted_data is not None:
-            extracted = pre_extracted_data
-            logger.info("OnboardingService: Using pre-extracted data: %s", extracted)
-        else:
-            # Delegate extraction to the ProfileExtractionService
-            extracted = await self._profile_extractor.extract_and_save(
+        # Process extracted data from Switchboard if intent was ANSWER
+        if intent == "ANSWER" and analysis.get("data"):
+            extracted = await self._profile_extractor.apply_cleaning_and_save(
+                raw_extractions=analysis["data"],
                 user_text=user_text,
                 usuario_id=state.usuario_id,
                 session=session,
                 current_step=current_step
             )
-
-        
-        is_interruption = False
-
-        if not extracted:
-            skip_words = ["saltar", "paso", "omitir", "no", "ninguna", "ninguno", "siguiente"]
-            is_skip = any(w in vl.split() or vl.startswith(w) for w in skip_words)
-            if not is_skip:
-                interruption_prompt = f"""Analiza si el usuario intentó responder a la pregunta '{ONBOARDING_QUESTIONS.get(current_step, '')}' pero dio una respuesta vaga, o si definitivamente cambió de tema.
-                Responde SOLO: 'ANSWER' si intentaba responder.
-                Responde SOLO: 'INTERRUPTION' si cambió de tema claramente.
-                USUARIO: "{user_text}"
-                """
-                int_resp = await self._openai_client.chat.completions.create(
-                    model=self._openai_model,
-                    messages=[{"role": "system", "content": "Eres un clasificador de intención exacto."},
-                              {"role": "user", "content": interruption_prompt}],
-                    max_tokens=5,
-                    temperature=0
-                )
-                is_interruption = "INTERRUPTION" in int_resp.choices[0].message.content.strip().upper()
-
-        if is_interruption:
-            self._set_onboarding_state(state, OnboardingStatus.PAUSED, state.onboarding_step)
-            return None
+        elif intent == "SKIP":
+            extracted = {}
+        else:
+            extracted = {}
 
         if not extracted:
-            # Silence logic: only avoid the error message if it's a clear short negation/skip
-            silent_negations = ["no", "nada", "no tengo", "ninguno", "ninguna", "sin", "no se", "no sé", "no se nada", "ningunaa", "ningunaaa", "ningun", "inguna", "ingun", "nada que ver", "nada que noo", "naa", "nadaa", "naaa", "noo", "nooo", "nada de eso"]
-            is_silent_neg = any(s in vl for s in silent_negations) or len(vl) < 4
-            is_explicit_skip = any(w in vl.split() or vl.startswith(w) for w in ["saltar", "paso", "omitir", "luego", "siguiente"])
-            
-            if not is_silent_neg and not is_explicit_skip:
-                # Intelligence: explain WHY it wasn't captured if it's a long text
-                if len(user_text) > 10:
-                    explain_prompt = f"""El usuario intentó responder a la pregunta '{ONBOARDING_QUESTIONS.get(current_step, '')}' con el texto: '{user_text}'.
-                    Nuestra IA de extracción NO captó ningún dato válido. 
-                    Explica de forma muy breve y amable (máximo 15 palabras) por qué ese dato no parece válido o por qué no se puede registrar.
-                    Ejemplo para 'Diabetes tipo 20': 'No reconozco ese tipo de diabetes, ¿podrías confirmarlo?'
-                    Ejemplo para algo incoherente: 'No logré entender ese detalle, ¿puedes repetirlo más simple?'
-                    """
-                    exp_resp = await self._openai_client.chat.completions.create(
-                        model=self._openai_model,
-                        messages=[{"role": "user", "content": explain_prompt}],
-                        max_tokens=40,
-                        temperature=0.7
-                    )
-                    explanation = exp_resp.choices[0].message.content.strip()
-                    return f"{explanation} 😊"
-                
-                return f"No logré captar ese dato para tu perfil. ¿Podrías decírmelo de forma más clara? 😊"
+            if intent == "ANSWER":
+                return f"No logré captar ese detalle para tu perfil. 😅 ¿Podrías decírmelo de forma más simple?\n\nRecordemos: **{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+            elif intent == "SKIP":
+                await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+            else:
+                # GREETING and DOUBT are already handled at the top of advance_flow
+                pass
 
-
-        if not extracted and ("saltar" in vl or "paso" in vl or "omitir" in vl or "luego" in vl or "siguiente" in vl):
-            await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+        if not extracted and intent == "SKIP":
+             await self._mark_field_as_skipped(session, state.usuario_id, current_step)
 
         updated_cols = list(extracted.keys()) if extracted else []
         current_idx = -1
@@ -252,8 +287,19 @@ class OnboardingService:
                 transition = "¡Perfecto! Ya anoté esos detalles. ✍️"
                 if len(updated_cols) == 1 and updated_cols[0] == "region":
                     transition = "¡Qué bueno! Me encanta esa zona. 📍"
-                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
-            return f"Entendido. 😊 Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
+                
+                # PD Recordatorio para campos opcionales
+                pd_rem = ""
+                if next_step in [OnboardingStep.ENFERMEDADES.value, OnboardingStep.RESTRICCIONES.value, OnboardingStep.OBJETIVO.value]:
+                    pd_rem = "\n\n💡 *Recuerda:* Si en algún momento quieres contarme sobre tus alergias, restricciones o alguna condición de salud, solo dímelo. ¡Me ayuda a ser 100% exacto! 😊"
+
+                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}{pd_rem}"
+            
+            # Si no hubo extracción pero llegamos aquí, es que estamos repitiendo el paso actual
+            if next_step == current_step:
+                return f"Para poder ayudarte mejor, necesito este dato: **{ONBOARDING_QUESTIONS[current_step]}**"
+
+            return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         else:
             res_final = await session.execute(text("SELECT provincia, distrito FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
             p_final = res_final.fetchone()
@@ -330,3 +376,71 @@ class OnboardingService:
             WHERE usuario_id = :uid
         """
         await session.execute(text(sql_skip), {"uid": uid, "field": field, "upd": get_now_peru()})
+
+    async def _analyze_turn(self, user_text: str, current_step: str, history: Optional[list[dict]]) -> dict:
+        """
+        The Switchboard: One LLM call to rule them all.
+        Classifies intent and extracts raw data.
+        """
+        history_summary = ""
+        if history:
+            history_summary = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history[-5:]])
+
+        current_q = ONBOARDING_QUESTIONS.get(current_step, "desconocida")
+        
+        prompt = f"""PASO ACTUAL: {current_step}
+PREGUNTA: "{current_q}"
+
+HISTORIAL:
+{history_summary}
+
+MENSAJE USUARIO: "{user_text}"
+"""
+        try:
+            resp = await self._openai_client.chat.completions.create(
+                model=self._openai_model,
+                messages=[
+                    {"role": "system", "content": self.SWITCHBOARD_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0
+            )
+            import json
+            analysis = json.loads(resp.choices[0].message.content)
+            logger.info("Onboarding Switchboard: user=%s, intent=%s, data=%s", current_step, analysis.get("intent"), analysis.get("data"))
+            return analysis
+        except Exception as e:
+            logger.error("Error in Switchboard: %s", e)
+            return {"intent": "ANSWER", "data": {}, "explanation": None}
+
+    async def _handle_system_reset(self, uid: int, session: AsyncSession):
+        """Clean up user data and onboarding progress."""
+        logger.info("System Reset triggered for user %s", uid)
+        await session.execute(text("DELETE FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
+        await session.execute(text("DELETE FROM chat_history WHERE usuario_id = :uid"), {"uid": uid})
+        # Note: ConversationState is managed in the caller (advance_flow)
+        await session.commit()
+
+    def _check_frustration(self, history: Optional[list[dict]], current_step: str) -> bool:
+        """
+        Detecta si el usuario está estancado en el mismo paso.
+        Regla: El asistente ha preguntado lo mismo al menos 2 veces seguidas y no ha habido éxito.
+        """
+        if not history or len(history) < 4:
+            return False
+            
+        # Revisamos los últimos mensajes del asistente
+        assistant_msgs = [m["content"] for m in history if m["role"] == "assistant"]
+        if len(assistant_msgs) < 2:
+            return False
+            
+        last_q = assistant_msgs[-1].lower()
+        prev_q = assistant_msgs[-2].lower()
+        
+        # Si ambas preguntas contienen el texto de la pregunta actual, es un bucle
+        q_text = ONBOARDING_QUESTIONS.get(current_step, "").lower()
+        if q_text and q_text in last_q and q_text in prev_q:
+            return True
+            
+        return False

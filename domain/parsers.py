@@ -18,8 +18,8 @@ def parse_weight(val: str) -> Optional[float]:
         unit = match.group(2)
         if unit and ("lb" in unit or "lib" in unit):
             return round(num * 0.453592, 2)
-        # Validación de rango sano
-        if num < 2.0 or num > 500.0: return None
+        # Validación de rango biológico (3kg a 450kg)
+        if num < 3.0 or num > 450.0: return None
         return round(num, 2)
     except (ValueError, TypeError):
         return None
@@ -61,8 +61,8 @@ def parse_height(val: str) -> Optional[float]:
         if (num < 3.0 and unit != "cm") or (unit and ("m" in unit and "cm" not in unit)):
             num = num * 100.0
             
-        # Validación de rango sano
-        if num < 40.0 or num > 280.0: return None
+        # Validación de rango biológico (50cm a 250cm)
+        if num < 50.0 or num > 250.0: return None
         return round(num, 2)
     except (ValueError, TypeError):
         return None
@@ -74,7 +74,7 @@ def parse_age(val: str) -> Optional[int]:
     if not match: return None
     try:
         num = int(match.group(1))
-        if num < 0 or num > 120: return None
+        if num < 1 or num > 120: return None
         return num
     except (ValueError, TypeError):
         return None

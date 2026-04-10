@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # ─── Definición de la máquina de estados del formulario ───
 FORM_STATES_ORDER = [
     "esperando_correo",
-    "esperando_asegurado",
     "esperando_p1",
     "esperando_p2",
     "esperando_p3",
@@ -38,8 +37,7 @@ FORM_STATES_ORDER = [
 ]
 
 FORM_QUESTIONS: dict[str, str] = {
-    "esperando_correo": "📧 Para empezar, ¿me podrías compartir tu correo electrónico?",
-    "esperando_asegurado": "🏥 ¿Eres asegurado/a de EsSalud? (Sí, No, o No sé)",
+    "esperando_correo": "📧 ¡Me encantaría seguir en contacto! ¿Me podrías compartir tu correo electrónico?",
     "esperando_p1": "Del 1 al 5, ¿sientes que mi personalidad fue realista y atractiva? 😊",
     "esperando_p2": "Del 1 al 5, ¿expliqué bien mi propósito y alcance? 🎯",
     "esperando_p3": "Del 1 al 5, ¿fui fácil de navegar? 🗺️",
@@ -56,8 +54,7 @@ FORM_QUESTIONS: dict[str, str] = {
 }
 
 PERSUASION_MESSAGES: dict[str, str] = {
-    "esperando_correo": "Es para avisarte sobre campañas de salud, jornadas de nutrición cerca de ti y consejos exclusivos para tu perfil nutricional. ¡Es súper útil! ✉️ ¿Te animas a compartirlo?",
-    "esperando_asegurado": "Saber si eres asegurado nos ayuda a darte información sobre servicios específicos de salud preventiva en EsSalud 🏥. ¿Te gustaría comentarlo?",
+    "esperando_correo": "Es para avisarte sobre campañas de salud, jornadas de nutrición cerca de ti y consejos exclusivos para tu perfil. ¡Es súper útil! ✉️ ¿Te animas?",
 }
 PERSUASION_DEFAULT = "Entiendo, pero tus respuestas son vitales para mejorar este servicio para todos. 🌟 ¿Te gustaría darnos este dato?"
 
@@ -283,14 +280,14 @@ class SurveyService:
                 )
                 return PERSUASION_MESSAGES.get(current_state, PERSUASION_DEFAULT)
 
-            if current_state in ("esperando_correo", "esperando_asegurado"):
+            if current_state == "esperando_correo":
                 next_state = "esperando_p1"
                 await session.execute(
                     text("UPDATE formulario_en_progreso SET estado_actual = :next WHERE usuario_id = :uid"),
                     {"next": next_state, "uid": state.usuario_id},
                 )
                 state.awaiting_question_code = next_state
-                return f"Entiendo, no te preocupes. 😊 ¿Me podrías ayudar al menos a mejorar NutriBot con unas preguntitas rápidas sobre tu experiencia? Me ayudará mucho a darte un mejor servicio.\n\n{FORM_QUESTIONS[next_state]}"
+                return f"Entiendo, no te preocupes. 😊 ¿Me podrías ayudar al menos con estas otras consultas breves por favor? Me ayudará mucho a darte un mejor servicio.\n\n{FORM_QUESTIONS[next_state]}"
 
             cleaned_value = None
         else:
@@ -312,10 +309,10 @@ class SurveyService:
         for i in range(current_idx + 1, len(FORM_STATES_ORDER)):
             candidate = FORM_STATES_ORDER[i]
             if candidate == "esperando_p8" and not progress.uso_audio:
-                media_addon += "\n\n🎙️ *PD:* Veo que aún no hemos probado enviarnos audios. ¡Es súper práctico para consultas largas! Si gustas, puedes probarlo en nuestra próxima charla. 😊"
+                media_addon += "\n\n🎙️ *¡Probemos el audio!* Tengo la función de audio disponible, ¿te gustaría probarla pronto? Me ayuda mucho a escucharte mejor y darte recetas exactas. 😊"
                 continue
             if candidate == "esperando_p9" and not progress.uso_imagen:
-                media_addon += "\n\n📸 *PD:* Por cierto, ¿viste que puedes enviarme fotos de tu comida? Me ayuda mucho a darte consejos más visuales. ¡Anímate a probarlo pronto! 🥦"
+                media_addon += "\n\n📸 *¡Reconozco fotos!* También tengo la función de reconocer fotos e imágenes de tus platos. ¿Te gustaría probarla? Me ayuda a ser más visual con tus porciones. 🥦"
                 continue
             next_state = candidate
             break

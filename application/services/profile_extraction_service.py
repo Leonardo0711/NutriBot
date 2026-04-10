@@ -63,16 +63,16 @@ class ProfileExtractionService:
     }
 
     EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intención del usuario para Nutribot.
-REGLAS CRÍTICAS:
+REGLAS CRÍTICAS DE ROBUSTEZ:
 1. PRIORIDAD ABSOLUTA: Si el usuario menciona un dato (ej: 'mido 1.71', 'mi peso es 80'), EXTRAELO siempre.
-2. RESTRICCIONES ALIMENTARIAS: Solo extrae si hay una negación explícita (ej: 'no me gusta el X', 'no como Y', 'no soporto Z', 'evito el W'). Extrae solo el alimento (X, Y, Z, W).
-3. ALERGIAS vs RESTRICCIONES: Si el usuario dice 'soy alérgico a X', es una alergia. Si dice 'no me gusta X', es una restricción_alimentaria.
-4. PETICIONES vs DATOS (REGLA DE ORO): Si el usuario PIDE algo (ej: 'dame una receta de pescado', 'quiero un menú con pollo'), NO extraigas ese alimento como restricción o alergia, incluso si el paso actual es 'restricciones'. Ignora los alimentos mencionados en tono de deseo o petición de acción.
-5. NEGACIÓN TOTAL: Si el usuario dice 'ninguna', 'nada', 'no tengo', 'no' a una pregunta sobre salud/alergia/restricción, DEBES extraer el valor exacto 'NINGUNA' para ese campo.
-6. SENTIDO COMÚN MÉDICO: Ignora datos imposibles o bromas (ej: 'diabetes tipo 20', 'supermegatension', 'peso 2 kilos'). NO intentes mapear bromas a términos médicos reales.
-7. FORMATO: Responde SOLO un objeto JSON PLANO. Ejemplo: {"restricciones_alimentarias": "pescado", "objetivo_nutricional": "bajar de peso"}.
-8. CONTEXTO: Si el dato es ambiguo (ej: 'mariscos'), asume que responde al 'Paso Actual'.
-9. Si el usuario corrige un dato previo, extrae el nuevo valor.
+2. ESCUDO CONTRA DUDAS: Si el usuario hace una PREGUNTA o expresa confusión (ej: '¿Cómo?', '¿Por qué?', '¿Qué es?', 'no entiendo', '¿?', 'qué alergias?'), NO extraigas nada. Devuelve un objeto vacío {}.
+3. PESIMISMO OPERATIVO: Ante la menor duda de si el texto es un dato o una consulta, NO extraigas. Es mejor preguntar de nuevo que anotar basura.
+4. RESTRICCIONES ALIMENTARIAS: Solo extrae si hay una negación explícita (ej: 'no me gusta el X', 'no como Y', 'no soporto Z', 'evito el W'). Extrae solo el alimento (X, Y, Z, W).
+5. ALERGIAS vs RESTRICCIONES: Si el usuario dice 'soy alérgico a X', es una alergia. Si dice 'no me gusta X', es una restricción_alimentaria.
+6. PETICIONES vs DATOS (REGLA DE ORO): Si el usuario PIDE algo (ej: 'dame una receta de pescado'), NO extraigas ese alimento como dato de perfil.
+7. NEGACIÓN TOTAL: Si el usuario dice 'ninguna', 'nada', 'no tengo' a una pregunta sobre salud/alergia/restricción, extrae 'NINGUNA'.
+8. FORMATO: Responde SOLO un objeto JSON PLANO. Si no hay datos claros, responde {}.
+10. PROHIBICIÓN DE PREGUNTAS: Si el texto termina en '?' o comienza con palabras interrogativas ('cómo', 'qué', 'por qué', 'para qué', 'cuál', 'cuanto'), responde SIEMPRE con un objeto vacío {}. NO intentes salvar datos de una pregunta.
 """
 
 
@@ -94,16 +94,33 @@ REGLAS CRÍTICAS:
         Retorna el diccionario de datos limpiados.
         """
         raw_extractions = await self._run_llm_extraction(user_text, current_step)
+        return await self.apply_cleaning_and_save(raw_extractions, user_text, usuario_id, session, current_step)
+    async def apply_cleaning_and_save(
+        self,
+        raw_extractions: Dict[str, Any],
+        user_text: str,
+        usuario_id: int,
+        session: AsyncSession,
+        current_step: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Limpia datos crudos (extraídos previamente) y los persiste en BD.
+        Útil para cuando el Switchboard ya hizo la extracción.
+        """
         if not raw_extractions:
             return {}
 
         clean_data, updates = self._apply_bulletproof_logic(raw_extractions, user_text, current_step)
         
         if updates:
-            logger.info("ProfileExtractionService: Staging updates for user %s: %s", usuario_id, updates)
             await self._persist_updates(usuario_id, updates, session)
-
+            
         return clean_data
+
+    async def save_clean_data(self, usuario_id: int, clean_data: Dict[str, Any], session: AsyncSession):
+        """Persiste directamente datos ya limpios."""
+        if clean_data:
+            await self._persist_updates(usuario_id, clean_data, session)
 
 
     async def _run_llm_extraction(self, user_text: str, current_step: Optional[str]) -> Dict[str, Any]:
@@ -139,7 +156,6 @@ REGLAS CRÍTICAS:
             if not config and current_step and raw_val:
                 config_step = self.FIELD_CONFIG.get(current_step.lower())
                 if config_step:
-                    logger.info("Universal Shield: Force-mapping '%s' to '%s'", key, current_step)
                     config = config_step
 
             if not config or not raw_val:

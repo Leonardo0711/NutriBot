@@ -6,13 +6,14 @@ los servicios de Onboarding, Survey, Extracción y el LLM.
 import logging
 from typing import Optional
 from openai import AsyncOpenAI
-from sqlalchemy import text
+from sqlalchemy import text, JSON
 from sqlalchemy.ext.asyncio import AsyncSession
+import json
 
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.value_objects import OnboardingStatus, OnboardingStep
 from domain.utils import get_now_peru
-from application.services.onboarding_service import OnboardingService
+from application.services.onboarding_service import OnboardingService, ONBOARDING_QUESTIONS
 from application.services.survey_service import SurveyService
 from application.services.profile_extraction_service import ProfileExtractionService
 from domain.ports import LLMService
@@ -37,6 +38,57 @@ class MessageOrchestratorService:
         self._profile_extractor = profile_extractor
         self._llm_service = llm_service
         self._system_instructions = system_instructions
+
+    async def _get_recent_history(self, session: AsyncSession, uid: int) -> list[dict]:
+        """Recupera los últimos 12 mensajes del historial en formato JSONB."""
+        try:
+            res = await session.execute(
+                text("SELECT historial_mensajes FROM memoria_chat WHERE usuario_id = :uid"),
+                {"uid": uid}
+            )
+            val = res.scalar()
+            return val if isinstance(val, list) else []
+        except Exception as e:
+            logger.error("Error recuperando historial para usuario %s: %s", uid, e)
+            return []
+
+    async def _append_to_chat_memory(self, session: AsyncSession, uid: int, user_text: str, assistant_reply: str):
+        """Añade la interacción actual al historial y mantiene un máximo de 20 mensajes."""
+        try:
+            # ON CONFLICT garante que el registro exista, pero UserRepo ya debería cubrirlo
+            sql = """
+                INSERT INTO memoria_chat (usuario_id, historial_mensajes, actualizado_en)
+                VALUES (:uid, :init, NOW())
+                ON CONFLICT (usuario_id) DO UPDATE 
+                SET historial_mensajes = (
+                    CASE 
+                        WHEN jsonb_array_length(memoria_chat.historial_mensajes) >= 20 
+                        THEN (memoria_chat.historial_mensajes - 0 - 1) 
+                        ELSE memoria_chat.historial_mensajes 
+                    END
+                ) || :new_pair::jsonb,
+                actualizado_en = NOW();
+            """
+            # Simplificamos la lógica de truncado en Python para mayor control si es necesario, 
+            # pero por ahora lo hacemos atómico en SQL.
+            # Nota: -0 -1 quita los dos primeros (par viejo) si superamos el límite.
+            new_pair = [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": assistant_reply}
+            ]
+            
+            # Recuperamos actual, añadimos, truncamos y guardamos (más seguro que lógica compleja SQL)
+            res = await session.execute(text("SELECT historial_mensajes FROM memoria_chat WHERE usuario_id = :uid"), {"uid": uid})
+            hist = res.scalar() or []
+            hist.extend(new_pair)
+            hist = hist[-20:] # Mantener 10 pares máximo
+            
+            await session.execute(
+                text("UPDATE memoria_chat SET historial_mensajes = :hist, actualizado_en = NOW() WHERE usuario_id = :uid"),
+                {"uid": uid, "hist": json.dumps(hist)}
+            )
+        except Exception as e:
+            logger.error("Error actualizando memoria_chat para usuario %s: %s", uid, e)
 
     def _fmt(self, val, unit=""):
         if val is None or (isinstance(val, str) and val.strip() == ""):
@@ -86,13 +138,24 @@ class MessageOrchestratorService:
     ) -> tuple[str, Optional[str]]:
         
         profile_text, summary, p_map = await self.build_profile_context(session, user.id)
+        history = await self._get_recent_history(session, user.id)
         
         reply = None
         v_text = normalized.text.lower().strip()
-        is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer"])
+        
+        # 0. COMANDOS DE SISTEMA (Global)
+        if v_text == "/reset":
+            await self._onboarding_service._handle_system_reset(user.id, session)
+            state.onboarding_status = OnboardingStatus.INVITED.value
+            state.onboarding_step = OnboardingStep.INVITACION.value
+            state.mode = SessionMode.ACTIVE_CHAT.value
+            state.version += 1
+            return "¡Entendido! He borrado tus datos de perfil para que podamos empezar de cero cuando gustes. 🔄\n\n¿Quieres que empecemos ahora?", None
+
+        is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer", "imc", "calorías", "grasa", "proteína", "keto", "ayuno", "carbohidratos"])
         is_short_greeting = len(v_text) < 25 and any(w in v_text for w in ["hola", "buenas", "buenos", "empezar", "arrancar", "nutribot", "que tal", "holis"])
         
-        is_requesting_personalization = any(w in v_text for w in ["personalizar", "completar mi perfil", "mis datos", "cambiar mi peso", "actualizar perfil", "personaliza"])
+        is_requesting_personalization = any(w in v_text for w in ["personalizar", "completar mi perfil", "mis datos", "cambiar mi peso", "actualizar perfil", "personaliza", "mejorar", "ayudarte a mejorar", "encuesta", "formulario", "llenar datos", "mis objetivos"])
         if not is_requesting_personalization and len(v_text) > 10:
             pers_prompt = f"¿El usuario está expresando deseo de completar su perfil, cambiar sus datos o personalizar más sus respuestas? Responde SOLO 'YES' o 'NO'.\n\nUSUARIO: '{normalized.text}'"
             pers_resp = await self._openai_client.chat.completions.create(
@@ -105,36 +168,29 @@ class MessageOrchestratorService:
 
         onboarding_interception_happened = False
         extracted_data = {}
-        is_profile_relevant_message = not is_short_greeting
+        
+        # 1. TRAMO DE REGISTRO (ONBOARDING)
+        # Si el usuario está en proceso de registro, le damos prioridad absoluta
+        # para manejar saludos, dudas o datos del paso actual.
+        # 1. TRAMO DE REGISTRO (ONBOARDING)
+        # El Switchboard (Cerebro) es ahora la autoridad única.
+        if state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
+            onboarding_interception_happened = True
+            reply = await self._onboarding_service.advance_flow(
+                normalized.text, state, session, 
+                treat_ninguna_as_missing=False, 
+                pre_extracted_data=None,
+                history=history
+            )
+            if reply is None:
+                onboarding_interception_happened = False
 
-        if is_profile_relevant_message:
-            async with factory() as independent_session:
-                async with independent_session.begin():
-                    extracted_data = await self._profile_extractor.extract_and_save(
-                        normalized.text, user.id, independent_session, current_step=state.onboarding_step
-                    )
-            if extracted_data:
-                profile_text, summary, p_map = await self.build_profile_context(session, user.id)
-
-        is_annoyed = any(w in v_text for w in ["ya te dije", "deja de preguntar", "no me preguntes", "qué molesto", "que molesto", "responde", "dame el menú", "dame el menu", "solo quiero"])
-
-        if not is_annoyed and state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
-            is_long_interruption = len(v_text) > 60 and ("?" in v_text or "como" in v_text or "que" in v_text or "ayuda" in v_text)
-            if not is_long_interruption:
-                onboarding_interception_happened = True
-                # Pass extracted_data to avoid double LLM calls
-                reply = await self._onboarding_service.advance_flow(
-                    normalized.text, state, session, treat_ninguna_as_missing=False, pre_extracted_data=extracted_data
-                )
-                if reply is None:
-                    onboarding_interception_happened = False
-
+        # 2. EXTRACCIÓN GENERAL (Eliminado Legacy - Ahora todo pasa por Switchboard)
 
         if not onboarding_interception_happened and is_requesting_personalization:
             next_step = await self._onboarding_service._find_next_missing_step(session, user.id, ignore_skips=True, treat_ninguna_as_missing=False)
             if next_step:
-                intro = "¡Claro! 🥗 Vamos a chequear tu perfil para que mis consejos sean 100% precisos."
-                reply = f"{intro}\n\nEsto es lo que tengo registrado:\n{summary}\n\n¿Deseas corregir algún dato o prefieres que completemos lo pendiente? Empecemos por confirmar tu **{next_step}**... 😊"
+                reply = f"¡Claro! 🥗 Me encantaría que personalicemos tus recomendaciones. Vamos a completar tu perfil para darte consejos exactos.\n\nEsto es lo que tengo registrado:\n{summary}\n\n¿Empezamos por confirmar tu **{next_step}**? 😊"
                 state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
                 state.onboarding_step = next_step
                 onboarding_interception_happened = True
@@ -147,6 +203,7 @@ class MessageOrchestratorService:
             if not p_map.get("edad") and not skipped.get("edad"): missing_essential.append("edad")
             if not p_map.get("peso_kg") and not skipped.get("peso_kg"): missing_essential.append("peso_kg")
             if not p_map.get("altura_cm") and not skipped.get("altura_cm"): missing_essential.append("altura_cm")
+            if not p_map.get("alergias") and not skipped.get("alergias"): missing_essential.append("alergias")
 
             if is_asking_for_recommendation:
                 if not missing_essential:
@@ -157,6 +214,7 @@ class MessageOrchestratorService:
                     if p_map.get("edad"): known_parts.append(f"Edad: {p_map['edad']} años")
                     if p_map.get("peso_kg"): known_parts.append(f"Peso: {p_map['peso_kg']}kg")
                     if p_map.get("altura_cm"): known_parts.append(f"Talla: {p_map['altura_cm']}cm")
+                    if p_map.get("alergias"): known_parts.append(f"Alergias: {p_map['alergias']}")
                     if known_parts:
                         intro += f" 😊 Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
                     
@@ -201,8 +259,7 @@ class MessageOrchestratorService:
             if profile_text:
                 final_profile_context = profile_text
                 if is_asking_for_recommendation:
-                    prefix_ack = "¡Genial! Ya actualicé tu perfil. " if extracted_data else ""
-                    citation = f"{prefix_ack}Considerando"
+                    citation = "Considerando"
                     if p_map:
                         citation += f" que tienes {p_map.get('edad')} años, pesas {p_map.get('peso_kg')}kg y mides {p_map.get('altura_cm')}cm"
                         if p_map.get('alergias') and p_map.get('alergias').upper() != 'NINGUNA':
@@ -213,7 +270,6 @@ class MessageOrchestratorService:
                         citation += " tus datos actuales"
                     citation += ":"
 
-                    # Extra instruction to prioritize current request over profile restrictions
                     extra_instr += """
                     [REGLA DE PERSONALIZACIÓN]
                     PRIORIDAD DE PETICIÓN: Si el usuario pide explícitamente algo que está en sus restricciones o alergias (ej: pide receta de pescado teniendo restricción de pescado), CUMPLE con la petición pero adviértele brevemente sobre su restricción registrada. Su deseo actual manda sobre su perfil previo.
@@ -232,46 +288,76 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
                 instructions=final_instructions,
                 rag_context=rag_text,
                 profile_context=final_profile_context,
+                history=history
             )
 
-            if not is_short_greeting:
-                state.meaningful_interactions_count += 1
+        # 1. CONTADOR UNIVERSAL DE INTERACCIONES
+        # Incrementamos si el bot respondió algo fuera del registro puro.
+        if not onboarding_interception_happened and reply:
+            state.meaningful_interactions_count += 1
+            logger.info("Universal interaction counter for user %s: %s", user.id, state.meaningful_interactions_count)
 
-            if state.onboarding_status in [OnboardingStatus.NOT_STARTED.value, OnboardingStatus.SKIPPED.value, OnboardingStatus.PAUSED.value]:
-                # Check threshold
-                if state.meaningful_interactions_count >= 5:
-                    now = get_now_peru()
-                    is_eligible = (state.onboarding_status == OnboardingStatus.NOT_STARTED.value) or (state.onboarding_next_eligible_at and now >= state.onboarding_next_eligible_at)
-                    is_urgent = len(v_text) < 15 or any(w in v_text for w in ["ayuda", "urgente", "duele", "dolor", "mal", "vomito", "diarrea"])
+        # 2. DISPARADOR DE INVITACIÓN 
+        # Universal Nag Nuclear: Sale SI O SI si el contador es >= 5
+        if state.meaningful_interactions_count >= 5:
+            inv_text = ""
+            try:
+                # PRIORIDAD 1: Encuesta de Usabilidad (si falta)
+                if state.usability_completion_pct < 100:
+                    res_m = await session.execute(text("SELECT uso_audio, uso_imagen, estado_actual FROM formulario_en_progreso WHERE usuario_id = :uid"), {"uid": user.id})
+                    prog = res_m.fetchone()
+                    media_tips = []
+                    if prog:
+                        if not prog.uso_audio: media_tips.append("🎙️ ¿Sabías que también puedes hablarme por **audio**? Es muy cómodo.")
+                        if not prog.uso_imagen: media_tips.append("📸 ¡Prueba enviarme **fotos** de tus platos! Me ayuda a ser más visual.")
                     
-                    if is_eligible and not is_urgent:
-                        # Media suggestions logic
-                        res_m = await session.execute(text("SELECT uso_audio, uso_imagen FROM formulario_en_progreso WHERE usuario_id = :uid"), {"uid": user.id})
-                        m_row = res_m.fetchone()
-                        media_tips = []
-                        if m_row:
-                            if not m_row.uso_audio: media_tips.append("🎙️ ¿Sabías que también puedes hablarme por **audio**? Es muy cómodo.")
-                            if not m_row.uso_imagen: media_tips.append("📸 ¡Prueba enviarme **fotos** de tus platos! Me ayuda a ser más visual.")
-                        
-                        tip_text = "\n\n" + "\n".join(media_tips) if media_tips else ""
-
-                        if state.onboarding_status == OnboardingStatus.PAUSED.value:
-                            reply += f"\n\nPD: Aún nos faltan algunos datos para completar tu perfil personalizado. ¿Te gustaría continuar donde nos quedamos? (Sí/No) 😊{tip_text}"
-                        else:
-                            reply += f"\n\nPD: Si quieres, también puedo personalizar mejor mis recomendaciones con un perfil nutricional rápido. ¿Te gustaría configurarlo ahora? (Sí/No) 😊{tip_text}"
-                        
-                        # Set to INVITED and RESET COUNTER
-                        state.onboarding_status = OnboardingStatus.INVITED.value
-                        state.onboarding_step = OnboardingStep.INVITACION.value
-                        state.onboarding_last_invited_at = get_now_peru()
-                        state.meaningful_interactions_count = 0 
-                        state.version += 1
+                    tip_text = ("\n" + "\n".join(media_tips)) if media_tips else ""
+                    
+                    if prog and prog.estado_actual not in ["completado", "esperando_correo"]:
+                        inv_text = f"PD: ¡Hola de nuevo! 😊 Nos quedaron unas preguntitas pendientes para mejorar NutriBot, ¿te animas a completarlas ahora? 🙏{tip_text}"
+                    else:
+                        inv_text = f"PD: ¡Muchas gracias por tus consultas! 😊 Ayúdame a mejorar respondiendo algunas preguntas y así empiezas oficialmente tu camino con NutriBot. 🙏{tip_text}"
+                
+                # PRIORIDAD 2: Completar Perfil (si no se hizo lo anterior y hay perfil pendiente)
+                elif state.onboarding_status != OnboardingStatus.COMPLETED.value:
+                    if state.onboarding_status == OnboardingStatus.IN_PROGRESS.value:
+                        inv_text = "PD: Por cierto, veo que tienes tu perfil a medias. 😊 ¿Te gustaría terminar de configurarlo ahora para que mis recetas sean exactas?"
+                    elif state.onboarding_status == OnboardingStatus.PAUSED.value:
+                        inv_text = "PD: Aún nos faltan algunos datos para completar tu perfil personalizado. ¿Te gustaría continuar donde nos quedamos? (Sí/No) 😊"
+            except Exception as e:
+                # Fallback genérico si la DB falla
+                inv_text = "PD: ¡Muchas gracias por tus consultas! 😊 Ayúdame a mejorar respondiendo algunas preguntas breves sobre tu experiencia. 🙏"
+            
+            if inv_text:
+                # Aplicar separador visual para simular "segundo mensaje"
+                reply += f"\n\n---\n\n{inv_text}"
+                
+                # Resetear contador para permitir recurrencia de la invitación
+                state.meaningful_interactions_count = 0
+                state.onboarding_last_invited_at = get_now_peru()
+                
+                if state.onboarding_status not in [OnboardingStatus.IN_PROGRESS.value, OnboardingStatus.COMPLETED.value]:
+                    state.onboarding_status = OnboardingStatus.INVITED.value
+                    state.onboarding_step = OnboardingStep.INVITACION.value
+                state.version += 1
 
 
         if normalized.used_audio:
             await session.execute(text("UPDATE formulario_en_progreso SET uso_audio = TRUE WHERE usuario_id = :uid"), {"uid": user.id})
         if normalized.image_base64:
             await session.execute(text("UPDATE formulario_en_progreso SET uso_imagen = TRUE WHERE usuario_id = :uid"), {"uid": user.id})
+
+        # --- ANCLA DE CONTINUIDAD (FINAL) ---
+        if reply and not onboarding_interception_happened:
+            # Añadir recordatorio educativo de personalización si no es el PD de encuesta
+            if "PD:" not in reply:
+                reply += "\n\n💡 *Tip NutriBot:* Recuerda que puedes decirme tus alergias, restricciones (ej. 'no como carne') o enfermedades en cualquier momento para ser 100% exacto para ti. ¡Tú tienes el control! 🍏"
+
+            if state.onboarding_status == OnboardingStatus.IN_PROGRESS.value and state.onboarding_step:
+                q_text = ONBOARDING_QUESTIONS.get(state.onboarding_step, "")
+                if q_text:
+                    if not any(q_text[:20] in reply for q_text in ONBOARDING_QUESTIONS.values()): # Evitar duplicados
+                         reply = f"{reply}\n\nPor cierto, sigamos con tu perfil: **{q_text}**"
 
         await session.execute(text("INSERT INTO extraction_jobs (usuario_id, raw_text) VALUES (:uid, :txt)"), {"uid": user.id, "txt": normalized.text})
 
@@ -288,5 +374,8 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
                     final_reply = f"{reply}\n\n{addon}"
             else:
                 final_reply = reply
+
+        # Persistir en memoria_chat
+        await self._append_to_chat_memory(session, user.id, normalized.text, final_reply)
 
         return final_reply, new_response_id

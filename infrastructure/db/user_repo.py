@@ -50,4 +50,31 @@ class SqlAlchemyUserRepository(UserRepository):
                     {"uid": row.id},
                 )
 
+                # 4. Garantizar registros en las tablas de "memoria" para nuevos usuarios
+                # Esto evita errores de "record not found" en los servicios.
+                await session.execute(
+                    text("""
+                        INSERT INTO memoria_chat (usuario_id)
+                        VALUES (:uid)
+                        ON CONFLICT (usuario_id) DO NOTHING
+                    """),
+                    {"uid": row.id},
+                )
+                await session.execute(
+                    text("""
+                        INSERT INTO perfil_nutricional (usuario_id)
+                        VALUES (:uid)
+                        ON CONFLICT (usuario_id) DO NOTHING
+                    """),
+                    {"uid": row.id},
+                )
+                await session.execute(
+                    text("""
+                        INSERT INTO formulario_en_progreso (usuario_id)
+                        VALUES (:uid)
+                        ON CONFLICT (usuario_id) DO NOTHING
+                    """),
+                    {"uid": row.id},
+                )
+
             return User(id=row.id, numero_whatsapp=row.numero_whatsapp)

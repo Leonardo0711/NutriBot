@@ -68,6 +68,8 @@ class LLMService(abc.ABC):
         normalized: NormalizedMessage,
         instructions: str,
         rag_context: Optional[str] = None,
+        profile_context: Optional[str] = None,
+        history: Optional[list[dict]] = None,
     ) -> tuple[str, Optional[str]]:
         """Genera respuesta. Retorna (reply_text, new_response_id)."""
         ...
