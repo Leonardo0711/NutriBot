@@ -151,19 +151,55 @@ FORMATO DE SALIDA (JSON):
 
         if current_step and current_step != OnboardingStep.INVITACION.value:
             # --- MODO OBSTINADO (Prioritarios) ---
-            PRIORITARY_STEPS = ["edad", "peso", "talla", "alergias"]
+            PRIORITARY_STEPS = [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value, OnboardingStep.ALERGIAS.value]
+            FIELD_LABELS = {
+                OnboardingStep.EDAD.value: "tu **edad**",
+                OnboardingStep.PESO.value: "tu **peso**",
+                OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
+                OnboardingStep.ALERGIAS.value: "si tienes alguna **alergia o restriccion**",
+                OnboardingStep.TIPO_DIETA.value: "si sigues algun **tipo de dieta**",
+                OnboardingStep.ENFERMEDADES.value: "si padeces alguna **condicion de salud**",
+                OnboardingStep.RESTRICCIONES.value: "si tienes alguna **restriccion alimentaria**",
+                OnboardingStep.OBJETIVO.value: "tu **objetivo nutricional**",
+                OnboardingStep.PROVINCIA.value: "la **provincia** donde te encuentras",
+                OnboardingStep.DISTRITO.value: "tu **distrito**",
+            }
+            is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
             if current_step in PRIORITARY_STEPS and intent == "DOUBT":
                 prompts = {
-                    "edad": "tu **edad**",
-                    "peso": "tu **peso**",
-                    "talla": "tu **talla (estatura)**",
+                    OnboardingStep.EDAD.value: "tu **edad**",
+                    OnboardingStep.PESO.value: "tu **peso**",
+                    OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
                     "alergias": "si tienes alguna **alergia o restricción**"
                 }
-                campo_lindo = prompts.get(current_step, current_step)
+                campo_lindo = prompts.get(current_step, FIELD_LABELS.get(current_step, current_step))
                 return f"Entiendo que tienes una consulta, pero para poder darte una recomendación segura y que realmente te sirva, primero necesito completar tu perfil básico. 😊\n\n¿Me podrías decir {campo_lindo}, por favor?"
             # -------------------------------------
 
             if intent == "DOUBT":
+                # Si pide menu/receta en pleno onboarding, respondemos con control:
+                # nunca negamos datos ya guardados y reenfocamos al paso faltante.
+                if is_food_request:
+                    res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
+                    p = res_p.mappings().fetchone() or {}
+                    known_parts = []
+                    if p.get("edad"):
+                        known_parts.append(f"Edad: {p['edad']} anos")
+                    if p.get("peso_kg"):
+                        known_parts.append(f"Peso: {p['peso_kg']}kg")
+                    if p.get("altura_cm"):
+                        known_parts.append(f"Talla: {p['altura_cm']}cm")
+                    if p.get("alergias"):
+                        known_parts.append(f"Alergias: {p['alergias']}")
+
+                    known_line = f"Tengo registrado: {', '.join(known_parts)}. " if known_parts else ""
+                    campo_lindo = FIELD_LABELS.get(current_step, f"tu **{current_step}**")
+                    question = ONBOARDING_QUESTIONS.get(current_step, "")
+                    return (
+                        f"Vamos bien. {known_line}Para darte una recomendacion 100% personalizada, "
+                        f"solo me falta confirmar {campo_lindo}. {question}"
+                    ).strip()
+
                 # Let the general LLM handle the explanation for continuity
                 return None
             
@@ -418,9 +454,12 @@ MENSAJE USUARIO: "{user_text}"
         """Clean up user data and onboarding progress."""
         logger.info("System Reset triggered for user %s", uid)
         await session.execute(text("DELETE FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
-        await session.execute(text("DELETE FROM chat_history WHERE usuario_id = :uid"), {"uid": uid})
-        # Note: ConversationState is managed in the caller (advance_flow)
-        await session.commit()
+        await session.execute(text("DELETE FROM memoria_chat WHERE usuario_id = :uid"), {"uid": uid})
+        await session.execute(text("DELETE FROM formulario_en_progreso WHERE usuario_id = :uid"), {"uid": uid})
+        await session.execute(text("DELETE FROM profile_extractions WHERE usuario_id = :uid"), {"uid": uid})
+        await session.execute(text("DELETE FROM extraction_jobs WHERE usuario_id = :uid"), {"uid": uid})
+        # Note: ConversationState is managed in the caller (advance_flow).
+        # No commit here: this method runs inside an active transaction.
 
     def _check_frustration(self, history: Optional[list[dict]], current_step: str) -> bool:
         """

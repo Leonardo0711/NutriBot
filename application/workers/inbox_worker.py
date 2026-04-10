@@ -102,7 +102,9 @@ class InboxWorker:
 
         user = await self.user_repo.get_or_create(msg.phone)
         normalized = await self.media_service.normalize(msg)
-        asyncio.create_task(self.evolution_client.send_presence(normalized.phone, "composing"))
+        # Temporalmente desactivado: el endpoint de presence devuelve 400
+        # en este entorno y solo añade ruido en logs.
+        # asyncio.create_task(self.evolution_client.send_presence(normalized.phone, "composing"))
 
         rag_text = None
         try:

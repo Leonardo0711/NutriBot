@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import json
 
 from domain.entities import ConversationState, NormalizedMessage, User
-from domain.value_objects import OnboardingStatus, OnboardingStep
+from domain.value_objects import OnboardingStatus, OnboardingStep, SessionMode
 from domain.utils import get_now_peru
 from application.services.onboarding_service import OnboardingService, ONBOARDING_QUESTIONS
 from application.services.survey_service import SurveyService
@@ -142,6 +142,7 @@ class MessageOrchestratorService:
         
         reply = None
         v_text = normalized.text.lower().strip()
+        mode_before_survey = state.mode
         
         # 0. COMANDOS DE SISTEMA (Global)
         if v_text == "/reset":
@@ -197,7 +198,7 @@ class MessageOrchestratorService:
             else:
                 reply = f"¡Ya tengo tu perfil completo! 😊\n\n{summary}\n\nSi quieres cambiar algún dato específico (como tu peso o talla), solo dímelo directamente en cualquier momento."
 
-        if not is_annoyed and not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
+        if not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
             skipped = p_map.get("skipped_fields", {}) if isinstance(p_map.get("skipped_fields"), dict) else {}
             missing_essential = []
             if not p_map.get("edad") and not skipped.get("edad"): missing_essential.append("edad")
@@ -282,6 +283,8 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
 [DATOS DE PERFIL PARA TU ANÁLISIS INTERNO]
 {profile_text}"""
 
+            # Recalcular por si se agregaron reglas a extra_instr dentro del bloque de recomendación.
+            final_instructions = self._system_instructions + extra_instr
             reply, new_response_id = await self._llm_service.generate_reply(
                 state=state_snapshot,
                 normalized=normalized,
@@ -293,13 +296,16 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
 
         # 1. CONTADOR UNIVERSAL DE INTERACCIONES
         # Incrementamos si el bot respondió algo fuera del registro puro.
-        if not onboarding_interception_happened and reply:
-            state.meaningful_interactions_count += 1
-            logger.info("Universal interaction counter for user %s: %s", user.id, state.meaningful_interactions_count)
+        base_should_count_interaction = bool(not onboarding_interception_happened and reply)
+        should_count_before_survey = bool(
+            base_should_count_interaction
+            and mode_before_survey not in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value)
+        )
+        projected_interactions_count = state.meaningful_interactions_count + (1 if should_count_before_survey else 0)
 
         # 2. DISPARADOR DE INVITACIÓN 
         # Universal Nag Nuclear: Sale SI O SI si el contador es >= 5
-        if state.meaningful_interactions_count >= 5:
+        if False and state.meaningful_interactions_count >= 5:
             inv_text = ""
             try:
                 # PRIORIDAD 1: Encuesta de Usabilidad (si falta)
@@ -365,15 +371,33 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
             final_reply = reply
         else:
             original_mode = state.mode
-            addon = await self._survey_service.process(session, state, normalized.text)
+            addon = await self._survey_service.process(
+                session,
+                state,
+                normalized.text,
+                projected_interactions_count=projected_interactions_count,
+            )
             
             if addon:
-                if original_mode in ("collecting_usability", "collecting_profile") or state.mode in ("collecting_usability", "collecting_profile"):
+                if original_mode in ("collecting_usability", "collecting_profile"):
                     final_reply = addon
                 else:
                     final_reply = f"{reply}\n\n{addon}"
             else:
                 final_reply = reply
+
+            survey_was_interrupted = bool(
+                original_mode in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value)
+                and state.mode == SessionMode.ACTIVE_CHAT.value
+                and addon is None
+            )
+
+            if (should_count_before_survey or survey_was_interrupted) and state.mode == SessionMode.ACTIVE_CHAT.value:
+                if survey_was_interrupted:
+                    state.meaningful_interactions_count += 1
+                else:
+                    state.meaningful_interactions_count = projected_interactions_count
+                logger.info("Universal interaction counter for user %s: %s", user.id, state.meaningful_interactions_count)
 
         # Persistir en memoria_chat
         await self._append_to_chat_memory(session, user.id, normalized.text, final_reply)

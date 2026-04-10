@@ -68,13 +68,8 @@ class SqlAlchemyUserRepository(UserRepository):
                     """),
                     {"uid": row.id},
                 )
-                await session.execute(
-                    text("""
-                        INSERT INTO formulario_en_progreso (usuario_id)
-                        VALUES (:uid)
-                        ON CONFLICT (usuario_id) DO NOTHING
-                    """),
-                    {"uid": row.id},
-                )
+                # NO insertar en formulario_en_progreso aquí:
+                # requiere formulario_id NOT NULL y se crea desde SurveyService
+                # cuando el flujo de encuesta realmente inicia.
 
             return User(id=row.id, numero_whatsapp=row.numero_whatsapp)

@@ -69,6 +69,12 @@ class SurveyResponseExtractor:
     _NO_SE_WORDS = re.compile(r"\b(no\s*s[eé]|nose|ni idea)\b", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(\bpara\s*qu[eé]\b|\bpor\s*qu[eé]\b|\bqu[eé]\s*uso\b|\bpara\s*que\s*sirve\b|\bpor\s*que\s*lo\s*pide|\bpara\s*que\s*es\b|\bcomo\s*para\s*que\b|\bpara\b\?)", re.IGNORECASE)
 
+    _NUTRITION_HINTS = (
+        "menu", "menÃº", "receta", "dieta", "imc", "calorias", "calorÃ­as",
+        "desayuno", "almuerzo", "cena", "peso", "talla", "proteina", "proteÃ­na",
+        "carbohidratos", "grasa", "nutricion", "nutriciÃ³n", "pescado", "marino",
+    )
+
     def __init__(self, openai_client: AsyncOpenAI, model: str):
         self._client = openai_client
         self._model = model
@@ -83,11 +89,16 @@ class SurveyResponseExtractor:
             return {"intent": "WHY", "value": None}
         if any(vl.startswith(s) or vl == s for s in self._SKIP_EXACT):
             return {"intent": "SKIP", "value": None}
-
         if state_name == "esperando_correo":
+            # Si rechaza compartir correo, lo tratamos como SKIP para activar
+            # la logica de persuasion (una vez) y luego continuar con usabilidad.
+            if self._NO_WORDS.search(vl) or "prefiero no" in vl or "no compartir" in vl or "no dar" in vl:
+                return {"intent": "SKIP", "value": None}
             match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", v)
             if match:
                 return {"intent": "ANSWER", "value": match.group(0)}
+            if any(hint in vl for hint in self._NUTRITION_HINTS):
+                return {"intent": "INTERRUPT", "value": None}
             return None
 
         if state_name in ("esperando_asegurado", "esperando_autorizacion"):
@@ -116,11 +127,16 @@ class SurveyResponseExtractor:
             return None
 
         if state_name == "esperando_comentario":
+            if any(hint in vl for hint in self._NUTRITION_HINTS):
+                return {"intent": "INTERRUPT", "value": None}
             return {"intent": "ANSWER", "value": v if vl not in ("no", "nada", "ninguno") else None}
 
         return None
 
     async def extract_with_ai(self, state_name: str, user_text: str) -> dict:
+        if any(hint in user_text.lower() for hint in self._NUTRITION_HINTS):
+            return {"intent": "INTERRUPT", "value": None}
+
         field_type = "EMAIL" if state_name == "esperando_correo" else \
                      "BOOLEAN (Si/No/No se)" if state_name in ("esperando_asegurado", "esperando_autorizacion") else \
                      "NUMBER (1-5)" if state_name.startswith("esperando_p") else \
@@ -156,7 +172,13 @@ class SurveyService:
         self.openai_model = openai_model
         self.extractor = SurveyResponseExtractor(openai_client, openai_model)
 
-    async def process(self, session: AsyncSession, state: ConversationState, user_text: str) -> Optional[str]:
+    async def process(
+        self,
+        session: AsyncSession,
+        state: ConversationState,
+        user_text: str,
+        projected_interactions_count: Optional[int] = None,
+    ) -> Optional[str]:
         if state.mode in ("collecting_usability", "collecting_profile"):
             return await self._process_form_response(session, state, user_text)
 
@@ -167,7 +189,8 @@ class SurveyService:
             return None
 
         if state.mode == "active_chat":
-            if state.meaningful_interactions_count == 5:
+            effective_count = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
+            if effective_count >= 5:
                 # GUARDIA DE SOLAPAMIENTO
                 now = get_now_peru()
                 diff = now - state.onboarding_updated_at if state.onboarding_updated_at else None
@@ -198,6 +221,7 @@ class SurveyService:
                 return None
             state.mode = "collecting_usability"
             state.awaiting_question_code = current_state
+            state.meaningful_interactions_count = 0
             question = FORM_QUESTIONS.get(current_state, "")
             return f"¡Antes de irte! 😊 Me quedaron unas preguntitas pendientes de la última vez que me ayudan mucho a mejorar NutriBot. ¿Te parece si las completamos rápido?\n\n{question}"
 
@@ -213,6 +237,7 @@ class SurveyService:
         state.mode = "collecting_usability"
         state.awaiting_question_code = first_state
         state.turns_since_last_prompt = 0
+        state.meaningful_interactions_count = 0
         question = FORM_QUESTIONS[first_state]
         return f"{prefix}\n\n{question}" if prefix else f"¡Muchas gracias por chatear conmigo! 🙏 Antes de despedirnos, me encantaría saber qué te pareció la experiencia. Son unas preguntitas rápidas.\n\n{question}"
 
