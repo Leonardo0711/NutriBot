@@ -71,7 +71,11 @@ REGLAS CRÍTICAS DE ROBUSTEZ:
 5. ALERGIAS vs RESTRICCIONES: Si el usuario dice 'soy alérgico a X', es una alergia. Si dice 'no me gusta X', es una restricción_alimentaria.
 6. PETICIONES vs DATOS (REGLA DE ORO): Si el usuario PIDE algo (ej: 'dame una receta de pescado'), NO extraigas ese alimento como dato de perfil.
 7. NEGACIÓN TOTAL: Si el usuario dice 'ninguna', 'nada', 'no tengo' a una pregunta sobre salud/alergia/restricción, extrae 'NINGUNA'.
-8. FORMATO: Responde SOLO un objeto JSON PLANO. Si no hay datos claros, responde {}.
+8. COHERENCIA BIOLÓGICA Y MÉDICA (NUEVO):
+   - RECHAZA datos absurdos (ej: 'alergia al aire', 'enfermedad marciana', 'diabetes tipo T').
+   - RECHAZA métricas imposibles (ej: altura < 50cm o > 250cm, peso < 2kg o > 400kg para adultos).
+   - REGLA DIABETES: Si el usuario menciona 'diabetes', DEBE especificar el tipo (1, 2, gestacional). Si dice 'diabetes' a secas o con un tipo inexistente, NO extraigas 'enfermedades'. El bot debe preguntar el tipo en el chat.
+9. FORMATO: Responde SOLO un objeto JSON PLANO. Si no hay datos claros, responde {}.
 10. PROHIBICIÓN DE PREGUNTAS: Si el texto termina en '?' o comienza con palabras interrogativas ('cómo', 'qué', 'por qué', 'para qué', 'cuál', 'cuanto'), responde SIEMPRE con un objeto vacío {}. NO intentes salvar datos de una pregunta.
 """
 

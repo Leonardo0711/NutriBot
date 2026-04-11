@@ -104,6 +104,17 @@ class MessageOrchestratorService:
             return "Ninguna"
         return f"{val}{unit}"
 
+    def _fmt_height(self, val_cm):
+        if val_cm is None or (isinstance(val_cm, str) and val_cm.strip() == ""):
+            return "⚠️ Pendiente"
+        try:
+            val = float(val_cm)
+            if val > 10: # Si parece estar en cm (ej. 170)
+                return f"{val/100:.2f}m"
+            return f"{val:.2f}m" # Si ya parece estar en metros (ej. 1.70)
+        except:
+            return str(val_cm)
+
     async def build_profile_context(self, session: AsyncSession, uid: int) -> tuple[str, str, dict]:
         res = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
         p = res.mappings().fetchone()
@@ -111,7 +122,7 @@ class MessageOrchestratorService:
             parts = [
                 f"Edad: {self._fmt(p.get('edad'), ' años')}",
                 f"Peso: {self._fmt(p.get('peso_kg'), 'kg')}",
-                f"Talla: {self._fmt(p.get('altura_cm'), 'cm')}",
+                f"Talla: {self._fmt_height(p.get('altura_cm'))}",
                 f"Tipo de dieta: {self._fmt(p.get('tipo_dieta'))}",
                 f"Alergias: {self._fmt(p.get('alergias'))}",
                 f"Enfermedades: {self._fmt(p.get('enfermedades'))}",
@@ -120,7 +131,7 @@ class MessageOrchestratorService:
                 f"Ubicación: {self._fmt(p.get('distrito') or p.get('provincia') or p.get('region'))}"
             ]
             profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
-            summary = f"• Edad: {self._human_fmt(p.get('edad'), ' años')}\n• Peso: {self._human_fmt(p.get('peso_kg'), 'kg')}\n• Talla: {self._human_fmt(p.get('altura_cm'), 'cm')}\n• Alergias: {self._human_fmt(p.get('alergias'))}\n• Enfermedades: {self._human_fmt(p.get('enfermedades'))}\n• Objetivo: {self._human_fmt(p.get('objetivo_nutricional'))}"
+            summary = f"• Edad: {self._human_fmt(p.get('edad'), ' años')}\n• Peso: {self._human_fmt(p.get('peso_kg'), 'kg')}\n• Talla: {self._fmt_height(p.get('altura_cm'))}\n• Alergias: {self._human_fmt(p.get('alergias'))}\n• Enfermedades: {self._human_fmt(p.get('enfermedades'))}\n• Objetivo: {self._human_fmt(p.get('objetivo_nutricional'))}"
             return profile_text, summary, dict(p)
         else:
             parts = [f"{label}: ⚠️ Pendiente" for label in ["Edad", "Peso", "Talla", "Tipo de dieta", "Alergias", "Enfermedades", "Restricciones", "Objetivo", "Región", "Provincia", "Distrito"]]
@@ -153,7 +164,7 @@ class MessageOrchestratorService:
             state.version += 1
             return "¡Entendido! He borrado tus datos de perfil para que podamos empezar de cero cuando gustes. 🔄\n\n¿Quieres que empecemos ahora?", None
 
-        is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer", "imc", "calorías", "grasa", "proteína", "keto", "ayuno", "carbohidratos"])
+        is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer", "imc", "calorías", "grasa", "proteína", "keto", "ayuno", "carbohidratos", "gluten", "libre de", "alergia", "enfermedad"])
         is_short_greeting = len(v_text) < 25 and any(w in v_text for w in ["hola", "buenas", "buenos", "empezar", "arrancar", "nutribot", "que tal", "holis"])
         
         is_requesting_personalization = any(w in v_text for w in ["personalizar", "completar mi perfil", "mis datos", "cambiar mi peso", "actualizar perfil", "personaliza", "mejorar", "ayudarte a mejorar", "encuesta", "formulario", "llenar datos", "mis objetivos"])
@@ -195,7 +206,8 @@ class MessageOrchestratorService:
                 state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
                 state.onboarding_step = next_step
                 onboarding_interception_happened = True
-            else:
+            elif not is_asking_for_recommendation:
+                # Solo mostramos el resumen si NO está pidiendo una recomendación al mismo tiempo
                 reply = f"¡Ya tengo tu perfil completo! 😊\n\n{summary}\n\nSi quieres cambiar algún dato específico (como tu peso o talla), solo dímelo directamente en cualquier momento."
 
         if not onboarding_interception_happened and state.onboarding_status != OnboardingStatus.COMPLETED.value and (is_short_greeting or is_asking_for_recommendation):
@@ -214,7 +226,10 @@ class MessageOrchestratorService:
                     known_parts = []
                     if p_map.get("edad"): known_parts.append(f"Edad: {p_map['edad']} años")
                     if p_map.get("peso_kg"): known_parts.append(f"Peso: {p_map['peso_kg']}kg")
-                    if p_map.get("altura_cm"): known_parts.append(f"Talla: {p_map['altura_cm']}cm")
+                    if p_map.get("altura_cm"):
+                        h = float(p_map['altura_cm'])
+                        h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
+                        known_parts.append(f"Talla: {h_str}")
                     if p_map.get("alergias"): known_parts.append(f"Alergias: {p_map['alergias']}")
                     if known_parts:
                         intro += f" 😊 Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
@@ -262,7 +277,9 @@ class MessageOrchestratorService:
                 if is_asking_for_recommendation:
                     citation = "Considerando"
                     if p_map:
-                        citation += f" que tienes {p_map.get('edad')} años, pesas {p_map.get('peso_kg')}kg y mides {p_map.get('altura_cm')}cm"
+                        h = float(p_map.get('altura_cm')) if p_map.get('altura_cm') else 0
+                        h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
+                        citation += f" que tienes {p_map.get('edad')} años, pesas {p_map.get('peso_kg')}kg y mides {h_str}"
                         if p_map.get('alergias') and p_map.get('alergias').upper() != 'NINGUNA':
                             citation += f", tienes alergia a {p_map.get('alergias')}"
                         if p_map.get('objetivo_nutricional') and p_map.get('objetivo_nutricional').upper() != 'NINGUNA':
@@ -357,49 +374,78 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
         if reply and not onboarding_interception_happened:
             # Añadir recordatorio educativo de personalización si no es el PD de encuesta
             if "PD:" not in reply:
-                reply += "\n\n💡 *Tip NutriBot:* Recuerda que puedes decirme tus alergias, restricciones (ej. 'no como carne') o enfermedades en cualquier momento para ser 100% exacto para ti. ¡Tú tienes el control! 🍏"
+                reply += "\n\n💡 *Tip NutriBot:* Recuerda que puedes contarme más sobre ti (alergias, peso, etc.) cuando gustes para ser más exacto. ¡Tú decides! 🍏"
 
-            if state.onboarding_status == OnboardingStatus.IN_PROGRESS.value and state.onboarding_step:
-                q_text = ONBOARDING_QUESTIONS.get(state.onboarding_step, "")
-                if q_text:
-                    if not any(q_text[:20] in reply for q_text in ONBOARDING_QUESTIONS.values()): # Evitar duplicados
-                         reply = f"{reply}\n\nPor cierto, sigamos con tu perfil: **{q_text}**"
+            # Desactivamos el anclaje inmediato si acabamos de saltar un paso por duda nutricional
+            # o si el usuario está en medio de un flujo y pidió otra cosa.
+            # Solo re-anclamos si NO es una respuesta nutricional larga.
+            pass # Eliminamos el bloque que añadía "sigamos con tu perfil" forzosamente aquí
 
         await session.execute(text("INSERT INTO extraction_jobs (usuario_id, raw_text) VALUES (:uid, :txt)"), {"uid": user.id, "txt": normalized.text})
 
-        if onboarding_interception_happened:
-            final_reply = reply
-        else:
-            original_mode = state.mode
-            addon = await self._survey_service.process(
-                session,
-                state,
-                normalized.text,
-                projected_interactions_count=projected_interactions_count,
-            )
-            
-            if addon:
-                if original_mode in ("collecting_usability", "collecting_profile"):
-                    final_reply = addon
-                else:
-                    final_reply = f"{reply}\n\n{addon}"
+        # --- GESTIÓN DE LA RESPUESTA FINAL Y ENCUESTA ---
+        # El survey_service decide si añadir un addon (invitación) o manejar el formulario.
+        original_mode = state.mode
+        addon = await self._survey_service.process(
+            session,
+            state,
+            normalized.text,
+            projected_interactions_count=projected_interactions_count,
+        )
+        
+        if addon:
+            if original_mode in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value):
+                final_reply = addon
             else:
+                # El addon es una invitación (PD). La enviamos como mensaje SEPARADO.
+                # No la concatenamos al final_reply.
                 final_reply = reply
+                # Generamos una key de idempotencia única para este turno
+                idempotency_key = f"survey_invite_{normalized.provider_message_id}"
+                await self._schedule_separate_message(
+                    session, 
+                    user.id, 
+                    user.numero_whatsapp, 
+                    addon, 
+                    idempotency_key
+                )
+        else:
+            final_reply = reply
 
-            survey_was_interrupted = bool(
-                original_mode in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value)
-                and state.mode == SessionMode.ACTIVE_CHAT.value
-                and addon is None
-            )
+        survey_was_interrupted = bool(
+            original_mode in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value)
+            and state.mode == SessionMode.ACTIVE_CHAT.value
+            and addon is None
+        )
 
-            if (should_count_before_survey or survey_was_interrupted) and state.mode == SessionMode.ACTIVE_CHAT.value:
-                if survey_was_interrupted:
-                    state.meaningful_interactions_count += 1
-                else:
-                    state.meaningful_interactions_count = projected_interactions_count
-                logger.info("Universal interaction counter for user %s: %s", user.id, state.meaningful_interactions_count)
+        if (should_count_before_survey or survey_was_interrupted) and state.mode == SessionMode.ACTIVE_CHAT.value:
+            if survey_was_interrupted:
+                # Si se interrumpió por cambio de tema, reseteamos el contador para que
+                # no vuelva a aparecer hasta dentro de 5 interacciones más.
+                state.meaningful_interactions_count = 0
+            else:
+                state.meaningful_interactions_count = projected_interactions_count
+            logger.info("Universal interaction counter for user %s: %s", user.id, state.meaningful_interactions_count)
 
         # Persistir en memoria_chat
         await self._append_to_chat_memory(session, user.id, normalized.text, final_reply)
 
         return final_reply, new_response_id
+
+    async def _schedule_separate_message(self, session: AsyncSession, uid: int, phone: str, content: str, idemp_key: str):
+        """Programa un mensaje para ser enviado de forma asíncrona vía Outbox."""
+        try:
+            sql = """
+                INSERT INTO outgoing_messages (usuario_id, phone, content_type, content, idempotency_key, status, created_at, updated_at)
+                VALUES (:uid, :phone, 'text', :content, :key, 'pending', NOW() + INTERVAL '40 seconds', NOW())
+                ON CONFLICT (idempotency_key) DO NOTHING
+            """
+            await session.execute(text(sql), {
+                "uid": uid,
+                "phone": phone,
+                "content": content,
+                "key": idemp_key
+            })
+            logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
+        except Exception as e:
+            logger.error("Error scheduling separate message: %s", e)

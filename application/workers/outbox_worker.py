@@ -35,6 +35,7 @@ class OutboxWorker:
                             SELECT id FROM outgoing_messages
                             WHERE status IN ('pending', 'failed')
                               AND attempt_count < :max_retry
+                              AND created_at <= NOW()
                             ORDER BY created_at ASC
                             LIMIT 10
                             FOR UPDATE SKIP LOCKED

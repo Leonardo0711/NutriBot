@@ -35,6 +35,19 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
 }
 
 class OnboardingService:
+    FIELD_LABELS = {
+        OnboardingStep.EDAD.value: "tu **edad**",
+        OnboardingStep.PESO.value: "tu **peso**",
+        OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
+        OnboardingStep.ALERGIAS.value: "si tienes alguna **alergia o restriccion**",
+        OnboardingStep.TIPO_DIETA.value: "si sigues algun **tipo de dieta**",
+        OnboardingStep.ENFERMEDADES.value: "si padeces alguna **condicion de salud**",
+        OnboardingStep.RESTRICCIONES.value: "si tienes alguna **restriccion alimentaria**",
+        OnboardingStep.OBJETIVO.value: "tu **objetivo nutricional**",
+        OnboardingStep.PROVINCIA.value: "la **provincia** donde te encuentras",
+        OnboardingStep.DISTRITO.value: "tu **distrito**",
+    }
+
     SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
 
 REGLAS DE INTENCIÓN:
@@ -47,20 +60,30 @@ REGLAS DE INTENCIÓN:
 REGLAS DE ORO (CRÍTICAS):
 - PETICIONES DE COMIDA = DOUBT: Si el usuario pide un menú, receta o consejo (ej: 'Dame un menú marino', 'Dame dieta para bajar peso') MIENTRAS estás en un paso de perfil, clasifica SIEMPRE como DOUBT. NUNCA lo extraigas como 'Ninguna' o como dato de perfil.
 - BLINDAJE DE ALERGIAS: Si el paso es ALERGIAS y el usuario pide comida, NUNCA devuelvas 'Ninguna'. Es preferible clasificar como DOUBT y pedir aclaración.
-- COHERENCIA MÉDICA: Rechaza datos absurdos (ej: Hepatitis Z).
-- Si tienes dudas entre ANSWER y DOUBT por una petición de comida, elige DOUBT.
+
+- COHERENCIA MÉDICA Y BIOLÓGICA (NUEVO):
+  * RECHAZA datos absurdos (ej: 'alergia al aire', 'enfermedad de los marcianos').
+  * RECHAZA métricas imposibles (ej: un adulto de 300cm, un bebé de 200kg, o una persona de 2 metros que pese 20kg).
+  * Si el dato no tiene sentido biológico o médico, clasifica como DOUBT y pide aclaración en 'explanation'.
+
+- Si tienes dudas entre ANSWER y DOUBT por una petición de comida o incoherencia, elige DOUBT.
 
 EXAMPLES:
-- Paso: ALERGIAS | Usuario: 'Dame un menú marino porfavor' -> Intent: DOUBT, Data: {}, Explanation: 'No puedo anotar eso como alergia. Primero dime si tienes alergias, luego te doy el menú.'
-- Paso: ALERGIAS | Usuario: 'No tengo ninguna' -> Intent: ANSWER, Data: {'alergias': 'Ninguna'}
-- Paso: PESO | Usuario: '80kg y dame un menú' -> Intent: DOUBT, Data: {}, Explanation: 'Por favor, primero solo el peso para que sea exacto.'
-- Paso: EDAD | Usuario: 'No sé, ¿importa?' -> Intent: DOUBT
+- Paso: PESO | Usuario: 'Peso 500 kilos' -> Intent: DOUBT, Data: {}, Explanation: '¡Wow! 😮 Quizás hubo un error al escribir. ¿Me confirmas tu peso real para calcular bien tu plan?'
+- Paso: PESO | Usuario: '80kg y dame un menú' -> Intent: DOUBT, Data: {}, Explanation: '¡Perfecto! 📝 Ya casi llegamos al menú, solo confírmame primero el peso para que sea exacto.'
+- Paso: PROVINCIA | Usuario: 'no deseo' -> Intent: SKIP, Data: {}, Explanation: 'Ningún problema, podemos seguir sin eso.'
+
+REGLAS DE TONO Y FLEXIBILIDAD:
+- EVITA FRASES BLOQUEANTES: Nunca digas "necesito esto para continuar" o "es obligatorio". Usa "Me ayudaría mucho a..." o "Para ser más preciso...".
+- DETECCIÓN DE RECHAZO: Si el usuario dice "no quiero decirte", "ya me aburrí", "muchos datos", "no deseo", clasifica como SKIP.
+- PETICIONES DE COMIDA DURANTE UBICACIÓN: Si estamos en PROVINCIA o DISTRITO y el usuario pide COMIDA/MENÚ, clasifica como SKIP para el campo actual para no bloquear.
+- Si el usuario muestra FRUSTRACIÓN o ABURRIMIENTO, genera una 'explanation' muy breve y empática, y sugiere que pueden seguir con otra cosa.
 
 FORMATO DE SALIDA (JSON):
 {
   "intent": "ANSWER|DOUBT|SKIP|GREETING|RESET|STOP",
   "data": {"campo": "valor"} o {},
-  "explanation": "Breve respuesta amable (máx 15 palabras).",
+  "explanation": "Frase empática y breve (máx 12 palabras). Evita sonar repetitivo.",
   "confidence": 0.0-1.0
 }
 """
@@ -152,31 +175,56 @@ FORMATO DE SALIDA (JSON):
         if current_step and current_step != OnboardingStep.INVITACION.value:
             # --- MODO OBSTINADO (Prioritarios) ---
             PRIORITARY_STEPS = [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value, OnboardingStep.ALERGIAS.value]
-            FIELD_LABELS = {
-                OnboardingStep.EDAD.value: "tu **edad**",
-                OnboardingStep.PESO.value: "tu **peso**",
-                OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
-                OnboardingStep.ALERGIAS.value: "si tienes alguna **alergia o restriccion**",
-                OnboardingStep.TIPO_DIETA.value: "si sigues algun **tipo de dieta**",
-                OnboardingStep.ENFERMEDADES.value: "si padeces alguna **condicion de salud**",
-                OnboardingStep.RESTRICCIONES.value: "si tienes alguna **restriccion alimentaria**",
-                OnboardingStep.OBJETIVO.value: "tu **objetivo nutricional**",
-                OnboardingStep.PROVINCIA.value: "la **provincia** donde te encuentras",
-                OnboardingStep.DISTRITO.value: "tu **distrito**",
-            }
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
+            
+            # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito): Cero insistencia si piden comida
+            if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value) and (intent == "DOUBT" or is_food_request):
+                await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+                state.onboarding_step = await self._find_next_missing_step(session, state.usuario_id)
+                if not state.onboarding_step:
+                    state.onboarding_status = OnboardingStatus.COMPLETED.value
+                return None # Devolvemos None para que el orchestrator responda la duda nutricional
+            
             if current_step in PRIORITARY_STEPS and intent == "DOUBT":
+                explanation = analysis.get("explanation")
+                if explanation:
+                    return f"{explanation}\n\n**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+
                 prompts = {
                     OnboardingStep.EDAD.value: "tu **edad**",
                     OnboardingStep.PESO.value: "tu **peso**",
                     OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
                     "alergias": "si tienes alguna **alergia o restricción**"
                 }
-                campo_lindo = prompts.get(current_step, FIELD_LABELS.get(current_step, current_step))
-                return f"Entiendo que tienes una consulta, pero para poder darte una recomendación segura y que realmente te sirva, primero necesito completar tu perfil básico. 😊\n\n¿Me podrías decir {campo_lindo}, por favor?"
+                campo_lindo = prompts.get(current_step, self.FIELD_LABELS.get(current_step, current_step))
+                return f"¡Me encantaría ayudarte con eso! 🍏 Pero para darte una recomendación que realmente te sirva y sea segura, primero necesito completar un detallito de tu perfil. 😊\n\n¿Me podrías decir {campo_lindo}, por favor?"
             # -------------------------------------
 
             if intent == "DOUBT":
+                # Si tenemos una explicación específica de por qué falló la extracción o coherencia:
+                explanation = analysis.get("explanation")
+                
+                # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito): Persuasión de un solo turno
+                if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
+                    # Si muestra frustración o simplemente no quiere: SKIPEAMOS Y AVANZAMOS
+                    if self._check_frustration(history, current_step) or any(w in vl for w in ["aburr", "harto", "no quiero", "no deseo", "basta", "dame", "nada"]):
+                        await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+                        # Buscamos el siguiente campo pero NO devolvemos None aquí directamente
+                        # Si es una duda nutricional, queremos que el orquestador responda.
+                        # Si es simplemente un "no quiero", devolvemos el siguiente paso.
+                        next_step = await self._find_next_missing_step(session, state.usuario_id)
+                        if not next_step:
+                            self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+                            return "¡Entendido! No te preocupes por eso. 😊 ¿En qué más puedo ayudarte hoy?"
+                        
+                        self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+                        if is_food_request or "dame" in vl:
+                             return None # Deja que el orquestador responda el menú
+                        return f"No hay problema, podemos saltarlo. 😊 Sigamos con otro detalle: **{ONBOARDING_QUESTIONS[next_step]}**"
+
+                if explanation:
+                    return f"{explanation}\n\n¿Seguimos con tu perfil? **{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+
                 # Si pide menu/receta en pleno onboarding, respondemos con control:
                 # nunca negamos datos ya guardados y reenfocamos al paso faltante.
                 if is_food_request:
@@ -188,12 +236,14 @@ FORMATO DE SALIDA (JSON):
                     if p.get("peso_kg"):
                         known_parts.append(f"Peso: {p['peso_kg']}kg")
                     if p.get("altura_cm"):
-                        known_parts.append(f"Talla: {p['altura_cm']}cm")
+                        h = float(p["altura_cm"])
+                        h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
+                        known_parts.append(f"Talla: {h_str}")
                     if p.get("alergias"):
                         known_parts.append(f"Alergias: {p['alergias']}")
 
                     known_line = f"Tengo registrado: {', '.join(known_parts)}. " if known_parts else ""
-                    campo_lindo = FIELD_LABELS.get(current_step, f"tu **{current_step}**")
+                    campo_lindo = self.FIELD_LABELS.get(current_step, f"tu **{current_step}**")
                     question = ONBOARDING_QUESTIONS.get(current_step, "")
                     return (
                         f"Vamos bien. {known_line}Para darte una recomendacion 100% personalizada, "
@@ -215,11 +265,7 @@ FORMATO DE SALIDA (JSON):
                 self._set_onboarding_state(state, OnboardingStatus.PAUSED, current_step)
                 return "De acuerdo, pausamos aquí. Si quieres seguir más tarde, solo dime 'continuar'. 👋"
             
-            # --- Frustration Bypass Check ---
-            if intent in ["DOUBT", "GREETING", "ANSWER"]:
-                if self._check_frustration(history, current_step):
-                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos **saltarlo** por ahora y seguir con lo demás para no estancarnos. ¿Te parece?\n\nO si gustas, dime tu **{current_step}** para continuar."
-        # -----------------------------------------------
+            # -----------------------------------------------
 
         if current_step == OnboardingStep.INVITACION.value:
             prompt = f"""Analiza la respuesta del usuario a una invitación de 'Personalizar perfil nutricional'.
@@ -258,7 +304,10 @@ FORMATO DE SALIDA (JSON):
                 known_parts = []
                 if p.get("edad"): known_parts.append(f"Edad: {p['edad']} años")
                 if p.get("peso_kg"): known_parts.append(f"Peso: {p['peso_kg']}kg")
-                if p.get("altura_cm"): known_parts.append(f"Talla: {p['altura_cm']}cm")
+                if p.get("altura_cm"):
+                    h = float(p["altura_cm"])
+                    h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
+                    known_parts.append(f"Talla: {h_str}")
                 
                 if known_parts:
                     return f"¡Genial! 😊 Ya tengo registrado: **{', '.join(known_parts)}**. Ahora necesito completar unos datos más.\n\n{ONBOARDING_QUESTIONS[next_step]}"
@@ -284,7 +333,12 @@ FORMATO DE SALIDA (JSON):
 
         if not extracted:
             if intent == "ANSWER":
-                return f"No logré captar ese detalle para tu perfil. 😅 ¿Podrías decírmelo de forma más simple?\n\nRecordemos: **{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+                # Check frustration only when ANSWER fails
+                if self._check_frustration(history, current_step):
+                    campo_lindo = self.FIELD_LABELS.get(current_step, current_step)
+                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos **saltarlo** por ahora y seguir con lo demás para no estancarnos. ¿Te parece?\n\nO si gustas, dime tu **{campo_lindo}** para continuar."
+
+                return f"No logré captar ese detalle para tu perfil. 😅 ¿Podrías decírmelo de forma más simple?\n\n**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
             elif intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
             else:
@@ -463,23 +517,23 @@ MENSAJE USUARIO: "{user_text}"
 
     def _check_frustration(self, history: Optional[list[dict]], current_step: str) -> bool:
         """
-        Detecta si el usuario está estancado en el mismo paso.
-        Regla: El asistente ha preguntado lo mismo al menos 2 veces seguidas y no ha habido éxito.
+        Detecta si el usuario está estancado o mostrando signos de molestia.
         """
-        if not history or len(history) < 4:
+        if not history or len(history) < 2:
             return False
             
-        # Revisamos los últimos mensajes del asistente
-        assistant_msgs = [m["content"] for m in history if m["role"] == "assistant"]
-        if len(assistant_msgs) < 2:
-            return False
-            
-        last_q = assistant_msgs[-1].lower()
-        prev_q = assistant_msgs[-2].lower()
-        
-        # Si ambas preguntas contienen el texto de la pregunta actual, es un bucle
-        q_text = ONBOARDING_QUESTIONS.get(current_step, "").lower()
-        if q_text and q_text in last_q and q_text in prev_q:
+        last_user_msg = history[-1]["content"].lower() if history[-1]["role"] == "user" else ""
+        frustration_keywords = ["aburr", "harto", "no quiero", "no deseo", "basta", "dame lo que", "muchos datos", "pesado", "stuck", "que fue", "no contestas"]
+        if any(kw in last_user_msg for kw in frustration_keywords):
             return True
+
+        # Regla de repetición (Assistant preguntó lo mismo 2 veces)
+        assistant_msgs = [m["content"] for m in history if m["role"] == "assistant"]
+        if len(assistant_msgs) >= 2:
+            last_q = assistant_msgs[-1].lower()
+            prev_q = assistant_msgs[-2].lower()
+            q_text = ONBOARDING_QUESTIONS.get(current_step, "").lower()
+            if q_text and q_text in last_q and q_text in prev_q:
+                return True
             
         return False
