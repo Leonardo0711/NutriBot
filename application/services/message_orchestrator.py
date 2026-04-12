@@ -115,6 +115,43 @@ class MessageOrchestratorService:
         except:
             return str(val_cm)
 
+    def _human_step_label(self, step_code: str) -> str:
+        labels = {
+            "edad": "edad",
+            "peso_kg": "peso",
+            "altura_cm": "talla",
+            "alergias": "alergias",
+            "enfermedades": "condiciones de salud",
+            "restricciones_alimentarias": "restricciones alimentarias",
+            "tipo_dieta": "tipo de dieta",
+            "objetivo_nutricional": "objetivo nutricional",
+            "provincia": "provincia",
+            "distrito": "distrito",
+        }
+        return labels.get(step_code, step_code)
+
+    def _build_pending_fields(self, p_map: dict) -> list[str]:
+        skipped = p_map.get("skipped_fields", {}) if isinstance(p_map.get("skipped_fields"), dict) else {}
+        checks = [
+            ("edad", "edad"),
+            ("peso_kg", "peso"),
+            ("altura_cm", "talla"),
+            ("alergias", "alergias"),
+            ("enfermedades", "condiciones de salud"),
+            ("restricciones_alimentarias", "restricciones"),
+            ("tipo_dieta", "tipo de dieta"),
+            ("objetivo_nutricional", "objetivo"),
+            ("provincia", "provincia"),
+            ("distrito", "distrito"),
+        ]
+        pending = []
+        for key, label in checks:
+            if skipped.get(key):
+                continue
+            if not p_map.get(key):
+                pending.append(label)
+        return pending
+
     async def build_profile_context(self, session: AsyncSession, uid: int) -> tuple[str, str, dict]:
         res = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
         p = res.mappings().fetchone()
@@ -167,8 +204,34 @@ class MessageOrchestratorService:
         is_asking_for_recommendation = any(w in v_text for w in ["menu", "menú", "receta", "dieta", "qué como", "que como", "comida saludable", "recomienda", "recomendación", "almuerzo", "cena", "desayuno", "coman", "nutricional", "comer", "imc", "calorías", "grasa", "proteína", "keto", "ayuno", "carbohidratos", "gluten", "libre de", "alergia", "enfermedad"])
         is_short_greeting = len(v_text) < 25 and any(w in v_text for w in ["hola", "buenas", "buenos", "empezar", "arrancar", "nutribot", "que tal", "holis"])
         
-        is_requesting_personalization = any(w in v_text for w in ["personalizar", "completar mi perfil", "mis datos", "cambiar mi peso", "actualizar perfil", "personaliza", "mejorar", "ayudarte a mejorar", "encuesta", "formulario", "llenar datos", "mis objetivos"])
-        if not is_requesting_personalization and len(v_text) > 10:
+        is_requesting_personalization = any(w in v_text for w in [
+            "personalizar",
+            "completar mi perfil",
+            "mis datos",
+            "cambiar mi peso",
+            "actualizar perfil",
+            "actualizar mi perfil",
+            "actualizar mi perfil nutricional",
+            "perfil nutricional",
+            "personaliza",
+            "llenar datos",
+            "mis objetivos",
+        ])
+        is_requesting_survey = any(w in v_text for w in [
+            "encuesta",
+            "formulario",
+            "satisfaccion",
+            "satisfacción",
+            "experiencia",
+            "seguir con el formulario",
+            "sigamos con el formulario",
+            "continuar con el formulario",
+            "retomar formulario",
+            "retomar encuesta",
+            "ayudarte a mejorar",
+            "mejorar nutribot",
+        ])
+        if not is_requesting_personalization and not is_requesting_survey and len(v_text) > 10:
             pers_prompt = f"¿El usuario está expresando deseo de completar su perfil, cambiar sus datos o personalizar más sus respuestas? Responde SOLO 'YES' o 'NO'.\n\nUSUARIO: '{normalized.text}'"
             pers_resp = await self._openai_client.chat.completions.create(
                 model=self._openai_model,
@@ -180,6 +243,7 @@ class MessageOrchestratorService:
 
         onboarding_interception_happened = False
         extracted_data = {}
+        has_absurd_profile_claim = False
         
         # 1. TRAMO DE REGISTRO (ONBOARDING)
         # Si el usuario está en proceso de registro, le damos prioridad absoluta
@@ -197,12 +261,32 @@ class MessageOrchestratorService:
             if reply is None:
                 onboarding_interception_happened = False
 
-        # 2. EXTRACCIÓN GENERAL (Eliminado Legacy - Ahora todo pasa por Switchboard)
+        # 2. EXTRACCIÓN GENERAL (chat libre): aplicar correcciones al perfil en tiempo real.
+        if not onboarding_interception_happened:
+            has_absurd_profile_claim = self._profile_extractor.contains_absurd_claim(normalized.text)
+            extracted_data = await self._profile_extractor.extract_and_save(
+                user_text=normalized.text,
+                usuario_id=user.id,
+                session=session,
+                current_step=None,
+            )
+            if extracted_data:
+                logger.info("Real-time profile update user=%s: %s", user.id, extracted_data)
+                # Refrescar contexto para que el LLM use los nuevos valores persistidos.
+                profile_text, summary, p_map = await self.build_profile_context(session, user.id)
 
         if not onboarding_interception_happened and is_requesting_personalization:
             next_step = await self._onboarding_service._find_next_missing_step(session, user.id, ignore_skips=True, treat_ninguna_as_missing=False)
             if next_step:
-                reply = f"¡Claro! 🥗 Me encantaría que personalicemos tus recomendaciones. Vamos a completar tu perfil para darte consejos exactos.\n\nEsto es lo que tengo registrado:\n{summary}\n\n¿Empezamos por confirmar tu **{next_step}**? 😊"
+                pending_fields = self._build_pending_fields(p_map)
+                pending_line = ", ".join(pending_fields) if pending_fields else "ninguno"
+                step_label = self._human_step_label(next_step)
+                reply = (
+                    "¡Claro! 🥗 Me encantaría que personalicemos tus recomendaciones.\n\n"
+                    f"Esto es lo que tengo registrado:\n{summary}\n\n"
+                    f"Pendiente por completar: {pending_line}.\n\n"
+                    f"¿Empezamos por confirmar tu **{step_label}**? 😊"
+                )
                 state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
                 state.onboarding_step = next_step
                 onboarding_interception_happened = True
@@ -251,9 +335,18 @@ class MessageOrchestratorService:
                         onboarding_interception_happened = False
             elif is_short_greeting:
                 if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
-                    reply = "¡Hola! Soy NutriBot 🍏. Para empezar con el pie derecho, ¿te gustaría que personalice mis sugerencias en base a tu perfil nutricional? Es súper rápido. 😊"
+                    reply = (
+                        "¡Hola! Soy **NutriBot** 🤖🥗, tu agente con IA para guiarte y acompañarte en tu alimentación de forma cercana y práctica.\n\n"
+                        "Si te parece, empezamos completando tu *perfil nutricional* "
+                        "(edad, peso, talla, alergias y objetivo) para darte recomendaciones más exactas y seguras.\n\n"
+                        "¿Te gustaría empezar ahora? 😊"
+                    )
                 else:
-                    reply = "¡Hola de nuevo! 😊 Qué bueno verte. Por cierto, aún nos faltan algunos datos para que mis consejos de hoy sean 100% precisos para ti. ¿Te gustaría completarlos ahora? Es un ratito."
+                    reply = (
+                        "¡Hola de nuevo! 🤖🍏 Qué bueno verte.\n\n"
+                        "Aún nos faltan algunos datos de tu *perfil nutricional* para que mis consejos sean 100% precisos para ti.\n\n"
+                        "¿Te gustaría completarlos ahora? Es un ratito."
+                    )
                 state.onboarding_status = OnboardingStatus.INVITED.value
                 state.onboarding_step = OnboardingStep.INVITACION.value
                 state.onboarding_last_invited_at = get_now_peru()
@@ -269,6 +362,12 @@ class MessageOrchestratorService:
                     c_name = "peso" if k == "peso_kg" else ("talla" if k == "altura_cm" else ("restricciones" if k == "restricciones_alimentarias" else ("objetivo" if k == "objetivo_nutricional" else k)))
                     confirm_list.append(f"{c_name} a '{v}'")
                 extra_instr = f"\n\n[INSTRUCCIÓN CRÍTICA: El sistema acaba de actualizar estos datos del perfil: {', '.join(confirm_list)}. DEBES empezar tu respuesta confirmando de forma breve y natural que ya guardaste esta información (ej: '¡Listo! Ya registré tu nuevo peso...'). NO ignores esta instrucción.]"
+
+            if has_absurd_profile_claim:
+                extra_instr += (
+                    "\n\n[INSTRUCCIÓN CRÍTICA: El usuario mencionó un dato de alergia/salud inverosímil o ficticio. "
+                    "NO lo confirmes ni lo guardes. Responde de forma amable pidiendo aclaración con un dato real.]"
+                )
 
             final_instructions = self._system_instructions + extra_instr
             final_profile_context = None
@@ -373,8 +472,14 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
         # --- ANCLA DE CONTINUIDAD (FINAL) ---
         if reply and not onboarding_interception_happened:
             # Añadir recordatorio educativo de personalización si no es el PD de encuesta
-            if "PD:" not in reply:
-                reply += "\n\n💡 *Tip NutriBot:* Recuerda que puedes contarme más sobre ti (alergias, peso, etc.) cuando gustes para ser más exacto. ¡Tú decides! 🍏"
+            should_append_tip = bool(
+                "PD:" not in reply
+                and state.turns_since_last_prompt > 0
+                and state.turns_since_last_prompt % 4 == 0
+                and not is_requesting_survey
+            )
+            if should_append_tip:
+                reply += '\n\n💡 *Tip NutriBot:* Si quieres actualizar tu perfil cuando gustes, solo escribe: "Nutribot, quiero actualizar mi perfil nutricional". 🍏'
 
             # Desactivamos el anclaje inmediato si acabamos de saltar un paso por duda nutricional
             # o si el usuario está en medio de un flujo y pidió otra cosa.
@@ -386,29 +491,35 @@ Tu respuesta DEBE comenzar OBLIGATORIAMENTE con el siguiente texto exacto (no ag
         # --- GESTIÓN DE LA RESPUESTA FINAL Y ENCUESTA ---
         # El survey_service decide si añadir un addon (invitación) o manejar el formulario.
         original_mode = state.mode
+        force_survey_start = bool(
+            not onboarding_interception_happened
+            and original_mode == SessionMode.ACTIVE_CHAT.value
+            and is_requesting_survey
+        )
+        survey_projected_count = projected_interactions_count
+        if force_survey_start:
+            survey_projected_count = max(5, survey_projected_count)
+
         addon = await self._survey_service.process(
             session,
             state,
             normalized.text,
-            projected_interactions_count=projected_interactions_count,
+            projected_interactions_count=survey_projected_count,
         )
         
         if addon:
             if original_mode in (SessionMode.COLLECTING_USABILITY.value, SessionMode.COLLECTING_PROFILE.value):
                 final_reply = addon
             else:
-                # El addon es una invitación (PD). La enviamos como mensaje SEPARADO.
-                # No la concatenamos al final_reply.
-                final_reply = reply
-                # Generamos una key de idempotencia única para este turno
-                idempotency_key = f"survey_invite_{normalized.provider_message_id}"
-                await self._schedule_separate_message(
-                    session, 
-                    user.id, 
-                    user.numero_whatsapp, 
-                    addon, 
-                    idempotency_key
-                )
+                # Si el usuario pidió explícitamente continuar la encuesta/formulario,
+                # mostramos solo ese flujo para no mezclar con perfil nutricional.
+                if is_requesting_survey:
+                    final_reply = addon
+                # En chat normal, primero respondemos la consulta y luego añadimos la invitación.
+                elif reply:
+                    final_reply = f"{reply}\n\n{addon}"
+                else:
+                    final_reply = addon
         else:
             final_reply = reply
 

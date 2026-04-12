@@ -4,6 +4,7 @@ Servicio de Aplicación Orientado a Objetos para extraer perfil.
 """
 import json
 import logging
+import unicodedata
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
 from sqlalchemy import text
@@ -15,6 +16,20 @@ from domain.utils import get_now_peru
 logger = logging.getLogger(__name__)
 
 class ProfileExtractionService:
+    ABSURD_TERMS = {
+        "sayayin",
+        "saiyajin",
+        "super sayayin",
+        "goku",
+        "kamehameha",
+        "naruto",
+        "marciano",
+        "extraterrestre",
+        "alienigena",
+        "avenger",
+        "pokemon",
+    }
+
     FIELD_CONFIG = {
         "edad": {"col": "edad", "parser": parse_age},
         "years": {"col": "edad", "parser": parse_age},
@@ -74,7 +89,7 @@ REGLAS CRÍTICAS DE ROBUSTEZ:
 8. COHERENCIA BIOLÓGICA Y MÉDICA (NUEVO):
    - RECHAZA datos absurdos (ej: 'alergia al aire', 'enfermedad marciana', 'diabetes tipo T').
    - RECHAZA métricas imposibles (ej: altura < 50cm o > 250cm, peso < 2kg o > 400kg para adultos).
-   - REGLA DIABETES: Si el usuario menciona 'diabetes', DEBE especificar el tipo (1, 2, gestacional). Si dice 'diabetes' a secas o con un tipo inexistente, NO extraigas 'enfermedades'. El bot debe preguntar el tipo en el chat.
+   - REGLA DIABETES: Si el usuario menciona 'diabetes', SIEMPRE extrae 'enfermedades'. Si no hay tipo claro, guarda simplemente 'DIABETES' sin bloquear la extraccion.
 9. FORMATO: Responde SOLO un objeto JSON PLANO. Si no hay datos claros, responde {}.
 10. PROHIBICIÓN DE PREGUNTAS: Si el texto termina en '?' o comienza con palabras interrogativas ('cómo', 'qué', 'por qué', 'para qué', 'cuál', 'cuanto'), responde SIEMPRE con un objeto vacío {}. NO intentes salvar datos de una pregunta.
 """
@@ -85,6 +100,21 @@ REGLAS CRÍTICAS DE ROBUSTEZ:
     def __init__(self, openai_client: AsyncOpenAI, model: str):
         self._openai_client = openai_client
         self._model = model
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKD", value)
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return normalized.lower().strip()
+
+    @classmethod
+    def contains_absurd_claim(cls, value: str) -> bool:
+        txt = cls._normalize_text(value)
+        if not txt:
+            return False
+        return any(term in txt for term in cls.ABSURD_TERMS)
 
     async def extract_and_save(
         self,
@@ -169,9 +199,22 @@ REGLAS CRÍTICAS DE ROBUSTEZ:
             clean_val = parser(str(raw_val))
             
             if clean_val is not None:
+                col_name = config["col"]
+                normalized_value = self._normalize_text(str(clean_val))
+
+                # Blindaje anti-datos absurdos en campos críticos de salud/perfil.
+                if col_name in {"alergias", "enfermedades", "restricciones_alimentarias"}:
+                    if self.contains_absurd_claim(str(clean_val)):
+                        logger.warning(
+                            "Data Shield: blocked implausible value for field '%s': %s",
+                            col_name,
+                            clean_val,
+                        )
+                        continue
+
+                # Regla diabetes: si no especifica tipo válido, no persistimos.
                 if isinstance(clean_val, str) and clean_val.upper() == "NINGUNA":
                     # If the current field matches the step we are asking about, ALWAYS allow NINGUNA
-                    col_name = config["col"]
                     is_current_step = False
                     if current_step:
                         cs_low = current_step.lower()
@@ -185,13 +228,13 @@ REGLAS CRÍTICAS DE ROBUSTEZ:
                         field_mentions = [key, col_name, "alergia", "enfermedad", "restriccion", "dieta", "objetivo", "correo", "asegurado"]
                         is_explicit_negation = any(nw in text_lower for nw in negation_words)
                         is_field_mentioned = any(fm in text_lower for fm in field_mentions)
-                        
+                            
                         if not (is_explicit_negation and is_field_mentioned):
                             logger.warning("Data Shield: blocked NINGUNA for field '%s'", key)
                             continue
 
                 
-                col = config["col"]
+                col = col_name
                 clean_data[col] = clean_val
                 updates[col] = clean_val
                 

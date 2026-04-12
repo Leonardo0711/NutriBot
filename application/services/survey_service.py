@@ -101,6 +101,10 @@ class SurveyResponseExtractor:
             match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", v)
             if match:
                 return {"intent": "ANSWER", "value": match.group(0)}
+            # Si el usuario hace una pregunta corta no relacionada al correo
+            # (ej. "eso está bien?"), no debemos forzar el formulario.
+            if "?" in v and not self._YES_WORDS.search(vl) and not self._NO_WORDS.search(vl):
+                return {"intent": "INTERRUPT", "value": None}
             if any(hint in vl for hint in self._NUTRITION_HINTS):
                 return {"intent": "INTERRUPT", "value": None}
             return None
@@ -140,6 +144,10 @@ class SurveyResponseExtractor:
     async def extract_with_ai(self, state_name: str, user_text: str) -> dict:
         if any(hint in user_text.lower() for hint in self._NUTRITION_HINTS):
             return {"intent": "INTERRUPT", "value": None}
+        if state_name == "esperando_correo":
+            low = user_text.lower()
+            if "?" in user_text and not self._WHY_PATTERN.search(low):
+                return {"intent": "INTERRUPT", "value": None}
 
         field_type = "EMAIL" if state_name == "esperando_correo" else \
                      "BOOLEAN (Si/No/No se)" if state_name in ("esperando_asegurado", "esperando_autorizacion") else \
@@ -196,7 +204,12 @@ class SurveyService:
             effective_count = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
             if effective_count >= 5:
                 if state.usability_completion_pct < 100:
-                    prefix = "¡Muchas gracias por chatear conmigo! 😊 Me encantaría saber si me permites hacerte algunas breves preguntas sobre tu experiencia.\n\n¿Estás de acuerdo?"
+                    prefix = (
+                        "¡Muchas gracias por chatear conmigo! 😊 Me encantaría hacerte unas breves preguntas "
+                        "del *formulario de satisfacción*.\n\n"
+                        "📝 Este formulario es aparte de tu perfil nutricional (edad, peso, talla, etc.).\n\n"
+                        "¿Estás de acuerdo?"
+                    )
                     return await self._try_start_form(session, state, prefix=prefix)
 
         return None
@@ -221,7 +234,11 @@ class SurveyService:
             state.awaiting_question_code = current_state
             state.meaningful_interactions_count = 0
             question = FORM_QUESTIONS.get(current_state, "")
-            return f"¡Antes de irte! 😊 Me quedaron unas preguntitas pendientes de la última vez que me ayudan mucho a mejorar NutriBot. ¿Te parece si las completamos rápido?\n\n{question}"
+            return (
+                "¡Antes de irte! 😊 Nos quedaron preguntas pendientes del *formulario de satisfacción* "
+                "(separado de tu perfil nutricional). ¿Las completamos rápido?\n\n"
+                f"{question}"
+            )
 
         first_state = FORM_STATES_ORDER[0]
         await session.execute(
@@ -257,7 +274,11 @@ class SurveyService:
         state.mode = "collecting_usability"
         state.awaiting_question_code = row.estado_actual
         question = FORM_QUESTIONS.get(row.estado_actual, "")
-        return f"😊 ¡Hola de nuevo! Nos quedaron unas preguntitas pendientes, ¿te animas a completarlas?\n\n{question}"
+        return (
+            "😊 ¡Hola de nuevo! Nos quedaron preguntas pendientes del *formulario de satisfacción* "
+            "(aparte de tu perfil nutricional). ¿Te animas a completarlas?\n\n"
+            f"{question}"
+        )
 
     async def _process_form_response(self, session: AsyncSession, state: ConversationState, user_text: str) -> Optional[str]:
         current_state = state.awaiting_question_code
@@ -291,6 +312,22 @@ class SurveyService:
 
         parciales = progress.respuestas_parciales or {}
         field_key = current_state.replace("esperando_", "")
+
+        if current_state == "esperando_correo":
+            persuasion_key = f"{field_key}_persuaded"
+            low_text = user_text.lower().strip()
+            has_ack_yes = bool(self.extractor._YES_WORDS.search(low_text))
+            has_email_in_text = bool(re.search(r"[\w\.-]+@[\w\.-]+\.\w+", user_text))
+            explicit_reject = bool(
+                self.extractor._NO_WORDS.search(low_text)
+                or "prefiero no" in low_text
+                or "no compartir" in low_text
+                or "no dar" in low_text
+            )
+            is_asking_why = bool(self.extractor._WHY_PATTERN.search(low_text))
+            has_soft_acceptance = len(low_text) >= 2 and (has_ack_yes or (not explicit_reject and not is_asking_why))
+            if parciales.get(persuasion_key) and has_soft_acceptance and not has_email_in_text:
+                return "¡Genial! 😊 Entonces compárteme tu correo electrónico y seguimos con el formulario."
 
         if intent in ("WHY", "SKIP"):
             # PERSUASIÓN: Solo para el CORREO ELECTRÓNICO

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER
 from domain.utils import get_now_peru
-from domain.parsers import parse_weight, parse_height
+from domain.parsers import parse_weight, parse_height, standardize_text_list
 from application.services.profile_extraction_service import ProfileExtractionService
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,35 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
 }
 
 class OnboardingService:
+    HEALTH_FALLBACK_SKIP_MARKERS = (
+        "saltar",
+        "paso",
+        "omitir",
+        "luego",
+        "siguiente",
+        "prefiero no",
+        "por ahora no",
+        "despues",
+        "después",
+        "otro tema",
+    )
+
+    HEALTH_FALLBACK_INVALID_VALUES = {
+        "",
+        "NO SE",
+        "NO SÉ",
+        "NO SABE",
+        "N/A",
+        "NA",
+        "X",
+        "POR AHORA",
+        "LUEGO",
+        "DESPUES",
+        "DESPUÉS",
+        "NO QUIERO DECIR",
+        "NO ENTIENDO",
+    }
+
     FIELD_LABELS = {
         OnboardingStep.EDAD.value: "tu **edad**",
         OnboardingStep.PESO.value: "tu **peso**",
@@ -47,6 +76,24 @@ class OnboardingService:
         OnboardingStep.PROVINCIA.value: "la **provincia** donde te encuentras",
         OnboardingStep.DISTRITO.value: "tu **distrito**",
     }
+
+    @staticmethod
+    def _clean_health_fallback_text(user_text: str) -> str:
+        text = (user_text or "").strip().lower()
+        if not text:
+            return ""
+        patterns = [
+            r"^ya\s+te\s+dije\s+que\s+",
+            r"^te\s+dije\s+que\s+",
+            r"^que\s+no\s+entiendes\s+(de\s+)?",
+            r"^(yo\s+)?(tengo|padezco|sufro\s+de|presento|me\s+diagnosticaron)\s+",
+            r"^mi\s+enfermedad\s+(es|son)\s+",
+            r"^(es|son)\s+",
+        ]
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned).strip()
+        return cleaned.strip(" .,!?:;")
 
     SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
 
@@ -177,13 +224,23 @@ FORMATO DE SALIDA (JSON):
             PRIORITARY_STEPS = [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value, OnboardingStep.ALERGIAS.value]
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
             
-            # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito): Cero insistencia si piden comida
-            if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value) and (intent == "DOUBT" or is_food_request):
+            # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito):
+            # Si en esta etapa cambia de tema o no desea compartir ubicación, NO bloquear el chat.
+            if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value) and (
+                intent in ("DOUBT", "SKIP") or is_food_request
+            ):
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
-                state.onboarding_step = await self._find_next_missing_step(session, state.usuario_id)
-                if not state.onboarding_step:
-                    state.onboarding_status = OnboardingStatus.COMPLETED.value
-                return None # Devolvemos None para que el orchestrator responda la duda nutricional
+                # Si rechaza provincia, asumimos que distrito también puede omitirse en este turno.
+                if current_step == OnboardingStep.PROVINCIA.value:
+                    await self._mark_field_as_skipped(session, state.usuario_id, OnboardingStep.DISTRITO.value)
+
+                next_step = await self._find_next_missing_step(session, state.usuario_id)
+                if next_step and next_step not in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
+                    self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+                else:
+                    # Pausamos para no insistir; el usuario puede retomar cuando quiera.
+                    self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
+                return None  # Dejar que el orquestador responda libremente el tema actual
             
             if current_step in PRIORITARY_STEPS and intent == "DOUBT":
                 explanation = analysis.get("explanation")
@@ -299,6 +356,10 @@ FORMATO DE SALIDA (JSON):
                     return "¡Veo que ya tengo tu perfil nutricional completo! 😊 ¿En qué puedo ayudarte hoy?"
 
                 self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+                intro_profile = (
+                    "¡Genial! 😊 Vamos a completar tu *perfil nutricional* "
+                    "(edad, peso, talla, alergias y objetivo) para darte recomendaciones más precisas y seguras."
+                )
                 res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
                 p = res_p.mappings().fetchone() or {}
                 known_parts = []
@@ -310,8 +371,12 @@ FORMATO DE SALIDA (JSON):
                     known_parts.append(f"Talla: {h_str}")
                 
                 if known_parts:
-                    return f"¡Genial! 😊 Ya tengo registrado: **{', '.join(known_parts)}**. Ahora necesito completar unos datos más.\n\n{ONBOARDING_QUESTIONS[next_step]}"
-                return ONBOARDING_QUESTIONS[next_step]
+                    return (
+                        f"{intro_profile}\n\n"
+                        f"Ya tengo registrado: **{', '.join(known_parts)}**. "
+                        f"Ahora necesito completar unos datos más.\n\n{ONBOARDING_QUESTIONS[next_step]}"
+                    )
+                return f"{intro_profile}\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
         current_step = state.onboarding_step
         if not current_step:
@@ -330,6 +395,27 @@ FORMATO DE SALIDA (JSON):
             extracted = {}
         else:
             extracted = {}
+
+        # Fallback inteligente para enfermedades:
+        # si estamos en ese paso y la extracción falla, intentamos rescatar un valor válido.
+        if (
+            intent == "ANSWER"
+            and not extracted
+            and current_step == OnboardingStep.ENFERMEDADES.value
+        ):
+            has_question_shape = "?" in vl
+            looks_like_skip = any(marker in vl for marker in self.HEALTH_FALLBACK_SKIP_MARKERS)
+            if not has_question_shape and not looks_like_skip:
+                candidate_text = self._clean_health_fallback_text(user_text)
+                candidate = standardize_text_list(candidate_text)
+                candidate_upper = candidate.strip().upper() if candidate else ""
+                if (
+                    candidate_upper not in self.HEALTH_FALLBACK_INVALID_VALUES
+                    and not self._profile_extractor.contains_absurd_claim(candidate)
+                ):
+                    extracted = {"enfermedades": candidate}
+                    await self._profile_extractor.save_clean_data(state.usuario_id, extracted, session)
+                    logger.info("Onboarding fallback: user=%s, enfermedades=%s", state.usuario_id, candidate)
 
         if not extracted:
             if intent == "ANSWER":
@@ -369,21 +455,17 @@ FORMATO DE SALIDA (JSON):
             start_from_idx=search_start_idx,
             ignore_cols=updated_cols
         )
-
-
         if next_step:
             self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
             if updated_cols:
                 transition = "¡Perfecto! Ya anoté esos detalles. ✍️"
                 if len(updated_cols) == 1 and updated_cols[0] == "region":
                     transition = "¡Qué bueno! Me encanta esa zona. 📍"
-                
-                # PD Recordatorio para campos opcionales
-                pd_rem = ""
-                if next_step in [OnboardingStep.ENFERMEDADES.value, OnboardingStep.RESTRICCIONES.value, OnboardingStep.OBJETIVO.value]:
-                    pd_rem = "\n\n💡 *Recuerda:* Si en algún momento quieres contarme sobre tus alergias, restricciones o alguna condición de salud, solo dímelo. ¡Me ayuda a ser 100% exacto! 😊"
-
-                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}{pd_rem}"
+                note = ""
+                enf_value = str(extracted.get("enfermedades", "")).upper() if extracted else ""
+                if "enfermedades" in updated_cols and "DIABETES" in enf_value and "TIPO" not in enf_value:
+                    note = "\n\nSi conoces si es diabetes tipo 1 o 2, cuentamelo cuando quieras y lo actualizo para personalizar mejor. 🙂"
+                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}{note}"
             
             # Si no hubo extracción pero llegamos aquí, es que estamos repitiendo el paso actual
             if next_step == current_step:
@@ -391,10 +473,24 @@ FORMATO DE SALIDA (JSON):
 
             return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         else:
-            res_final = await session.execute(text("SELECT provincia, distrito FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
+            res_final = await session.execute(
+                text("SELECT provincia, distrito, skipped_fields FROM perfil_nutricional WHERE usuario_id = :uid"),
+                {"uid": state.usuario_id},
+            )
             p_final = res_final.fetchone()
-            if p_final and (not p_final.provincia or not p_final.distrito):
-                force_step = OnboardingStep.PROVINCIA.value if not p_final.provincia else OnboardingStep.DISTRITO.value
+            skipped_final = {}
+            if p_final and getattr(p_final, "skipped_fields", None):
+                skipped_final = p_final.skipped_fields if isinstance(p_final.skipped_fields, dict) else {}
+
+            needs_provincia = bool(
+                p_final and not p_final.provincia and not skipped_final.get(OnboardingStep.PROVINCIA.value, False)
+            )
+            needs_distrito = bool(
+                p_final and not p_final.distrito and not skipped_final.get(OnboardingStep.DISTRITO.value, False)
+            )
+
+            if needs_provincia or needs_distrito:
+                force_step = OnboardingStep.PROVINCIA.value if needs_provincia else OnboardingStep.DISTRITO.value
                 self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, force_step)
                 return f"¡Casi terminamos! 🎯 Solo un pequeño detalle final: {ONBOARDING_QUESTIONS[force_step].lower()}"
 
@@ -461,7 +557,7 @@ FORMATO DE SALIDA (JSON):
 
         sql_skip = f"""
             UPDATE perfil_nutricional 
-            SET skipped_fields = skipped_fields || jsonb_build_object(:field, true),
+            SET skipped_fields = skipped_fields || jsonb_build_object(CAST(:field AS text), true),
                 actualizado_en = :upd
             WHERE usuario_id = :uid
         """
