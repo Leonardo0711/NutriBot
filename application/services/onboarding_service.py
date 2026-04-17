@@ -18,6 +18,7 @@ from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_ST
 from domain.utils import get_now_peru
 from domain.parsers import parse_weight, parse_height, standardize_text_list
 from application.services.profile_extraction_service import ProfileExtractionService
+from application.services.profile_read_service import ProfileReadService
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +136,17 @@ FORMATO DE SALIDA (JSON):
 }
 """
 
-    def __init__(self, openai_client: AsyncOpenAI, openai_model: str, profile_extractor: ProfileExtractionService):
+    def __init__(
+        self,
+        openai_client: AsyncOpenAI,
+        openai_model: str,
+        profile_extractor: ProfileExtractionService,
+        profile_reader: Optional[ProfileReadService] = None,
+    ):
         self._openai_client = openai_client
         self._openai_model = openai_model
         self._profile_extractor = profile_extractor
+        self._profile_reader = profile_reader or ProfileReadService()
 
     def _validate_onboarding_field(self, step: str, raw_value: str) -> tuple[bool, Optional[str], Optional[str]]:
         v = raw_value.strip()
@@ -174,6 +182,7 @@ FORMATO DE SALIDA (JSON):
             return True, v, None
 
     def _set_onboarding_state(self, state: ConversationState, status: OnboardingStatus, step: Optional[str], **kwargs):
+        old_status = state.onboarding_status
         state.onboarding_status = status.value
         state.onboarding_step = step
         state.onboarding_updated_at = get_now_peru()
@@ -190,9 +199,13 @@ FORMATO DE SALIDA (JSON):
             state.onboarding_next_eligible_at = get_now_peru() + timedelta(days=3)
         
         logger.info(
-            "Onboarding state change: user=%s, status=%s → %s, step=%s",
-            state.usuario_id, state.onboarding_status, status.value, step
+            "Onboarding state change: user=%s, status=%s -> %s, step=%s",
+            state.usuario_id, old_status, status.value, step
         )
+
+    async def _get_profile_flat(self, session: AsyncSession, uid: int) -> dict:
+        """Proyeccion compatible construida desde el modelo normalizado V3."""
+        return await self._profile_reader.fetch_projection(session, uid)
 
     async def advance_flow(
         self,
@@ -242,19 +255,20 @@ FORMATO DE SALIDA (JSON):
                     self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
                 return None  # Dejar que el orquestador responda libremente el tema actual
             
-            if current_step in PRIORITARY_STEPS and intent == "DOUBT":
-                explanation = analysis.get("explanation")
-                if explanation:
-                    return f"{explanation}\n\n**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+            # -------------------------------------
 
-                prompts = {
-                    OnboardingStep.EDAD.value: "tu **edad**",
-                    OnboardingStep.PESO.value: "tu **peso**",
-                    OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
-                    "alergias": "si tienes alguna **alergia o restricción**"
-                }
-                campo_lindo = prompts.get(current_step, self.FIELD_LABELS.get(current_step, current_step))
-                return f"¡Me encantaría ayudarte con eso! 🍏 Pero para darte una recomendación que realmente te sirva y sea segura, primero necesito completar un detallito de tu perfil. 😊\n\n¿Me podrías decir {campo_lindo}, por favor?"
+            # REGLA DE OBSTINACIÓN (Nutrición requiere Perfil):
+            # Si el usuario hace una pregunta de nutrición (DOUBT) y aún faltan datos esenciales,
+            # DEBEMOS ser firmes: no responder la duda y pedir el dato.
+            if intent == "DOUBT" and current_step in PRIORITARY_STEPS:
+                missing_label = self.FIELD_LABELS.get(current_step, current_step)
+                return (
+                    f"Entiendo perfectamente tu duda y me encantaría ayudarte con eso ahora mismo. 🍏 "
+                    f"Sin embargo, para poder darte una recomendación que sea **asertiva, segura y 100% a tu medida**, "
+                    f"todavía necesito completar tu **{missing_label}**.\n\n"
+                    f"¿Me lo podrías confirmar para seguir? 🙏\n\n"
+                    f"**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+                )
             # -------------------------------------
 
             if intent == "DOUBT":
@@ -285,8 +299,7 @@ FORMATO DE SALIDA (JSON):
                 # Si pide menu/receta en pleno onboarding, respondemos con control:
                 # nunca negamos datos ya guardados y reenfocamos al paso faltante.
                 if is_food_request:
-                    res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
-                    p = res_p.mappings().fetchone() or {}
+                    p = await self._get_profile_flat(session, state.usuario_id)
                     known_parts = []
                     if p.get("edad"):
                         known_parts.append(f"Edad: {p['edad']} anos")
@@ -360,8 +373,7 @@ FORMATO DE SALIDA (JSON):
                     "¡Genial! 😊 Vamos a completar tu *perfil nutricional* "
                     "(edad, peso, talla, alergias y objetivo) para darte recomendaciones más precisas y seguras."
                 )
-                res_p = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": state.usuario_id})
-                p = res_p.mappings().fetchone() or {}
+                p = await self._get_profile_flat(session, state.usuario_id)
                 known_parts = []
                 if p.get("edad"): known_parts.append(f"Edad: {p['edad']} años")
                 if p.get("peso_kg"): known_parts.append(f"Peso: {p['peso_kg']}kg")
@@ -382,15 +394,18 @@ FORMATO DE SALIDA (JSON):
         if not current_step:
             return None
 
+        meta_flags = {}
         # Process extracted data from Switchboard if intent was ANSWER
         if intent == "ANSWER" and analysis.get("data"):
-            extracted = await self._profile_extractor.apply_cleaning_and_save(
+            ext_result = await self._profile_extractor.apply_cleaning_and_save(
                 raw_extractions=analysis["data"],
                 user_text=user_text,
                 usuario_id=state.usuario_id,
                 session=session,
                 current_step=current_step
             )
+            extracted = ext_result.clean_data
+            meta_flags = ext_result.meta_flags
         elif intent == "SKIP":
             extracted = {}
         else:
@@ -434,6 +449,11 @@ FORMATO DE SALIDA (JSON):
         if not extracted and intent == "SKIP":
              await self._mark_field_as_skipped(session, state.usuario_id, current_step)
 
+        # Si hubo una extracción y requiere aclaración clínica, atajamos el flujo
+        if extracted and meta_flags.get("needs_health_clarification"):
+            state.onboarding_step = current_step
+            return meta_flags.get("clarification_prompt", "¿Te importaría aclararlo un poco más para ser más precisos?")
+
         updated_cols = list(extracted.keys()) if extracted else []
         current_idx = -1
         for i, s in enumerate(ONBOARDING_STEPS_ORDER):
@@ -461,11 +481,7 @@ FORMATO DE SALIDA (JSON):
                 transition = "¡Perfecto! Ya anoté esos detalles. ✍️"
                 if len(updated_cols) == 1 and updated_cols[0] == "region":
                     transition = "¡Qué bueno! Me encanta esa zona. 📍"
-                note = ""
-                enf_value = str(extracted.get("enfermedades", "")).upper() if extracted else ""
-                if "enfermedades" in updated_cols and "DIABETES" in enf_value and "TIPO" not in enf_value:
-                    note = "\n\nSi conoces si es diabetes tipo 1 o 2, cuentamelo cuando quieras y lo actualizo para personalizar mejor. 🙂"
-                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}{note}"
+                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
             
             # Si no hubo extracción pero llegamos aquí, es que estamos repitiendo el paso actual
             if next_step == current_step:
@@ -473,20 +489,16 @@ FORMATO DE SALIDA (JSON):
 
             return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         else:
-            res_final = await session.execute(
-                text("SELECT provincia, distrito, skipped_fields FROM perfil_nutricional WHERE usuario_id = :uid"),
-                {"uid": state.usuario_id},
-            )
-            p_final = res_final.fetchone()
+            p_final = await self._get_profile_flat(session, state.usuario_id)
             skipped_final = {}
-            if p_final and getattr(p_final, "skipped_fields", None):
-                skipped_final = p_final.skipped_fields if isinstance(p_final.skipped_fields, dict) else {}
+            if p_final and p_final.get("skipped_fields"):
+                skipped_final = p_final.get("skipped_fields") if isinstance(p_final.get("skipped_fields"), dict) else {}
 
             needs_provincia = bool(
-                p_final and not p_final.provincia and not skipped_final.get(OnboardingStep.PROVINCIA.value, False)
+                p_final and not p_final.get("provincia") and not skipped_final.get(OnboardingStep.PROVINCIA.value, False)
             )
             needs_distrito = bool(
-                p_final and not p_final.distrito and not skipped_final.get(OnboardingStep.DISTRITO.value, False)
+                p_final and not p_final.get("distrito") and not skipped_final.get(OnboardingStep.DISTRITO.value, False)
             )
 
             if needs_provincia or needs_distrito:
@@ -498,8 +510,7 @@ FORMATO DE SALIDA (JSON):
             return "¡Excelente, perfil completado! 🎯 Muchas gracias por tu tiempo. Esto me ayudará a darte recomendaciones mucho más precisas. ¿En qué más puedo ayudarte hoy?"
 
     async def _find_next_missing_step(self, session: AsyncSession, uid: int, ignore_skips: bool = False, treat_ninguna_as_missing: bool = False, skip_step: Optional[str] = None, start_from_idx: Optional[int] = None, ignore_cols: Optional[list[str]] = None) -> Optional[str]:
-        res = await session.execute(text("SELECT * FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
-        p = res.mappings().fetchone()
+        p = await self._get_profile_flat(session, uid)
         
         if not p:
             return OnboardingStep.EDAD.value
@@ -603,11 +614,81 @@ MENSAJE USUARIO: "{user_text}"
     async def _handle_system_reset(self, uid: int, session: AsyncSession):
         """Clean up user data and onboarding progress."""
         logger.info("System Reset triggered for user %s", uid)
+        await session.execute(
+            text(
+                """
+                DELETE FROM perfil_nutricional_medicion
+                WHERE perfil_nutricional_id IN (
+                    SELECT id FROM perfil_nutricional WHERE usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
+        await session.execute(
+            text(
+                """
+                DELETE FROM perfil_nutricional_enfermedad
+                WHERE perfil_nutricional_id IN (
+                    SELECT id FROM perfil_nutricional WHERE usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
+        await session.execute(
+            text(
+                """
+                DELETE FROM perfil_nutricional_restriccion
+                WHERE perfil_nutricional_id IN (
+                    SELECT id FROM perfil_nutricional WHERE usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
+        await session.execute(
+            text(
+                """
+                DELETE FROM orden_dietetica_dieta
+                WHERE orden_dietetica_id IN (
+                    SELECT od.id
+                    FROM orden_dietetica od
+                    JOIN perfil_nutricional p ON p.id = od.perfil_nutricional_id
+                    WHERE p.usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
+        await session.execute(
+            text(
+                """
+                DELETE FROM orden_dietetica_restriccion
+                WHERE orden_dietetica_id IN (
+                    SELECT od.id
+                    FROM orden_dietetica od
+                    JOIN perfil_nutricional p ON p.id = od.perfil_nutricional_id
+                    WHERE p.usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
+        await session.execute(
+            text(
+                """
+                DELETE FROM orden_dietetica
+                WHERE perfil_nutricional_id IN (
+                    SELECT id FROM perfil_nutricional WHERE usuario_id = :uid
+                )
+                """
+            ),
+            {"uid": uid},
+        )
         await session.execute(text("DELETE FROM perfil_nutricional WHERE usuario_id = :uid"), {"uid": uid})
         await session.execute(text("DELETE FROM memoria_chat WHERE usuario_id = :uid"), {"uid": uid})
         await session.execute(text("DELETE FROM formulario_en_progreso WHERE usuario_id = :uid"), {"uid": uid})
-        await session.execute(text("DELETE FROM profile_extractions WHERE usuario_id = :uid"), {"uid": uid})
-        await session.execute(text("DELETE FROM extraction_jobs WHERE usuario_id = :uid"), {"uid": uid})
         # Note: ConversationState is managed in the caller (advance_flow).
         # No commit here: this method runs inside an active transaction.
 

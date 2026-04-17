@@ -1,4 +1,4 @@
-"""
+﻿"""
 Nutribot Backend — Media Service
 Normaliza mensajes multimedia: descarga, convierte y transcribe.
 """
@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 class DefaultMediaService(MediaService):
     """Implementación concreta de MediaService."""
 
-    def __init__(self) -> None:
-        self._stt = OpenAISpeechToTextAdapter()
-        self._evolution = EvolutionApiClient()
+    def __init__(
+        self,
+        stt_service: Optional[OpenAISpeechToTextAdapter] = None,
+        evolution_client: Optional[EvolutionApiClient] = None,
+    ) -> None:
+        self._stt = stt_service or OpenAISpeechToTextAdapter()
+        self._evolution = evolution_client or EvolutionApiClient()
 
     async def normalize(self, msg: IncomingWebhookMessage) -> NormalizedMessage:
         """
@@ -32,8 +36,9 @@ class DefaultMediaService(MediaService):
         - AUDIO/PTT: descarga ogg desde Evolution, convierte a mp3, envía a STT.
         - IMAGE: descarga imagen, codifica base64 para Vision API.
         """
-        text = msg.text_body or ""
+        text = msg.interactive_id or msg.text_body or ""
         image_base64: Optional[str] = None
+        image_mimetype: Optional[str] = None
         used_audio = False
 
         if msg.content_type == MessageType.TEXT:
@@ -64,6 +69,7 @@ class DefaultMediaService(MediaService):
                 image_bytes = await self._evolution.download_media(msg.media_url)
                 if image_bytes:
                     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+                    image_mimetype = msg.media_mimetype or "image/jpeg"
                     # Si la imagen tiene caption, lo usamos como texto
                     if not text:
                         text = "El usuario envió una imagen."
@@ -78,5 +84,7 @@ class DefaultMediaService(MediaService):
             content_type=msg.content_type,
             text=text,
             image_base64=image_base64,
+            image_mimetype=image_mimetype,
             used_audio=used_audio,
+            interactive_id=msg.interactive_id,
         )

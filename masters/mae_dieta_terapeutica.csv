@@ -1,0 +1,18 @@
+id,codigo,nombre,categoria,descripcion,activo
+1,NORMAL_BASAL,Dieta Normal / Basal,BASE,"Dieta estándar sin restricciones terapéuticas, diseñada para cubrir los requerimientos nutricionales completos de una persona sana.",true
+2,HIPOSODICA,Dieta Hiposódica,TERAPEUTICA,"Restricción de sodio (usualmente < 2000 mg/día o según indicación). Fundamental para el manejo de hipertensión arterial, insuficiencia cardíaca y edema.",true
+3,HIPOCALORICA,Dieta Hipocalórica,MODIFICADA_EN_CALORIAS,"Proporciona un déficit calórico controlado respecto al gasto energético total. Indicada para pérdida de peso en sobrepeso y obesidad.",true
+4,HIPERCALORICA,Dieta Hipercalórica,MODIFICADA_EN_CALORIAS,"Proporciona un superávit calórico. Indicada para recuperación de peso, desnutrición, caquexia oncológica o requerimientos elevados.",true
+5,HIPERPROTEICA,Dieta Hiperproteica,TERAPEUTICA,"Aporte elevado de proteínas (1.2 a 2.0+ g/kg). Para estados hipercatabólicos, cicatrización de heridas, sarcopenia, quemados o desnutrición.",true
+6,CONTROL_GLUCEMICO,Dieta para Control Glucémico (Diabética),TERAPEUTICA,"Control estricto del tipo y cantidad de carbohidratos, exclusión de azúcares libres y enfoque en bajo índice/carga glucémica.",true
+7,RENAL_PREDIALISIS,Dieta Renal (Terapia Conservadora),TERAPEUTICA,"Restricción controlada de proteínas (0.6-0.8 g/kg) para ralentizar el daño renal, acompañada de control de sodio, potasio y fósforo.",true
+8,RENAL_DIALISIS,Dieta Renal (Paciente en Diálisis),TERAPEUTICA,"Alta en proteínas para compensar las pérdidas del tratamiento dialítico, con restricción estricta de líquidos, potasio, sodio y fósforo.",true
+9,HIPOLIPIDICA,Dieta Hipolipídica (Baja en Grasas),TERAPEUTICA,"Reducción de grasas totales y restricción severa de grasas saturadas/trans. Para dislipidemias, colelitiasis o pancreatitis en recuperación.",true
+10,PROTECCION_GASTRICA,Dieta de Protección Gástrica,TERAPEUTICA,"Libre de irritantes de la mucosa gástrica (cafeína, picantes, cítricos, alcohol) y grasas. Indicada para gastritis, ERGE y úlceras.",true
+11,ASTRINGENTE,Dieta Astringente,TERAPEUTICA,"Baja en fibra insoluble, libre de azúcares simples y grasas, basada en alimentos que enlentecen el tránsito intestinal. Para diarreas crónicas o agudas.",true
+12,ALTA_EN_FIBRA,Dieta Alta en Fibra,TERAPEUTICA,"Aporte aumentado de fibra dietética (soluble e insoluble) y líquidos. Específica para el manejo del estreñimiento y diverticulosis.",true
+13,HEPATOPROTECTORA,Dieta Hepatoprotectora,TERAPEUTICA,"Ajuste en el aporte proteico (según riesgo de encefalopatía), control estricto de sodio en caso de ascitis y fracciones pequeñas de carbohidratos.",true
+14,BAJA_EN_FODMAP,Dieta Baja en FODMAPs,TERAPEUTICA,"Exclusión temporal de carbohidratos de cadena corta fermentables (oligosacáridos, disacáridos, monosacáridos y polioles) para Síndrome de Intestino Irritable (SII).",true
+15,DASH,Dieta DASH,PATRON_TERAPEUTICO,"Enfoque dietético para detener la hipertensión. Alta en frutas, vegetales, lácteos bajos en grasa, y minerales como potasio, calcio y magnesio.",true
+16,HIPOPURINICA,Dieta Hipopurínica,TERAPEUTICA,"Restricción estricta de alimentos ricos en purinas (vísceras, mariscos, ciertos pescados), fructosa y alcohol. Específica para hiperuricemia y gota.",true
+17,CETOGENICA_CLINICA,Dieta Cetogénica Clínica,PATRON_TERAPEUTICO,"Uso terapéutico y supervisado de la dieta cetogénica (muy alta en grasa, muy baja en carbohidratos). Usada para epilepsia refractaria o indicaciones neurológicas/metabólicas muy específicas.",true

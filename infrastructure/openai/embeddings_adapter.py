@@ -16,10 +16,14 @@ logger = logging.getLogger(__name__)
 class OpenAIEmbeddingsAdapter:
     """Genera embeddings usando la API de OpenAI."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        client: AsyncOpenAI | None = None,
+        model: str | None = None,
+    ) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self._model = settings.openai_embedding_model
+        self._client = client or AsyncOpenAI(api_key=settings.openai_api_key)
+        self._model = model or settings.openai_embedding_model
 
     async def embed(self, text: str) -> list[float]:
         """Genera un embedding vector para el texto dado."""

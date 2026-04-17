@@ -80,7 +80,8 @@ def parse_age(val: str) -> Optional[int]:
         return None
 
 def standardize_text_list(val: str) -> str:
-    """Estandariza listas de texto (Alergias, Enfermedades) a MAYÚSCULAS o 'NINGUNA'."""
+    """Estandariza listas de texto (Alergias, Enfermedades) a MAYÚSCULAS o 'NINGUNA'.
+    Retorna None si el input es ruido conversacional sin contenido útil."""
     if not val: return "NINGUNA"
     v = val.strip().upper()
     
@@ -89,6 +90,17 @@ def standardize_text_list(val: str) -> str:
     if v in negations or any(n in v for n in ["NINGUNA EXCEPCION", "NO TENGO NINGUNA"]):
         return "NINGUNA"
     
+    # Filtrar ruido conversacional que no aporta dato real
+    _NOISE = {"OK", "OKEY", "DALE", "YA", "LISTO", "BUENO", "BIEN",
+              "PERFECTO", "GENIAL", "ENTENDIDO", "VALE", "CLARO",
+              "AJA", "SIMON", "SIP", "SEP", "VA", "VAMOS",
+              "JAJA", "JAJAJA", "XD", "HAHA", "JEJEJE",
+              "GRACIAS", "NORMAL", "LO DE SIEMPRE", "ESO",
+              "LO MISMO", "NADA MAS", "TODO BIEN", "REGULAR",
+              "ASI NOMAS", "NO MUCHO", "NADA ESPECIAL"}
+    if v in _NOISE:
+        return None
+
     # Limpiar conectores comunes y normalizar separadores
     v = v.replace(" Y ", ", ").replace(" - ", ", ").replace(" / ", ", ")
     
@@ -105,4 +117,10 @@ def standardize_text_list(val: str) -> str:
     parts = [p.strip() for p in v.split(",") if p.strip()]
     
     if not parts: return "NINGUNA"
-    return ", ".join(parts)
+    
+    # Si después de limpiar queda menos de 2 caracteres, es basura
+    result = ", ".join(parts)
+    if len(result) < 2:
+        return None
+    
+    return result

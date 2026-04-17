@@ -26,19 +26,8 @@ class MessageType(str, Enum):
 class SessionMode(str, Enum):
     """Modos de la máquina de estado conversacional."""
     ACTIVE_CHAT = "active_chat"
-    CLOSING = "closing"
-    COLLECTING_PROFILE = "collecting_profile"
     COLLECTING_USABILITY = "collecting_usability"
 
-
-class FieldCode(str, Enum):
-    """Campos del perfil del usuario que se extraen pasivamente."""
-    CORREO = "correo"
-    EDAD = "edad"
-    ASEGURADO = "asegurado"
-    AUTORIZO = "autorizo"
-    REGION = "region"
-    PESO = "peso"
 
 
 class QuestionCode(str, Enum):
@@ -117,6 +106,8 @@ class OutgoingContentType(str, Enum):
     TEXT = "text"
     AUDIO = "audio"
     AUDIO_TTS = "audio_tts"
+    INTERACTIVE_BUTTONS = "interactive_buttons"
+    INTERACTIVE_LIST = "interactive_list"
 
 
 class OutgoingStatus(str, Enum):

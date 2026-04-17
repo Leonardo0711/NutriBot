@@ -1,0 +1,46 @@
+id,codigo,nombre,tipo,descripcion,activo
+1,SIN_LACTOSA,Sin Lactosa,INTOLERANCIA,"Incapacidad para digerir el azúcar de la leche. Requiere lácteos deslactosados o alternativas de origen vegetal.",true
+2,SIN_GLUTEN,Sin Gluten,INTOLERANCIA,"Sensibilidad o intolerancia al gluten. Excluye estrictamente trigo, avena (salvo certificada), cebada y centeno.",true
+3,INTOLERANCIA_FRUCTOSA,Intolerancia a la Fructosa,INTOLERANCIA,"Mala absorción de la fructosa. Requiere limitar miel, jarabes, manzanas, peras y frutas con alto contenido de fructosa libre.",true
+4,INTOLERANCIA_HISTAMINA,Intolerancia a la Histamina,INTOLERANCIA,"Déficit de la enzima DAO. Excluye alimentos fermentados, quesos curados, embutidos, vino y ciertos pescados.",true
+5,ALERGIA_MANI,Alergia al Maní (Cacahuate),ALERGENO,"Reacción inmunológica severa. Requiere exclusión absoluta del maní y control estricto de contaminación cruzada (trazas).",true
+6,ALERGIA_FRUTOS_SECOS,Alergia a Frutos Secos,ALERGENO,"Reacción inmunológica a nueces, almendras, avellanas, pistachos, anacardos, etc. Riesgo de anafilaxia.",true
+7,ALERGIA_MARISCOS,Alergia a Mariscos y Crustáceos,ALERGENO,"Alergia a proteínas de camarones, cangrejos, langostas, etc.",true
+8,ALERGIA_PESCADO,Alergia al Pescado,ALERGENO,"Alergia a proteínas de pescados de aleta. Suele ser independiente de la alergia a mariscos.",true
+9,ALERGIA_HUEVO,Alergia al Huevo,ALERGENO,"Excluye el consumo de huevo entero, claras, yemas y cualquier producto procesado que lo contenga (ej. mayonesas, repostería).",true
+10,APLV,Alergia a la Proteína de Leche de Vaca,ALERGENO,"Diferente a la intolerancia a la lactosa. Reacción inmune a la caseína o proteína del suero. Prohíbe cualquier derivado lácteo.",true
+11,ALERGIA_SOYA,Alergia a la Soya,ALERGENO,"Excluye granos de soya, edamame, tofu, tempeh, salsa de soya y lecitina de soya.",true
+12,ALERGIA_SESAMO,Alergia al Sésamo (Ajonjolí),ALERGENO,"Excluye semillas de sésamo, aceite de sésamo, tahini y humus tradicional. Alto riesgo de contaminación cruzada.",true
+13,ALERGIA_MOSTAZA,Alergia a la Mostaza,ALERGENO,"Reacción a la semilla de mostaza y sus derivados, presentes en muchas salsas y aderezos industriales.",true
+14,ALERGIA_APIO,Alergia al Apio,ALERGENO,"Alergia común en Europa, incluye el tallo, hojas y semillas (sal de apio), frecuentemente oculto en caldos y sopas.",true
+15,ALERGIA_SULFITOS,Alergia / Sensibilidad a Sulfitos,ALERGENO,"Reacción a conservantes (E220-E228) presentes en vinos, frutas desecadas y algunos procesados.",true
+16,ALERGIA_ALTRAMUZ,Alergia al Altramuz (Lupino),ALERGENO,"Legumbre usada frecuentemente en harinas sin gluten y panadería europea. Fuerte reactividad cruzada con el maní.",true
+17,ALERGIA_LTP,Alergia a Proteínas LTP,ALERGENO,"Síndrome de alergia oral o anafilaxia asociada frecuentemente a la piel del melocotón, manzanas y nueces.",true
+18,INTOLERANCIA_SORBITOL,Intolerancia al Sorbitol,INTOLERANCIA,"Mala absorción de este poliol. Excluye frutas como peras, ciruelas, cerezas y chicles/caramelos sin azúcar.",true
+19,DEFICIT_SACARASA,Déficit de Sacarasa-Isomaltasa,INTOLERANCIA,"Trastorno genético raro. Requiere restricción estricta de sacarosa (azúcar de mesa) y ciertos almidones.",true
+20,SIN_AZUCAR_ANIADIDA,Sin Azúcar Añadida,CLINICA,"Restricción de azúcares libres, jarabes y miel. Útil para control de glucosa, prevención de caries o control de triglicéridos.",true
+21,SIN_ALCOHOL,Sin Alcohol,CLINICA,"Exclusión total de bebidas alcohólicas por interacciones farmacológicas, patología hepática o hipertrigliceridemia.",true
+22,SIN_CAFEINA,Sin Cafeína,CLINICA,"Exclusión de café, té negro, bebidas energizantes y chocolate oscuro. Indicado en hipertensión no controlada, ansiedad o ERGE.",true
+23,SIN_PICANTE,Sin Ají / Picante,CLINICA,"Exclusión de capsaicina y especias irritantes para evitar daño o dolor en mucosas (gastritis, úlceras, hemorroides).",true
+24,BAJO_EN_FOSFORO,Restricción de Fósforo,CLINICA,"Aplicable en enfermedad renal. Limita lácteos, nueces, semillas, legumbres y aditivos inorgánicos (conservantes).",true
+25,BAJO_EN_POTASIO,Restricción de Potasio,CLINICA,"Aplicable en enfermedad renal avanzada. Limita frutas (plátano, naranja, melón) y verduras crudas ricas en este mineral.",true
+26,INTERACCION_POMELO,Exclusión de Toronja / Pomelo,CLINICA,"Exclusión estricta de esta fruta por inhibición de la enzima CYP3A4, lo cual altera gravemente la absorción de múltiples medicamentos.",true
+27,SIN_TIRAMINA,Restricción de Tiramina,CLINICA,"Exclusión de quesos añejos, carnes curadas y fermentos. Obligatorio para pacientes que toman antidepresivos IMAO.",true
+28,CONTROL_VITAMINA_K,Control de Vitamina K,CLINICA,"Mantener ingesta constante (o restringida) de hojas verdes oscuras para evitar alteraciones en pacientes anticoagulados (Warfarina).",true
+29,BAJO_EN_OXALATOS,Bajo en Oxalatos,CLINICA,"Restricción de espinacas, remolacha, cacao y frutos secos para prevenir la formación de cálculos renales de oxalato de calcio.",true
+30,CONTROL_LIQUIDOS,Restricción Hídrica (Líquidos),CLINICA,"Límite estricto en la ingesta diaria de agua, sopas, gelatinas y tés. Vital en hemodiálisis, ICC severa y cirrosis con ascitis.",true
+31,DIETA_BAJA_YODO,Dieta Baja en Yodo,CLINICA,"Exclusión de sal yodada, mariscos y lácteos comerciales. Uso temporal para preparación de terapia con yodo radiactivo en tiroides.",true
+32,GALACTOSEMIA,Galactosemia,CLINICA,"Enfermedad metabólica que requiere exclusión absoluta y de por vida de la galactosa (presente en la lactosa y algunas legumbres).",true
+33,HALAL,Certificación Halal,CULTURAL,"Alimentos permitidos por la ley islámica. Excluye cerdo, alcohol, sangre y exige un faenado específico.",true
+34,KOSHER,Certificación Kosher,CULTURAL,"Alimentos permitidos por la ley judía. Reglas estrictas de faenado, prohibición de cerdo/mariscos y separación absoluta de lácteos y carnes.",true
+35,SIN_CERDO,Sin Carne de Cerdo,CULTURAL,"Exclusión de carne de cerdo y sus derivados por motivos religiosos o personales, sin requerir una certificación formal.",true
+36,SIN_CARNE_RES,Sin Carne de Res / Vaca,CULTURAL,"Exclusión de la carne de vacuno, común en practicantes del hinduismo o por motivos ecológicos/personales.",true
+37,SIN_CILANTRO,Sin Cilantro / Culantro,PREFERENCIA,"Aversión de origen genético donde el usuario percibe un fuerte sabor a jabón al consumir esta hierba.",true
+38,SIN_AJO_CEBOLLA,Sin Ajo ni Cebolla,PREFERENCIA,"Aversión al sabor fuerte o ligera sensibilidad gástrica a los fructanos de los alliums.",true
+39,AVERSION_VERDURAS,Aversión a las Verduras,PREFERENCIA,"El usuario manifiesta un rechazo generalizado al consumo de vegetales. Requiere estrategias de camuflaje o suplementación.",true
+40,AVERSION_MENESTRAS,Aversión a las Legumbres,PREFERENCIA,"Rechazo al consumo de frijoles, lentejas, garbanzos, etc., ya sea por gusto o por evitar flatulencia moderada.",true
+41,AVERSION_HONGOS,Aversión a los Hongos / Setas,PREFERENCIA,"Rechazo a la textura o sabor de los champiñones, portobellos y otras setas comestibles.",true
+42,AVERSION_PESCADO_MARISCO,Aversión a Pescados (No Alergia),PREFERENCIA,"Rechazo al olor o sabor de productos del mar, sin existir un componente inmunológico de alergia.",true
+43,AVERSION_TEXTURAS_VISCOSAS,Aversión a Texturas Gelatinosas,PREFERENCIA,"Rechazo a alimentos como el quingombó (okra), patitas de cerdo, gelatinas o chia hidratada por su sensación en boca.",true
+44,SIN_EDULCORANTES,Sin Edulcorantes Artificiales,PREFERENCIA,"El usuario prefiere evitar sucralosa, aspartamo, stevia, etc., optando por versiones naturales sin endulzar o azúcar real.",true
+45,SIN_COLORANTES,Sin Colorantes Artificiales,PREFERENCIA,"Preferencia por evitar aditivos como la Tartrazina (Amarillo 5) u otros colorantes sintéticos en los alimentos.",true

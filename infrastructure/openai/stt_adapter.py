@@ -19,10 +19,14 @@ logger = logging.getLogger(__name__)
 class OpenAISpeechToTextAdapter:
     """Transcribe audio usando la API de OpenAI Audio Transcriptions."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        client: Optional[AsyncOpenAI] = None,
+        model: Optional[str] = None,
+    ) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self._model = settings.openai_stt_model
+        self._client = client or AsyncOpenAI(api_key=settings.openai_api_key)
+        self._model = model or settings.openai_stt_model
 
     async def transcribe(self, audio_bytes: bytes, mimetype: str = "audio/ogg") -> Optional[str]:
         """

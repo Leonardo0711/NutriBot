@@ -22,12 +22,27 @@ class SqlAlchemyConversationRepository(ConversationRepository):
         """
         factory = get_session_factory()
         async with factory() as session:
-            result = await session.execute(
-                text("SELECT * FROM conversation_state WHERE usuario_id = :uid"),
-                {"uid": usuario_id},
-            )
-            row = result.fetchone()
-            return self._row_to_state(row)
+            async with session.begin():
+                result = await session.execute(
+                    text("SELECT * FROM conversation_state WHERE usuario_id = :uid"),
+                    {"uid": usuario_id},
+                )
+                row = result.fetchone()
+                if row is None:
+                    await session.execute(
+                        text("""
+                            INSERT INTO conversation_state (usuario_id)
+                            VALUES (:uid)
+                            ON CONFLICT (usuario_id) DO NOTHING
+                        """),
+                        {"uid": usuario_id},
+                    )
+                    result = await session.execute(
+                        text("SELECT * FROM conversation_state WHERE usuario_id = :uid"),
+                        {"uid": usuario_id},
+                    )
+                    row = result.fetchone()
+                return self._row_to_state(row, usuario_id)
 
     async def get_state_for_update(
         self, session: AsyncSession, usuario_id: int
@@ -41,7 +56,21 @@ class SqlAlchemyConversationRepository(ConversationRepository):
             {"uid": usuario_id},
         )
         row = result.fetchone()
-        return self._row_to_state(row)
+        if row is None:
+            await session.execute(
+                text("""
+                    INSERT INTO conversation_state (usuario_id)
+                    VALUES (:uid)
+                    ON CONFLICT (usuario_id) DO NOTHING
+                """),
+                {"uid": usuario_id},
+            )
+            result = await session.execute(
+                text("SELECT * FROM conversation_state WHERE usuario_id = :uid FOR UPDATE"),
+                {"uid": usuario_id},
+            )
+            row = result.fetchone()
+        return self._row_to_state(row, usuario_id)
 
     async def save_state(
         self, session: AsyncSession, state: ConversationState
@@ -54,14 +83,11 @@ class SqlAlchemyConversationRepository(ConversationRepository):
             text("""
                 UPDATE conversation_state SET
                     mode = :mode,
-                    awaiting_field_code = :afc,
                     awaiting_question_code = :aqc,
                     last_provider_message_id = :lpmid,
                     last_turn_at = NOW(),
                     last_form_prompt_at = :lfpa,
                     turns_since_last_prompt = :tslp,
-                    closure_score = :cs,
-                    reply_resolved_something = :rrs,
                     profile_completion_pct = :pcp,
                     usability_completion_pct = :ucp,
                     meaningful_interactions_count = :mic,
@@ -79,13 +105,10 @@ class SqlAlchemyConversationRepository(ConversationRepository):
             {
                 "uid": state.usuario_id,
                 "mode": state.mode,
-                "afc": state.awaiting_field_code,
                 "aqc": state.awaiting_question_code,
                 "lpmid": state.last_provider_message_id,
                 "lfpa": state.last_form_prompt_at,
                 "tslp": state.turns_since_last_prompt,
-                "cs": state.closure_score,
-                "rrs": state.reply_resolved_something,
                 "pcp": state.profile_completion_pct,
                 "ucp": state.usability_completion_pct,
                 "mic": state.meaningful_interactions_count,
@@ -101,19 +124,18 @@ class SqlAlchemyConversationRepository(ConversationRepository):
         )
 
     @staticmethod
-    def _row_to_state(row) -> ConversationState:
+    def _row_to_state(row, usuario_id: int) -> ConversationState:
         """Convierte una fila de la BD a un ConversationState."""
+        if row is None:
+            return ConversationState(usuario_id=usuario_id)
         return ConversationState(
             usuario_id=row.usuario_id,
             mode=row.mode,
-            awaiting_field_code=row.awaiting_field_code,
             awaiting_question_code=row.awaiting_question_code,
             last_provider_message_id=row.last_provider_message_id,
             last_turn_at=row.last_turn_at,
             last_form_prompt_at=row.last_form_prompt_at,
             turns_since_last_prompt=row.turns_since_last_prompt,
-            closure_score=row.closure_score,
-            reply_resolved_something=row.reply_resolved_something,
             profile_completion_pct=row.profile_completion_pct,
             usability_completion_pct=row.usability_completion_pct,
             meaningful_interactions_count=getattr(row, "meaningful_interactions_count", 0),

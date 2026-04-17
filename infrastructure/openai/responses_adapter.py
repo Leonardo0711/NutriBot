@@ -19,10 +19,15 @@ logger = logging.getLogger(__name__)
 class OpenAIResponsesAdapter(LLMService):
     """Adaptador para la Responses API de OpenAI."""
 
-    def __init__(self, system_instructions: str) -> None:
+    def __init__(
+        self,
+        system_instructions: str,
+        client: Optional[AsyncOpenAI] = None,
+        model: Optional[str] = None,
+    ) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self._model = settings.openai_model
+        self._client = client or AsyncOpenAI(api_key=settings.openai_api_key)
+        self._model = model or settings.openai_model
         self._instructions = system_instructions
 
     async def generate_reply(
@@ -33,6 +38,7 @@ class OpenAIResponsesAdapter(LLMService):
         rag_context: Optional[str] = None,
         profile_context: Optional[str] = None,
         history: Optional[list[dict]] = None,
+        max_tokens: Optional[int] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Genera una respuesta del LLM.
@@ -46,8 +52,16 @@ class OpenAIResponsesAdapter(LLMService):
             (reply_text, new_response_id)
         """
         try:
-            # Construir el input del usuario e historial
-            user_input = self._build_user_input(normalized, rag_context, profile_context, history)
+            has_prev_response = bool(state.last_openai_response_id)
+            # Si ya hay previous_response_id, no reenviamos historial textual para evitar duplicar tokens.
+            include_history = not has_prev_response
+            user_input = self._build_user_input(
+                normalized,
+                rag_context,
+                profile_context,
+                history,
+                include_history=include_history,
+            )
 
             # Construir los parámetros de la solicitud
             params = {
@@ -55,9 +69,11 @@ class OpenAIResponsesAdapter(LLMService):
                 "instructions": instructions or self._instructions,
                 "input": user_input,
             }
+            if max_tokens and max_tokens > 0:
+                params["max_output_tokens"] = int(max_tokens)
 
             # Encadenar turno previo si existe
-            if state.last_openai_response_id:
+            if has_prev_response:
                 params["previous_response_id"] = state.last_openai_response_id
 
             response = await self._client.responses.create(**params)
@@ -84,6 +100,7 @@ class OpenAIResponsesAdapter(LLMService):
         rag_context: Optional[str],
         profile_context: Optional[str] = None,
         history: Optional[list[dict]] = None,
+        include_history: bool = True,
     ) -> list[dict]:
         """
         Construye el array de input para la Responses API.
@@ -92,7 +109,7 @@ class OpenAIResponsesAdapter(LLMService):
         parts: list[dict] = []
 
         # Historial reciente (Conciencia Total)
-        if history:
+        if include_history and history:
             parts.append({
                 "role": "user",
                 "content": "[HISTORIAL RECIENTE PARA CONTEXTO]\n" + "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
@@ -118,9 +135,10 @@ class OpenAIResponsesAdapter(LLMService):
             content_parts = []
             if normalized.text:
                 content_parts.append({"type": "input_text", "text": normalized.text})
+            image_mimetype = normalized.image_mimetype or "image/jpeg"
             content_parts.append({
                 "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{normalized.image_base64}",
+                "image_url": f"data:{image_mimetype};base64,{normalized.image_base64}",
             })
             parts.append({"role": "user", "content": content_parts})
         else:

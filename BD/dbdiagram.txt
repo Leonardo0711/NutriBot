@@ -1,0 +1,1390 @@
+// ======================================================
+// NUTRIBOT - DBDIAGRAM COMPLETO DOCUMENTADO PARA HUMANOS Y LLMs
+// FORMATO: DBML PARA dbdiagram.io
+// ======================================================
+
+Project nutribot_full_documented {
+  database_type: "PostgreSQL"
+  Note: '''
+  Arquitectura integral de Nutribot.
+
+  OBJETIVO GENERAL:
+  Esta base de datos modela un sistema conversacional nutricional
+  que conversa por WhatsApp, extrae datos del usuario, mantiene
+  un perfil nutricional estructurado, sugiere o registra dietas,
+  almacena documentos para RAG y usa una capa semántica híbrida
+  para reducir llamadas a IA.
+
+  PRINCIPIOS DE DISEÑO:
+  1) Evitar texto libre cuando el dato pertenece a un catálogo.
+  2) Separar "perfil del usuario" de "orden dietética vigente".
+  3) Separar "datos confirmados" de "inferencias tentativas".
+  4) Usar una capa semántica barata antes de llamar a IA.
+  5) Mantener trazabilidad temporal cuando sea relevante.
+
+  ESTRATEGIA DE AHORRO DE IA:
+  - Primero: normalización y alias
+  - Luego: matching exacto o fuzzy textual
+  - Luego: búsqueda vectorial / semántica
+  - Luego: reglas nutricionales
+  - Solo si sigue ambiguo: IA
+  '''
+}
+
+// ======================================================
+// 1) USUARIOS
+// ======================================================
+
+Table usuarios {
+  id bigint [pk, increment, note: 'Clave primaria interna del usuario. Todas las tablas de perfil, conversación y colas se anclan a este ID.']
+  whatsapp_jid varchar(50) [not null, unique, note: 'Identificador completo del usuario en WhatsApp. Ejemplo: 51999999999@s.whatsapp.net. Sirve para integrar con el proveedor de mensajería.']
+  numero_whatsapp varchar(20) [not null, unique, note: 'Número telefónico limpio del usuario, normalmente sin espacios ni símbolos. Sirve para búsquedas y para el envío de mensajes.']
+  creado_en timestamp [note: 'Fecha en la que el usuario fue creado por primera vez en el sistema.']
+  actualizado_en timestamp [note: 'Última vez que se actualizó algún dato de esta fila del usuario.']
+
+  Note: '''
+  TABLA: usuarios
+
+  QUÉ ES:
+  Tabla maestra central de identidad del usuario dentro del sistema.
+
+  PARA QUÉ SIRVE:
+  - Unificar perfil nutricional, conversación, memoria y colas.
+  - Evitar duplicar usuarios por cada mensaje recibido.
+  - Tener un ancla estable para toda la operación.
+
+  QUÉ DEBE IR AQUÍ:
+  - Solo identidad técnica y mínima del usuario.
+  - No debe guardar enfermedades, dietas, alergias ni historial conversacional detallado.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Datos nutricionales
+  - Resúmenes clínicos
+  - Estado de conversación
+  - Mensajes o documentos
+  '''
+}
+
+// ======================================================
+// 2) BACKEND CONVERSACIONAL OPERATIVO
+// ======================================================
+
+Table incoming_messages {
+  id bigint [pk, increment, note: 'Clave primaria interna del mensaje recibido.']
+  provider_message_id varchar(255) [not null, unique, note: 'ID único del mensaje entregado por el proveedor de WhatsApp o el gateway. Se usa para deduplicación e idempotencia.']
+  usuario_id bigint [note: 'Usuario asociado al mensaje si ya pudo resolverse. Puede venir nulo en etapas muy tempranas si aún no se identificó al usuario.']
+  webhook_payload jsonb [not null, note: 'Payload bruto completo del webhook recibido. Debe guardarse tal cual para auditoría, reprocesamiento o depuración.']
+  status varchar(20) [not null, default: 'pending', note: 'Estado operativo del procesamiento del mensaje: pending, processing, done, failed.']
+  locked_at timestamp [note: 'Momento en el que un worker tomó este mensaje para procesarlo. Sirve para control de concurrencia y reintentos.']
+  error_detail text [note: 'Último error registrado al procesar el mensaje. Solo debe usarse para diagnóstico técnico.']
+  retry_count int [not null, default: 0, note: 'Número de reintentos ejecutados sobre este mensaje.']
+  conflict_count int [not null, default: 0, note: 'Número de conflictos de concurrencia detectados al procesar el mensaje.']
+  transient_error_count int [not null, default: 0, note: 'Número de errores temporales o recuperables, por ejemplo fallos de red o tiempo de espera.']
+  created_at timestamp [note: 'Momento en que el mensaje entró al inbox del sistema.']
+  updated_at timestamp [note: 'Última actualización técnica de esta fila.']
+
+  Note: '''
+  TABLA: incoming_messages
+
+  QUÉ ES:
+  Inbox operacional de mensajes entrantes.
+
+  PARA QUÉ SIRVE:
+  - Recibir mensajes del proveedor de mensajería.
+  - Evitar procesamiento duplicado.
+  - Permitir reintentos y trazabilidad.
+  - Separar recepción del procesamiento.
+
+  QUÉ DEBE IR AQUÍ:
+  - El mensaje recibido como evento técnico.
+  - El payload bruto del webhook.
+  - Estado de procesamiento.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Respuestas del bot
+  - Resumen conversacional
+  - Datos clínicos ya estructurados
+  '''
+}
+
+Table conversation_state {
+  usuario_id bigint [pk, not null, note: 'Clave primaria y foránea al usuario. Hay una sola fila vigente por usuario para representar su estado actual de conversación.']
+  mode varchar(30) [not null, default: 'active_chat', note: 'Modo operativo actual del diálogo. Ejemplo: active_chat o collecting_usability.']
+  awaiting_field_code varchar(50) [note: 'Código del campo de perfil o formulario que el bot está esperando actualmente. Ejemplo: edad, objetivo, distrito.']
+  awaiting_question_code varchar(10) [note: 'Código corto de la pregunta puntual que se espera en el flujo de usabilidad.']
+  last_provider_message_id varchar(255) [note: 'ID del último mensaje entrante relevante para este estado conversacional.']
+  last_turn_at timestamp [note: 'Fecha y hora del último turno efectivo del usuario o del sistema.']
+  last_form_prompt_at timestamp [note: 'Última vez que se pidió explícitamente una respuesta de formulario o encuesta.']
+  turns_since_last_prompt int [not null, default: 0, note: 'Cantidad de turnos transcurridos desde la última pregunta de formulario. Sirve para no insistir demasiado.']
+  closure_score int [note: 'Puntaje interno que estima intención de cierre o despedida. Puede servir para decidir si pedir datos o no.']
+  reply_resolved_something boolean [not null, default: false, note: 'Indica si la última respuesta del bot resolvió algo útil antes de intentar capturar más datos.']
+  profile_completion_pct int [not null, default: 0, note: 'Porcentaje de avance estimado del perfil nutricional del usuario.']
+  usability_completion_pct int [not null, default: 0, note: 'Porcentaje de avance estimado de la evaluación de usabilidad.']
+  last_openai_response_id varchar(255) [note: 'ID del último response o cadena conversacional usada con el proveedor de IA, si aplica.']
+  version int [not null, default: 1, note: 'Versión interna para control de concurrencia optimista.']
+  onboarding_status varchar(20) [not null, default: 'not_started', note: 'Estado general del onboarding: not_started, invited, in_progress, completed, skipped, paused.']
+  onboarding_step varchar(50) [note: 'Paso concreto del onboarding en el que está el usuario.']
+  onboarding_last_invited_at timestamp [note: 'Última vez que el sistema invitó al usuario a completar onboarding.']
+  onboarding_next_eligible_at timestamp [note: 'Próximo momento permitido para volver a invitar al usuario.']
+  onboarding_skip_count int [not null, default: 0, note: 'Número de veces que el usuario ha omitido o rechazado el onboarding.']
+  onboarding_updated_at timestamp [note: 'Última vez que cambió algo relacionado al onboarding.']
+  meaningful_interactions_count int [not null, default: 0, note: 'Contador de interacciones útiles para disparar encuestas, seguimiento o milestones.']
+  updated_at timestamp [note: 'Última actualización global de este estado conversacional.']
+
+  Note: '''
+  TABLA: conversation_state
+
+  QUÉ ES:
+  Estado conversacional actual del usuario.
+
+  PARA QUÉ SIRVE:
+  - Saber qué está esperando el bot.
+  - Controlar onboarding y encuestas.
+  - Mantener continuidad entre mensajes.
+  - Evitar que el sistema pregunte cosas fuera de contexto.
+
+  QUÉ DEBE IR AQUÍ:
+  - Estado actual y operativo.
+  - No historial completo.
+  - No contenido clínico definitivo.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Mensajes completos
+  - Enfermedades confirmadas
+  - Dietas registradas como dato final
+  '''
+}
+
+Table profile_extractions {
+  id bigint [pk, increment, note: 'Clave primaria interna de una extracción de perfil.']
+  usuario_id bigint [not null, note: 'Usuario al que pertenece esta inferencia o extracción.']
+  field_code varchar(50) [not null, note: 'Nombre técnico del campo detectado. Ejemplo: edad, enfermedad, restriccion, objetivo, distrito.']
+  raw_value text [not null, note: 'Texto exacto detectado en la conversación antes de normalizarlo.']
+  normalized_value varchar(500) [note: 'Versión normalizada del raw_value, útil para matching semántico o fuzzy.']
+  confidence decimal(4,2) [not null, note: 'Nivel de confianza interno de la extracción, entre 0.00 y 1.00.']
+  evidence_text text [not null, note: 'Fragmento textual o evidencia del mensaje que justifica la extracción.']
+  status varchar(20) [not null, default: 'tentative', note: 'Estado de la extracción: tentative, confirmed o rejected.']
+  resolved_entity_type varchar(30) [note: 'Tipo de entidad maestra a la que se resolvió la extracción, si ya existe resolución.']
+  resolved_entity_code varchar(60) [note: 'Código canónico de la entidad resuelta en el maestro correspondiente.']
+  resolution_strategy varchar(20) [note: 'Estrategia usada para resolver la extracción: EXACT, TRGM, VECTOR, HYBRID, LLM.']
+  semantic_cache_hit boolean [not null, default: false, note: 'Marca si la resolución vino desde cache semántico en lugar de recalcularse.']
+  extracted_at timestamp [note: 'Momento en que esta extracción fue generada.']
+
+  Note: '''
+  TABLA: profile_extractions
+
+  QUÉ ES:
+  Registro de inferencias tentativas extraídas desde el chat.
+
+  PARA QUÉ SIRVE:
+  - No contaminar el perfil final con datos dudosos.
+  - Permitir validación posterior.
+  - Trazar de dónde salió cada inferencia.
+
+  QUÉ DEBE IR AQUÍ:
+  - Detecciones intermedias.
+  - Posibles campos de perfil.
+  - Señales que luego podrían confirmarse.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - El dato definitivo del perfil si ya fue confirmado.
+  - Prescripciones dietéticas oficiales.
+  '''
+}
+
+Table extraction_jobs {
+  id bigint [pk, increment, note: 'Clave primaria interna del job de extracción.']
+  usuario_id bigint [not null, note: 'Usuario cuyo texto será procesado por el pipeline de extracción.']
+  raw_text text [not null, note: 'Texto completo o fragmento que debe ser analizado para extraer información estructurada.']
+  status varchar(20) [not null, default: 'pending', note: 'Estado del job: pending, processing, done o failed.']
+  retry_count int [not null, default: 0, note: 'Número de reintentos del job.']
+  locked_at timestamp [note: 'Momento en que un worker tomó este job para procesarlo.']
+  created_at timestamp [note: 'Fecha de creación del job.']
+  updated_at timestamp [note: 'Última actualización del job.']
+
+  Note: '''
+  TABLA: extraction_jobs
+
+  QUÉ ES:
+  Cola de trabajos para extracción semántica o estructurada del perfil.
+
+  PARA QUÉ SIRVE:
+  - Desacoplar el análisis del flujo de respuesta.
+  - Procesar texto fuera del camino crítico.
+  - Permitir reintentos y concurrencia controlada.
+
+  QUÉ DEBE IR AQUÍ:
+  - Trabajo pendiente de extracción.
+  - Texto fuente.
+  - Estado técnico del job.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Resultado final confirmado.
+  '''
+}
+
+Table outgoing_messages {
+  id bigint [pk, increment, note: 'Clave primaria interna del mensaje saliente.']
+  idempotency_key varchar(255) [not null, unique, note: 'Clave única para evitar enviar dos veces el mismo mensaje por errores o reintentos.']
+  usuario_id bigint [not null, note: 'Usuario destinatario del mensaje.']
+  phone varchar(20) [not null, note: 'Número final de destino usado para el envío.']
+  content_type varchar(20) [not null, note: 'Tipo de contenido: text, audio, audio_tts, buttons, list.']
+  content text [not null, note: 'Contenido principal del mensaje. Puede ser texto plano o representación base del contenido.']
+  status varchar(20) [not null, default: 'pending', note: 'Estado del envío: pending, processing, sending, sent, failed.']
+  attempt_count int [not null, default: 0, note: 'Cantidad de intentos de envío realizados.']
+  locked_at timestamp [note: 'Momento en que un worker tomó este registro para despacharlo.']
+  sent_at timestamp [note: 'Momento en que el sistema marcó este mensaje como enviado.']
+  created_at timestamp [note: 'Fecha de creación del mensaje saliente.']
+  updated_at timestamp [note: 'Última actualización de esta fila.']
+  payload_json jsonb [note: 'Payload estructurado para el proveedor si el contenido requiere botones, listas u otros formatos.']
+  scheduled_at timestamp [note: 'Fecha/hora programada de envío. Permite colas diferidas.']
+  last_attempt_at timestamp [note: 'Fecha del último intento de despacho.']
+  error_detail text [note: 'Detalle del último error de envío.']
+  provider_response jsonb [note: 'Respuesta cruda del proveedor de mensajería.']
+  provider_delivery_id varchar(255) [note: 'ID de entrega devuelto por el proveedor.']
+
+  Note: '''
+  TABLA: outgoing_messages
+
+  QUÉ ES:
+  Outbox de mensajes que el sistema debe enviar.
+
+  PARA QUÉ SIRVE:
+  - Controlar idempotencia.
+  - Permitir reintentos de salida.
+  - Separar generación de contenido del envío real.
+  - Trazar fallos y entregas.
+
+  QUÉ DEBE IR AQUÍ:
+  - Mensajes listos o pendientes de salida.
+  - Estado técnico de despacho.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - El historial clínico del usuario.
+  - La lógica de nutrición como tal.
+  '''
+}
+
+// ======================================================
+// 3) MEMORIA DE CHAT
+// ======================================================
+
+Table memoria_chat {
+  id bigint [pk, increment, note: 'Clave primaria interna del registro de memoria.']
+  usuario_id bigint [not null, unique, note: 'Usuario al que pertenece esta memoria resumida.']
+  resumen text [note: 'Resumen corto acumulado de lo más importante que se sabe del usuario o de la conversación.']
+  temas_clave text [note: 'Lista o resumen de temas importantes tratados con el usuario.']
+  ultima_recomendacion text [note: 'Última recomendación relevante entregada al usuario.']
+  modo_respuesta_preferido varchar(20) [note: 'Preferencia aproximada del usuario: texto, audio o mixto.']
+  ultima_interaccion timestamp [note: 'Última fecha en la que hubo interacción relevante.']
+  actualizado_en timestamp [note: 'Última fecha en la que se actualizó esta memoria.']
+  historial_mensajes jsonb [note: 'Historial resumido o comprimido de mensajes relevantes. No debería ser el log bruto completo.']
+
+  Note: '''
+  TABLA: memoria_chat
+
+  QUÉ ES:
+  Memoria de largo plazo resumida del usuario.
+
+  PARA QUÉ SIRVE:
+  - Recordar contexto entre conversaciones.
+  - Evitar recalcular siempre lo mismo.
+  - Mejorar continuidad sin depender del historial crudo completo.
+
+  QUÉ DEBE IR AQUÍ:
+  - Resúmenes.
+  - Preferencias del usuario.
+  - Temas clave persistentes.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Registros maestros clínicos.
+  - Mensajes crudos completos.
+  '''
+}
+
+// ======================================================
+// 4) GEOGRAFIA NORMALIZADA
+// ======================================================
+
+Table mae_departamento {
+  id bigint [pk, increment, note: 'Clave primaria interna del departamento o región.']
+  codigo_departamento char(2) [not null, unique, note: 'Código oficial corto del departamento, normalmente derivado del ubigeo.']
+  nombre varchar(100) [not null, unique, note: 'Nombre oficial del departamento o región.']
+  activo boolean [not null, default: true, note: 'Permite desactivar registros sin borrarlos físicamente.']
+
+  Note: '''
+  TABLA: mae_departamento
+
+  QUÉ ES:
+  Maestro geográfico de departamentos o regiones.
+
+  PARA QUÉ SIRVE:
+  - Normalizar ubicación.
+  - Evitar texto libre para región/departamento.
+  - Soportar filtros y campañas por zona geográfica.
+  '''
+}
+
+Table mae_provincia {
+  id bigint [pk, increment, note: 'Clave primaria interna de la provincia.']
+  codigo_provincia char(4) [not null, unique, note: 'Código oficial corto de la provincia, normalmente derivado del ubigeo.']
+  nombre varchar(100) [not null, note: 'Nombre oficial de la provincia.']
+  departamento_id bigint [not null, note: 'Departamento al que pertenece la provincia.']
+  activo boolean [not null, default: true, note: 'Permite mantener histórico o desactivar sin borrar.']
+
+  indexes {
+    (departamento_id, nombre) [unique]
+  }
+
+  Note: '''
+  TABLA: mae_provincia
+
+  QUÉ ES:
+  Maestro geográfico de provincias.
+
+  PARA QUÉ SIRVE:
+  - Ubicación estructurada.
+  - Dependencia jerárquica con departamento.
+  - Normalización para formularios, perfil y campañas.
+  '''
+}
+
+Table mae_distrito {
+  id bigint [pk, increment, note: 'Clave primaria interna del distrito.']
+  ubigeo char(6) [not null, unique, note: 'Código ubigeo completo del distrito.']
+  nombre varchar(100) [not null, note: 'Nombre oficial del distrito.']
+  provincia_id bigint [not null, note: 'Provincia a la que pertenece el distrito.']
+  poblacion int [note: 'Población estimada si se desea usar contexto geográfico o analítica.']
+  superficie decimal(12,2) [note: 'Superficie territorial estimada del distrito.']
+  latitud decimal(10,6) [note: 'Latitud referencial del distrito.']
+  longitud decimal(10,6) [note: 'Longitud referencial del distrito.']
+  activo boolean [not null, default: true, note: 'Marca lógica de vigencia del registro.']
+
+  indexes {
+    (provincia_id, nombre) [unique]
+  }
+
+  Note: '''
+  TABLA: mae_distrito
+
+  QUÉ ES:
+  Maestro geográfico de distritos.
+
+  PARA QUÉ SIRVE:
+  - Almacenar la ubicación normalizada del usuario.
+  - Permitir campañas segmentadas.
+  - Derivar provincia y departamento sin duplicar demasiado.
+
+  NOTA DE DISEÑO:
+  El sistema usa distrito_id como punto principal de ubicación;
+  desde ahí se puede navegar hacia provincia y departamento.
+  '''
+}
+
+// ======================================================
+// 5) MAESTROS NUTRICIONALES
+// ======================================================
+
+Table mae_enfermedad_cie10 {
+  id bigint [pk, increment, note: 'Clave primaria interna del registro de enfermedad.']
+  codigo_cie10 varchar(10) [not null, unique, note: 'Código CIE10 canónico de la enfermedad.']
+  nombre varchar(255) [not null, note: 'Nombre descriptivo oficial o estandarizado de la enfermedad.']
+  categoria varchar(100) [note: 'Capítulo, familia o agrupación mayor a la que pertenece la enfermedad.']
+  activo boolean [not null, default: true, note: 'Permite desactivar un código sin borrarlo del sistema.']
+
+  Note: '''
+  TABLA: mae_enfermedad_cie10
+
+  QUÉ ES:
+  Maestro de enfermedades codificadas.
+
+  PARA QUÉ SIRVE:
+  - Representar diagnósticos o condiciones clínicas en forma estructurada.
+  - Relacionar enfermedades con grupos nutricionales.
+  - Evitar guardar enfermedades como texto libre.
+
+  QUÉ DEBE IR AQUÍ:
+  - Solo catálogo maestro, no el diagnóstico del usuario.
+  '''
+}
+
+Table mae_grupo_nutricional {
+  id bigint [pk, increment, note: 'Clave primaria interna del grupo nutricional.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico del grupo. Ejemplo: DIABETES, HIPERTENSION, RENAL.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible del grupo nutricional.']
+  descripcion text [note: 'Descripción funcional del grupo y su significado clínico-nutricional.']
+  activo boolean [not null, default: true, note: 'Indica si el grupo sigue vigente en el modelo.']
+
+  Note: '''
+  TABLA: mae_grupo_nutricional
+
+  QUÉ ES:
+  Agrupador intermedio entre enfermedad y lógica nutricional.
+
+  PARA QUÉ SIRVE:
+  - No mapear miles de CIE10 directamente a dietas.
+  - Reutilizar reglas nutricionales por familia clínica.
+  - Simplificar mantenimiento del sistema.
+
+  EJEMPLO:
+  Varias enfermedades pueden pertenecer al grupo DIABETES,
+  y desde ese grupo derivar dietas y restricciones.
+  '''
+}
+
+Table mae_patron_alimentario {
+  id bigint [pk, increment, note: 'Clave primaria interna del patrón alimentario.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico del patrón. Ejemplo: OMNIVORA, VEGANA.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible del patrón alimentario.']
+  descripcion text [note: 'Descripción del patrón base de alimentación del usuario.']
+  activo boolean [not null, default: true, note: 'Marca si el patrón está activo o disponible.']
+
+  Note: '''
+  TABLA: mae_patron_alimentario
+
+  QUÉ ES:
+  Maestro de estilo o patrón base de alimentación del usuario.
+
+  PARA QUÉ SIRVE:
+  - Guardar si la persona es omnívora, vegetariana, vegana, etc.
+  - Separar preferencia o estilo alimentario de dietas terapéuticas.
+
+  IMPORTANTE:
+  Esto NO es una orden dietética clínica.
+  '''
+}
+
+Table mae_dieta_terapeutica {
+  id bigint [pk, increment, note: 'Clave primaria interna de la dieta terapéutica.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico de la dieta. Ejemplo: HIPOSODICA, RENAL_GENERAL.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible de la dieta terapéutica.']
+  categoria varchar(100) [note: 'Clasificación mayor de la dieta. Ejemplo: BASE, TERAPEUTICA, PATRON_TERAPEUTICO.']
+  descripcion text [note: 'Descripción funcional de cuándo y cómo se usa esta dieta.']
+  activo boolean [not null, default: true, note: 'Marca si la dieta sigue disponible en el sistema.']
+
+  Note: '''
+  TABLA: mae_dieta_terapeutica
+
+  QUÉ ES:
+  Maestro de dietas terapéuticas o funcionales.
+
+  PARA QUÉ SIRVE:
+  - Representar dietas como hiposódica, renal, hipocalórica, etc.
+  - Ser usada por reglas y por órdenes dietéticas.
+
+  IMPORTANTE:
+  Esta tabla es catálogo.
+  No dice quién tiene esa dieta; eso lo maneja la orden dietética.
+  '''
+}
+
+Table mae_textura_dieta {
+  id bigint [pk, increment, note: 'Clave primaria interna de la textura o consistencia de dieta.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico. Ejemplo: BLANDA, LIQUIDA_CLARA, TRITURADA_O_PURE.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible de la textura o consistencia.']
+  descripcion text [note: 'Descripción de la consistencia y su uso clínico o funcional.']
+  activo boolean [not null, default: true, note: 'Marca si esta textura está vigente o disponible.']
+
+  Note: '''
+  TABLA: mae_textura_dieta
+
+  QUÉ ES:
+  Maestro de texturas o consistencias de alimentación.
+
+  PARA QUÉ SIRVE:
+  - Diferenciar una dieta por forma de presentación.
+  - Modelar casos como blanda, líquida, puré o disfagia.
+
+  IMPORTANTE:
+  La textura no reemplaza la dieta terapéutica.
+  Es una dimensión adicional.
+  '''
+}
+
+Table mae_restriccion_alimentaria {
+  id bigint [pk, increment, note: 'Clave primaria interna de la restricción alimentaria.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico de la restricción. Ejemplo: SIN_GLUTEN, BAJA_EN_POTASIO.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible de la restricción.']
+  tipo varchar(50) [not null, note: 'Tipo funcional de la restricción: ALERGENO, INTOLERANCIA, CLINICA, CULTURAL, PREFERENCIA.']
+  descripcion text [note: 'Descripción de qué limita, prohíbe o controla esta restricción.']
+  activo boolean [not null, default: true, note: 'Permite desactivar la restricción sin borrarla.']
+
+  Note: '''
+  TABLA: mae_restriccion_alimentaria
+
+  QUÉ ES:
+  Maestro de restricciones alimentarias.
+
+  PARA QUÉ SIRVE:
+  - Separar restricciones del usuario de la dieta principal.
+  - Reutilizar restricciones en perfil y en órdenes dietéticas.
+  - Representar alergias, intolerancias y restricciones clínicas.
+
+  EJEMPLOS:
+  - SIN_GLUTEN
+  - SIN_LACTOSA
+  - BAJA_EN_POTASIO
+  - HALAL
+  '''
+}
+
+Table mae_objetivo_nutricional {
+  id bigint [pk, increment, note: 'Clave primaria interna del objetivo nutricional.']
+  codigo varchar(50) [not null, unique, note: 'Código técnico del objetivo. Ejemplo: PERDIDA_PESO, CONTROL_GLUCOSA.']
+  nombre varchar(150) [not null, unique, note: 'Nombre legible del objetivo.']
+  descripcion text [note: 'Descripción del propósito nutricional principal.']
+  activo boolean [not null, default: true, note: 'Permite marcar objetivos como activos o no.']
+
+  Note: '''
+  TABLA: mae_objetivo_nutricional
+
+  QUÉ ES:
+  Maestro de objetivos nutricionales.
+
+  PARA QUÉ SIRVE:
+  - Guardar el objetivo principal del usuario.
+  - Orientar recomendaciones y planes.
+  - Separar "objetivo" de "diagnóstico" y de "dieta".
+
+  EJEMPLOS:
+  - pérdida de peso
+  - control glucosa
+  - mantenimiento
+  - recuperación nutricional
+  '''
+}
+
+// ======================================================
+// 6) REGLAS NUTRICIONALES
+// ======================================================
+
+Table rel_enfermedad_grupo_nutricional {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre enfermedad y grupo nutricional.']
+  enfermedad_id bigint [not null, note: 'Enfermedad específica que pertenece o se asocia a un grupo nutricional.']
+  grupo_nutricional_id bigint [not null, note: 'Grupo nutricional al que se asocia la enfermedad.']
+  tipo_relacion varchar(30) [not null, note: 'Nivel o fuerza de la relación: OBLIGATORIA, FRECUENTE, CONDICIONAL.']
+  observacion text [note: 'Aclaración clínica o de negocio sobre la relación.']
+  activo boolean [not null, default: true, note: 'Permite activar o desactivar la regla sin eliminarla.']
+
+  indexes {
+    (enfermedad_id, grupo_nutricional_id) [unique]
+  }
+
+  Note: '''
+  TABLA: rel_enfermedad_grupo_nutricional
+
+  QUÉ ES:
+  Tabla puente entre enfermedad y grupo nutricional.
+
+  PARA QUÉ SIRVE:
+  - Traducir diagnóstico a lógica nutricional.
+  - Evitar mapear CIE10 directamente a dietas sin capas intermedias.
+  - Mantener reglas más fáciles de sostener.
+
+  EJEMPLO:
+  E11.9 -> grupo DIABETES
+  '''
+}
+
+Table rel_grupo_nutricional_dieta {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre grupo nutricional y dieta.']
+  grupo_nutricional_id bigint [not null, note: 'Grupo nutricional desde el cual parte la regla.']
+  dieta_terapeutica_id bigint [not null, note: 'Dieta terapéutica sugerida, obligatoria o contraindicada para el grupo.']
+  prioridad int [not null, default: 1, note: 'Prioridad relativa de la dieta dentro del grupo. Menor número suele significar mayor relevancia.']
+  tipo_relacion varchar(30) [not null, note: 'Tipo de regla: SUGERIDA, OBLIGATORIA o CONTRAINDICADA.']
+  observacion text [note: 'Comentarios o aclaraciones sobre cuándo se aplica esta regla.']
+  activo boolean [not null, default: true, note: 'Permite activar o desactivar la regla sin borrarla.']
+
+  indexes {
+    (grupo_nutricional_id, dieta_terapeutica_id) [unique]
+  }
+
+  Note: '''
+  TABLA: rel_grupo_nutricional_dieta
+
+  QUÉ ES:
+  Regla que conecta un grupo nutricional con una o varias dietas terapéuticas.
+
+  PARA QUÉ SIRVE:
+  - Generar sugerencias.
+  - Validar consistencia.
+  - Ayudar a clasificar dietas apropiadas según condición clínica.
+
+  IMPORTANTE:
+  Esta tabla define reglas generales, no la orden real del usuario.
+  '''
+}
+
+Table rel_grupo_nutricional_restriccion {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre grupo nutricional y restricción alimentaria.']
+  grupo_nutricional_id bigint [not null, note: 'Grupo nutricional al que aplica esta restricción.']
+  restriccion_id bigint [not null, note: 'Restricción alimentaria asociada al grupo.']
+  prioridad int [not null, default: 1, note: 'Prioridad o peso relativo de la restricción para ese grupo.']
+  obligatoria boolean [not null, default: false, note: 'Indica si la restricción es obligatoria o solo sugerida dentro del grupo.']
+  observacion text [note: 'Aclaraciones clínicas o de negocio sobre la relación.']
+  activo boolean [not null, default: true, note: 'Permite activar o desactivar la regla sin borrarla.']
+
+  indexes {
+    (grupo_nutricional_id, restriccion_id) [unique]
+  }
+
+  Note: '''
+  TABLA: rel_grupo_nutricional_restriccion
+
+  QUÉ ES:
+  Regla que conecta un grupo nutricional con restricciones alimentarias.
+
+  PARA QUÉ SIRVE:
+  - Traducir lógica clínica a restricciones concretas.
+  - Apoyar decisiones o sugerencias sin depender siempre de IA.
+  '''
+}
+
+// ======================================================
+// 7) PERFIL NUTRICIONAL MEJORADO
+// ======================================================
+
+Table perfil_nutricional {
+  id bigint [pk, increment, note: 'Clave primaria interna del perfil nutricional.']
+  usuario_id bigint [not null, unique, note: 'Usuario dueño de este perfil. Debe existir una sola fila activa/base por usuario.']
+  edad_reportada int [note: 'Edad declarada por el usuario, útil cuando no se guarda fecha de nacimiento.']
+  fecha_referencia_edad date [note: 'Fecha en la que esa edad fue registrada, para saber si está desactualizada.']
+  sexo varchar(20) [note: 'Dato opcional si se desea usar para recomendaciones, métricas o segmentación.']
+  patron_alimentario_id bigint [note: 'Patrón alimentario base del usuario. No es una dieta clínica.']
+  objetivo_nutricional_id bigint [note: 'Objetivo nutricional principal actual del usuario.']
+  distrito_id bigint [note: 'Ubicación actual normalizada del usuario. Desde aquí se infiere provincia y departamento.']
+  fuente_ubicacion varchar(50) [note: 'Origen de la ubicación: usuario, chat, gps, manual, importacion.']
+  observacion_general text [note: 'Notas excepcionales que no deben modelarse como catálogo. No debe usarse para listas largas ni datos estructurados.']
+  skipped_fields jsonb [note: 'Campos que el usuario decidió omitir o no contestar.']
+  creado_en timestamp [note: 'Fecha de creación del perfil base.']
+  actualizado_en timestamp [note: 'Última actualización del perfil base.']
+
+  Note: '''
+  TABLA: perfil_nutricional
+
+  QUÉ ES:
+  Estado base y relativamente estable del perfil nutricional del usuario.
+
+  PARA QUÉ SIRVE:
+  - Guardar identidad nutricional básica.
+  - Centralizar patrón alimentario, objetivo y ubicación.
+  - Servir como punto de unión para mediciones, enfermedades, restricciones y órdenes dietéticas.
+
+  QUÉ DEBE IR AQUÍ:
+  - Datos base y estables.
+  - No debe guardar listas de enfermedades o dietas en texto libre.
+
+  QUÉ NO DEBE IR AQUÍ:
+  - Historial antropométrico detallado
+  - Diagnósticos en texto libre
+  - Restricciones como cadena
+  - Prescripción dietética concreta
+  '''
+}
+
+Table perfil_nutricional_medicion {
+  id bigint [pk, increment, note: 'Clave primaria interna de una medición antropométrica.']
+  perfil_nutricional_id bigint [not null, note: 'Perfil al que pertenece esta medición.']
+  tipo_medicion varchar(30) [not null, note: 'Tipo de medición. Ejemplo: PESO_KG, ALTURA_CM, CINTURA_CM, IMC_REFERENCIAL.']
+  valor_decimal decimal(10,2) [not null, note: 'Valor numérico de la medición.']
+  unidad varchar(20) [not null, note: 'Unidad del valor. Ejemplo: kg, cm, indice.']
+  fecha_medicion timestamp [not null, note: 'Fecha y hora en la que se registró la medición.']
+  es_valor_actual boolean [not null, default: false, note: 'Marca si esta medición es la vigente para su tipo.']
+  origen varchar(30) [not null, note: 'Origen de la medición: SELF_REPORT, PROFESIONAL, IMPORTACION, SISTEMA.']
+  observacion text [note: 'Notas opcionales sobre la medición.']
+  creado_en timestamp [note: 'Fecha de creación del registro.']
+
+  Note: '''
+  TABLA: perfil_nutricional_medicion
+
+  QUÉ ES:
+  Historial de mediciones físicas o antropométricas.
+
+  PARA QUÉ SIRVE:
+  - Evitar sobreescribir peso, talla y otros valores.
+  - Permitir evolución temporal.
+  - Diferenciar valor actual de histórico.
+
+  IMPORTANTE:
+  Cada fila es una medición, no un resumen del perfil.
+  '''
+}
+
+Table perfil_nutricional_enfermedad {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre perfil y enfermedad.']
+  perfil_nutricional_id bigint [not null, note: 'Perfil del usuario al que se le atribuye la enfermedad.']
+  enfermedad_id bigint [not null, note: 'Enfermedad del maestro CIE10 asociada al perfil.']
+  es_principal boolean [not null, default: false, note: 'Marca si esta es una condición principal o prioritaria dentro del perfil.']
+  origen varchar(30) [not null, note: 'Origen del dato: SELF_REPORT, PROFESIONAL, IMPORTACION, SISTEMA.']
+  grado_confianza decimal(4,2) [note: 'Nivel de confianza si la enfermedad fue inferida o no plenamente validada.']
+  validado boolean [not null, default: false, note: 'Marca si la condición fue validada por el sistema, usuario o profesional.']
+  fecha_inicio date [note: 'Fecha aproximada desde la que se considera vigente la condición, si se conoce.']
+  fecha_fin date [note: 'Fecha de fin si la condición ya no está vigente o se cerró.']
+  vigente boolean [not null, default: true, note: 'Indica si actualmente se considera activa o vigente.']
+  observacion text [note: 'Notas aclaratorias sobre la condición del usuario.']
+  creado_en timestamp [note: 'Fecha de creación del vínculo.']
+
+  indexes {
+    (perfil_nutricional_id, enfermedad_id) [unique]
+  }
+
+  Note: '''
+  TABLA: perfil_nutricional_enfermedad
+
+  QUÉ ES:
+  Relación entre el usuario y sus enfermedades o condiciones clínicas.
+
+  PARA QUÉ SIRVE:
+  - Representar el diagnóstico del usuario sin usar texto libre.
+  - Mantener vigencia, validación y procedencia del dato.
+
+  IMPORTANTE:
+  Esta tabla representa lo que el usuario tiene,
+  no lo que el catálogo general define.
+  '''
+}
+
+Table perfil_nutricional_restriccion {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre perfil y restricción alimentaria.']
+  perfil_nutricional_id bigint [not null, note: 'Perfil del usuario al que se le asigna la restricción.']
+  restriccion_id bigint [not null, note: 'Restricción alimentaria del maestro correspondiente.']
+  obligatoria boolean [not null, default: false, note: 'Indica si la restricción es de cumplimiento obligatorio para el usuario.']
+  severidad varchar(30) [note: 'Severidad estimada: LEVE, MODERADA o SEVERA, si aplica.']
+  validado boolean [not null, default: false, note: 'Indica si la restricción ya fue validada.']
+  origen varchar(30) [not null, note: 'Origen del dato: SELF_REPORT, PROFESIONAL, IMPORTACION, SISTEMA.']
+  grado_confianza decimal(4,2) [note: 'Nivel de confianza si la restricción fue inferida o no confirmada.']
+  fecha_inicio date [note: 'Fecha aproximada de inicio de la restricción.']
+  fecha_fin date [note: 'Fecha de fin si deja de aplicar.']
+  vigente boolean [not null, default: true, note: 'Marca si la restricción sigue activa actualmente.']
+  observacion text [note: 'Notas adicionales sobre la restricción.']
+  creado_en timestamp [note: 'Fecha de creación del vínculo.']
+
+  indexes {
+    (perfil_nutricional_id, restriccion_id) [unique]
+  }
+
+  Note: '''
+  TABLA: perfil_nutricional_restriccion
+
+  QUÉ ES:
+  Restricciones alimentarias que pertenecen al usuario.
+
+  PARA QUÉ SIRVE:
+  - Modelar alergias, intolerancias o restricciones personales/ clínicas.
+  - Distinguir restricciones del perfil de restricciones aplicadas en una orden dietética.
+
+  IMPORTANTE:
+  Lo que está aquí pertenece al usuario como condición o preferencia,
+  no necesariamente a una prescripción puntual.
+  '''
+}
+
+// ======================================================
+// 8) ORDEN DIETETICA
+// ======================================================
+
+Table orden_dietetica {
+  id bigint [pk, increment, note: 'Clave primaria interna de la orden dietética.']
+  perfil_nutricional_id bigint [not null, note: 'Perfil del usuario al que se aplica esta orden.']
+  codigo varchar(50) [unique, note: 'Código interno opcional para identificar la orden.']
+  estado varchar(30) [not null, note: 'Estado de la orden: BORRADOR, ACTIVA, SUSPENDIDA, FINALIZADA, CANCELADA.']
+  textura_dieta_id bigint [note: 'Textura principal asociada a esta orden, si aplica.']
+  fecha_inicio timestamp [not null, note: 'Fecha/hora desde la que empieza a regir la orden dietética.']
+  fecha_fin timestamp [note: 'Fecha/hora de término si la orden ya no está vigente.']
+  vigente boolean [not null, default: true, note: 'Marca rápida para saber si la orden sigue activa.']
+  indicada_por varchar(100) [note: 'Responsable o fuente humana/funcional: nutricionista, médico, sistema, chatbot.']
+  fuente_orden varchar(30) [not null, note: 'Origen formal de la orden: MANUAL, RECOMENDADA, VALIDADA, IMPORTADA.']
+  observacion text [note: 'Notas generales sobre la orden.']
+  creado_en timestamp [note: 'Fecha de creación de la orden.']
+  actualizado_en timestamp [note: 'Última actualización de la orden.']
+
+  Note: '''
+  TABLA: orden_dietetica
+
+  QUÉ ES:
+  Prescripción o indicación dietética concreta para un usuario.
+
+  PARA QUÉ SIRVE:
+  - Separar el perfil del usuario de la dieta vigente.
+  - Permitir historial de órdenes.
+  - Asociar dietas y restricciones concretas con fechas y estado.
+
+  IMPORTANTE:
+  Esta tabla no es catálogo.
+  Representa una orden real aplicada a una persona.
+  '''
+}
+
+Table orden_dietetica_dieta {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre una orden y una dieta terapéutica.']
+  orden_dietetica_id bigint [not null, note: 'Orden dietética a la que pertenece esta dieta.']
+  dieta_terapeutica_id bigint [not null, note: 'Dieta terapéutica que forma parte de la orden.']
+  es_principal boolean [not null, default: false, note: 'Marca si esta dieta es la principal dentro de la orden.']
+  prioridad int [not null, default: 1, note: 'Prioridad relativa dentro de la orden. Menor número suele significar mayor importancia.']
+  observacion text [note: 'Notas específicas de esta dieta dentro de la orden.']
+  activo boolean [not null, default: true, note: 'Permite desactivar esta dieta dentro de la orden sin borrar el historial.']
+  creado_en timestamp [note: 'Fecha de creación del vínculo.']
+
+  indexes {
+    (orden_dietetica_id, dieta_terapeutica_id) [unique]
+  }
+
+  Note: '''
+  TABLA: orden_dietetica_dieta
+
+  QUÉ ES:
+  Lista de dietas terapéuticas incluidas en una orden dietética.
+
+  PARA QUÉ SIRVE:
+  - Permitir que una orden tenga más de una dieta.
+  - Priorizar una dieta principal.
+  - Mantener trazabilidad de combinaciones dietéticas.
+  '''
+}
+
+Table orden_dietetica_restriccion {
+  id bigint [pk, increment, note: 'Clave primaria interna de la relación entre una orden y una restricción.']
+  orden_dietetica_id bigint [not null, note: 'Orden dietética sobre la cual aplica esta restricción.']
+  restriccion_id bigint [not null, note: 'Restricción alimentaria incluida en la orden.']
+  obligatoria boolean [not null, default: true, note: 'Indica si la restricción debe cumplirse obligatoriamente dentro de la orden.']
+  severidad varchar(30) [note: 'Nivel o intensidad con la que se aplica la restricción, si se desea modelar.']
+  observacion text [note: 'Notas específicas sobre esta restricción en el contexto de la orden.']
+  activo boolean [not null, default: true, note: 'Permite desactivar el vínculo sin perder trazabilidad histórica.']
+  creado_en timestamp [note: 'Fecha de creación del vínculo.']
+
+  indexes {
+    (orden_dietetica_id, restriccion_id) [unique]
+  }
+
+  Note: '''
+  TABLA: orden_dietetica_restriccion
+
+  QUÉ ES:
+  Restricciones alimentarias aplicadas específicamente a una orden dietética.
+
+  PARA QUÉ SIRVE:
+  - Distinguir restricciones propias del usuario de restricciones operativas de la orden.
+  - Modelar combinaciones más finas dentro de una indicación concreta.
+  '''
+}
+
+// ======================================================
+// 9) CAPA SEMANTICA PARA AHORRO DE IA
+// ======================================================
+
+Table mae_alias_semantico {
+  id bigint [pk, increment, note: 'Clave primaria interna del alias semántico.']
+  entidad_tipo varchar(30) [not null, note: 'Tipo de entidad canónica a la que apunta el alias. Ejemplo: ENFERMEDAD_CIE10 o RESTRICCION_ALIMENTARIA.']
+  entidad_codigo varchar(60) [not null, note: 'Código canónico de la entidad dentro de su maestro.']
+  alias_texto varchar(255) [not null, note: 'Alias visible, sin normalizar. Ejemplo: azúcar alta, presión alta, no tolero leche.']
+  alias_normalizado varchar(255) [not null, note: 'Versión normalizada del alias para búsquedas exactas o fuzzy.']
+  idioma varchar(10) [not null, default: 'es', note: 'Idioma del alias, útil si luego agregas variantes en otros idiomas.']
+  es_canonico boolean [not null, default: false, note: 'Marca si este alias corresponde al nombre oficial o solo a una variante útil.']
+  prioridad int [not null, default: 1, note: 'Prioridad del alias cuando existan varias formas de mapear el mismo concepto.']
+  activo boolean [not null, default: true, note: 'Permite activar o desactivar el alias sin borrarlo.']
+  creado_en timestamp [note: 'Fecha de creación del alias.']
+  actualizado_en timestamp [note: 'Última actualización del alias.']
+
+  indexes {
+    (entidad_tipo, entidad_codigo, alias_normalizado) [unique]
+    (entidad_tipo, alias_normalizado)
+  }
+
+  Note: '''
+  TABLA: mae_alias_semantico
+
+  QUÉ ES:
+  Catálogo de sinónimos, frases naturales, errores comunes y variantes semánticas.
+
+  PARA QUÉ SIRVE:
+  - Resolver lenguaje del usuario sin llamar siempre a IA.
+  - Mapear expresiones coloquiales a entidades canónicas.
+  - Mejorar exact match, fuzzy match y búsqueda vectorial.
+
+  EJEMPLOS:
+  - "azúcar alta" -> enfermedad o grupo DIABETES
+  - "presión alta" -> grupo HIPERTENSION
+  - "no tolero leche" -> restricción SIN_LACTOSA
+  '''
+}
+
+Table semantic_catalog {
+  id bigint [pk, increment, note: 'Clave primaria interna del catálogo semántico indexable.']
+  entidad_tipo varchar(30) [not null, note: 'Tipo canónico de entidad que representa esta entrada.']
+  entidad_codigo varchar(60) [not null, note: 'Código canónico de la entidad representada.']
+  alias_semantico_id bigint [note: 'Alias que originó esta entrada, si provino de mae_alias_semantico.']
+  nombre_canonico varchar(255) [not null, note: 'Nombre oficial o canónico de la entidad.']
+  texto_busqueda varchar(255) [not null, note: 'Texto principal que se quiere buscar o comparar.']
+  texto_normalizado varchar(255) [not null, note: 'Versión normalizada del texto de búsqueda.']
+  peso_lexico decimal(4,2) [not null, default: 1.00, note: 'Peso relativo para estrategias léxicas o trigram.']
+  peso_semantico decimal(4,2) [not null, default: 1.00, note: 'Peso relativo para estrategias vectoriales o semánticas.']
+  embedding varchar [note: 'Representación vectorial del texto. En PostgreSQL real sería vector(1536) u otra dimensión.']
+  embedding_model varchar(100) [note: 'Nombre del modelo usado para generar el embedding.']
+  activo boolean [not null, default: true, note: 'Marca si la entrada sigue activa en el índice semántico.']
+  generado_en timestamp [note: 'Fecha de generación de esta entrada semántica.']
+  actualizado_en timestamp [note: 'Última actualización de esta entrada.']
+
+  indexes {
+    (entidad_tipo, entidad_codigo, texto_normalizado) [unique]
+    (entidad_tipo, texto_normalizado)
+  }
+
+  Note: '''
+  TABLA: semantic_catalog
+
+  QUÉ ES:
+  Índice semántico unificado y searchable del sistema.
+
+  PARA QUÉ SIRVE:
+  - Concentrar texto indexable para búsquedas exactas, fuzzy y vectoriales.
+  - Evitar consultar múltiples tablas de catálogo por separado.
+  - Servir como base para una capa híbrida de resolución.
+
+  IMPORTANTE:
+  Esta tabla no reemplaza los maestros.
+  Solo ayuda a encontrarlos rápido y barato.
+  '''
+}
+
+Table semantic_resolution_cache {
+  id bigint [pk, increment, note: 'Clave primaria interna del cache de resolución semántica.']
+  scope varchar(30) [not null, note: 'Contexto en el que se hizo la resolución. Ejemplo: PROFILE_FIELD, ENTITY_MATCH, NUTRITION_CLASSIFICATION.']
+  field_code varchar(50) [note: 'Campo concreto que se quería resolver. Ejemplo: enfermedad, objetivo, restriccion.']
+  query_texto text [not null, note: 'Texto original consultado.']
+  query_normalizada varchar(500) [not null, note: 'Versión normalizada de la consulta para reutilización de resultados.']
+  entidad_tipo_resuelta varchar(30) [note: 'Tipo final de entidad resuelta.']
+  entidad_codigo_resuelto varchar(60) [note: 'Código final resuelto dentro del maestro correspondiente.']
+  estrategia_usada varchar(20) [not null, note: 'Método usado para resolver: EXACT, TRGM, VECTOR, HYBRID, LLM.']
+  confidence decimal(4,2) [not null, note: 'Confianza final con la que se guardó el resultado en cache.']
+  compatible_con_reglas boolean [not null, default: true, note: 'Indica si la resolución fue coherente con reglas relacionales o de negocio.']
+  top_candidates_json jsonb [note: 'Lista opcional de candidatos considerados durante la resolución.']
+  hit_count int [not null, default: 0, note: 'Número de veces que esta resolución en cache ha sido reutilizada.']
+  expires_at timestamp [note: 'Fecha de expiración de la entrada de cache, si aplica.']
+  creado_en timestamp [note: 'Fecha de creación de la entrada en cache.']
+  actualizado_en timestamp [note: 'Última actualización del cache.']
+
+  indexes {
+    (scope, field_code, query_normalizada) [unique]
+  }
+
+  Note: '''
+  TABLA: semantic_resolution_cache
+
+  QUÉ ES:
+  Cache de resoluciones semánticas reutilizables.
+
+  PARA QUÉ SIRVE:
+  - Evitar recalcular fuzzy, vector o IA para la misma consulta.
+  - Reducir latencia.
+  - Bajar costo de llamadas al modelo.
+
+  IMPORTANTE:
+  Esta tabla es clave en la estrategia de ahorro de IA.
+  '''
+}
+
+Table semantic_match_log {
+  id bigint [pk, increment, note: 'Clave primaria interna del log de matching semántico.']
+  usuario_id bigint [note: 'Usuario que originó la consulta o el texto que se quiso resolver.']
+  incoming_message_id bigint [note: 'Mensaje entrante asociado al intento de matching, si existe.']
+  scope varchar(30) [not null, note: 'Contexto de resolución.']
+  field_code varchar(50) [note: 'Campo que se intentó resolver.']
+  query_texto text [not null, note: 'Texto original evaluado.']
+  query_normalizada varchar(500) [not null, note: 'Texto normalizado usado en el pipeline.']
+  estrategia_usada varchar(20) [not null, note: 'Método usado para resolver el matching.']
+  exact_match boolean [not null, default: false, note: 'Marca si hubo match exacto sin necesidad de fuzzy o vector.']
+  trigram_score decimal(5,4) [note: 'Puntaje de similitud léxica o trigram, si aplica.']
+  vector_score decimal(5,4) [note: 'Puntaje de similitud semántica/vectorial, si aplica.']
+  confidence_final decimal(4,2) [note: 'Confianza final del matching.']
+  entidad_tipo_resuelta varchar(30) [note: 'Tipo de entidad resuelta finalmente.']
+  entidad_codigo_resuelto varchar(60) [note: 'Código de la entidad resuelta finalmente.']
+  escalado_a_ia boolean [not null, default: false, note: 'Marca si el caso terminó escalando a IA.']
+  decidido_por_regla boolean [not null, default: false, note: 'Marca si la decisión final vino de reglas relacionales y no solo de similitud.']
+  latency_ms int [note: 'Tiempo aproximado de resolución en milisegundos.']
+  error_detail text [note: 'Error o detalle si el matching falló.']
+  creado_en timestamp [note: 'Momento en que ocurrió este intento de matching.']
+
+  Note: '''
+  TABLA: semantic_match_log
+
+  QUÉ ES:
+  Log detallado de intentos de resolución semántica.
+
+  PARA QUÉ SIRVE:
+  - Auditar qué estrategia funcionó.
+  - Afinar thresholds.
+  - Medir ahorro de IA.
+  - Detectar puntos débiles del sistema.
+
+  IMPORTANTE:
+  Es una tabla de observabilidad, no de negocio.
+  '''
+}
+
+Table semantic_review_queue {
+  id bigint [pk, increment, note: 'Clave primaria interna del caso enviado a revisión.']
+  usuario_id bigint [note: 'Usuario relacionado con el caso ambiguo.']
+  incoming_message_id bigint [note: 'Mensaje que originó el caso ambiguo, si aplica.']
+  scope varchar(30) [not null, note: 'Contexto del caso.']
+  field_code varchar(50) [note: 'Campo que no pudo resolverse con suficiente claridad.']
+  query_texto text [not null, note: 'Texto original problemático o ambiguo.']
+  query_normalizada varchar(500) [not null, note: 'Versión normalizada del texto.']
+  top_candidates_json jsonb [note: 'Candidatos sugeridos por el pipeline antes de revisión.']
+  razon varchar(50) [not null, note: 'Razón por la cual se envió a revisión: LOW_CONFIDENCE, CONFLICT, NO_MATCH, RULE_MISMATCH.']
+  estado varchar(20) [not null, note: 'Estado de la revisión: PENDING, REVIEWED, DISMISSED, RESOLVED.']
+  resolucion_manual_tipo varchar(30) [note: 'Tipo de entidad elegido manualmente si hubo resolución humana.']
+  resolucion_manual_codigo varchar(60) [note: 'Código elegido manualmente si hubo resolución humana.']
+  observacion text [note: 'Comentarios del revisor o del sistema sobre el caso.']
+  creado_en timestamp [note: 'Fecha de creación del caso.']
+  resuelto_en timestamp [note: 'Fecha de cierre o resolución del caso.']
+
+  Note: '''
+  TABLA: semantic_review_queue
+
+  QUÉ ES:
+  Cola de revisión para casos ambiguos.
+
+  PARA QUÉ SIRVE:
+  - Evitar mandar automáticamente todo a IA.
+  - Mantener casos dudosos para revisión posterior.
+  - Mejorar reglas y alias con aprendizaje operativo.
+  '''
+}
+
+Table embedding_jobs {
+  id bigint [pk, increment, note: 'Clave primaria interna del job de embedding.']
+  source_table varchar(50) [not null, note: 'Tabla fuente de la que viene el texto a embeber.']
+  source_id bigint [not null, note: 'ID de la fila fuente dentro de la tabla indicada.']
+  texto_fuente text [not null, note: 'Texto que debe convertirse en embedding.']
+  modelo varchar(100) [not null, note: 'Modelo de embeddings que debe usarse.']
+  estado varchar(20) [not null, note: 'Estado del job: PENDING, PROCESSING, DONE, FAILED.']
+  retry_count int [not null, default: 0, note: 'Número de reintentos del job.']
+  error_detail text [note: 'Detalle del último error si el embedding falló.']
+  creado_en timestamp [note: 'Fecha de creación del job.']
+  actualizado_en timestamp [note: 'Última actualización del job.']
+  procesado_en timestamp [note: 'Fecha en la que el job terminó correctamente, si aplica.']
+
+  indexes {
+    (source_table, source_id, modelo) [unique]
+  }
+
+  Note: '''
+  TABLA: embedding_jobs
+
+  QUÉ ES:
+  Cola de trabajos para generación o regeneración de embeddings.
+
+  PARA QUÉ SIRVE:
+  - Desacoplar el costo de embedding del flujo principal.
+  - Permitir recalcular embeddings cuando cambie el modelo.
+  - Soportar procesos batch o diferidos.
+  '''
+}
+
+// ======================================================
+// 10) FORMULARIOS Y EVALUACION
+// ======================================================
+
+Table formularios {
+  id bigint [pk, increment, note: 'Clave primaria interna del formulario.']
+  codigo varchar(100) [not null, note: 'Código funcional del formulario. Debe ser estable a lo largo del tiempo.']
+  nombre varchar(200) [not null, note: 'Nombre visible o descriptivo del formulario.']
+  version int [not null, note: 'Versión del formulario, útil para cambios de estructura sin romper histórico.']
+  activo boolean [not null, default: true, note: 'Marca si el formulario está disponible para uso.']
+  fecha_inicio timestamp [note: 'Fecha desde la que el formulario está disponible.']
+  fecha_cierre timestamp [note: 'Fecha de cierre del formulario si deja de estar vigente.']
+  creado_en timestamp [note: 'Fecha de creación del formulario.']
+
+  indexes {
+    (codigo, version) [unique]
+  }
+
+  Note: '''
+  TABLA: formularios
+
+  QUÉ ES:
+  Catálogo de formularios del sistema.
+
+  PARA QUÉ SIRVE:
+  - Versionar encuestas o formularios.
+  - Controlar disponibilidad temporal.
+  - Mantener histórico si cambia el contenido.
+  '''
+}
+
+Table formulario_en_progreso {
+  id bigint [pk, increment, note: 'Clave primaria interna del avance parcial del formulario.']
+  formulario_id bigint [not null, note: 'Formulario que el usuario está respondiendo.']
+  usuario_id bigint [not null, unique, note: 'Usuario con un flujo actualmente en progreso para ese formulario/encuesta.']
+  estado_actual varchar(50) [not null, note: 'Paso actual o estado del formulario en progreso.']
+  respuestas_parciales jsonb [note: 'Respuestas aún no consolidadas del formulario.']
+  uso_audio boolean [not null, default: false, note: 'Marca si el usuario utilizó audio durante esta interacción de formulario.']
+  uso_imagen boolean [not null, default: false, note: 'Marca si el usuario utilizó imagen durante esta interacción.']
+  iniciado_en timestamp [note: 'Fecha de inicio del formulario en progreso.']
+  actualizado_en timestamp [note: 'Última actualización del avance parcial.']
+  completado_en timestamp [note: 'Fecha de finalización si el formulario ya fue completado.']
+  audio_test_requested boolean [not null, default: false, note: 'Marca si se pidió probar audio.']
+  audio_test_completed boolean [not null, default: false, note: 'Marca si la prueba de audio se completó.']
+  audio_test_declined boolean [not null, default: false, note: 'Marca si el usuario rechazó la prueba de audio.']
+  image_test_requested boolean [not null, default: false, note: 'Marca si se pidió probar imagen.']
+  image_test_completed boolean [not null, default: false, note: 'Marca si la prueba de imagen se completó.']
+  image_test_declined boolean [not null, default: false, note: 'Marca si el usuario rechazó la prueba de imagen.']
+
+  Note: '''
+  TABLA: formulario_en_progreso
+
+  QUÉ ES:
+  Estado parcial de un formulario que todavía no termina.
+
+  PARA QUÉ SIRVE:
+  - Retomar un flujo sin perder respuestas.
+  - Llevar control de progreso.
+  - Soportar formularios conversacionales multi-turno.
+  '''
+}
+
+Table respuestas_formulario {
+  id bigint [pk, increment, note: 'Clave primaria interna de la respuesta final del formulario.']
+  formulario_id bigint [not null, note: 'Formulario al que pertenece esta respuesta.']
+  usuario_id bigint [not null, note: 'Usuario que respondió el formulario.']
+  correo varchar(255) [not null, note: 'Correo proporcionado en el formulario.']
+  telefono varchar(30) [note: 'Teléfono proporcionado en el formulario, si aplica.']
+  edad int [note: 'Edad reportada en el formulario, si se pregunta.']
+  asegurado_essalud varchar(20) [note: 'Respuesta a si está asegurado en EsSalud.']
+  comentario text [note: 'Comentario libre del usuario.']
+  autorizo_uso_investigacion boolean [note: 'Consentimiento para uso de datos en investigación, si aplica.']
+  puntaje_nps int [note: 'Puntaje NPS o equivalente.']
+  creado_en timestamp [note: 'Fecha de creación de la respuesta final.']
+  audio_evaluado boolean [not null, default: false, note: 'Marca si el componente de audio fue evaluado.']
+  audio_no_aplica boolean [not null, default: false, note: 'Marca si audio no aplicaba a esta evaluación.']
+  imagen_evaluada boolean [not null, default: false, note: 'Marca si el componente de imagen fue evaluado.']
+  imagen_no_aplica boolean [not null, default: false, note: 'Marca si imagen no aplicaba a esta evaluación.']
+  correo_proporcionado boolean [not null, default: false, note: 'Marca rápida de si el usuario sí dejó correo.']
+
+  indexes {
+    (formulario_id, usuario_id) [unique]
+  }
+
+  Note: '''
+  TABLA: respuestas_formulario
+
+  QUÉ ES:
+  Respuesta final consolidada de un formulario.
+
+  PARA QUÉ SIRVE:
+  - Guardar el resultado final.
+  - Distinguir lo parcial de lo ya cerrado.
+  - Relacionarlo con evaluación de usabilidad.
+  '''
+}
+
+Table evaluacion_usabilidad {
+  id bigint [pk, increment, note: 'Clave primaria interna de la evaluación de usabilidad.']
+  respuesta_formulario_id bigint [not null, unique, note: 'Respuesta final del formulario a la que pertenece esta evaluación.']
+  p1_personalidad_realista_atractiva int [note: 'Respuesta de la pregunta 1 de usabilidad.']
+  p2_explico_proposito_alcance int [note: 'Respuesta de la pregunta 2 de usabilidad.']
+  p3_facil_navegar int [note: 'Respuesta de la pregunta 3 de usabilidad.']
+  p4_me_entendio_bien int [note: 'Respuesta de la pregunta 4 de usabilidad.']
+  p5_respuestas_utiles_apropiadas_informativas int [note: 'Respuesta de la pregunta 5 de usabilidad.']
+  p6_manejo_errores_equivocaciones int [note: 'Respuesta de la pregunta 6 de usabilidad.']
+  p7_muy_facil_de_usar int [note: 'Respuesta de la pregunta 7 de usabilidad.']
+  p8_audio_claridad int [note: 'Respuesta de la pregunta 8 relacionada a audio.']
+  p9_reconocio_contexto_imagen int [note: 'Respuesta de la pregunta 9 relacionada a imagen.']
+  p10_se_enfoco_en_nutricion int [note: 'Respuesta de la pregunta 10 sobre enfoque nutricional.']
+  creado_en timestamp [note: 'Fecha de creación de la evaluación.']
+
+  Note: '''
+  TABLA: evaluacion_usabilidad
+
+  QUÉ ES:
+  Subtabla especializada de métricas de usabilidad.
+
+  PARA QUÉ SIRVE:
+  - Guardar respuestas estructuradas de evaluación.
+  - Separar metadatos del formulario de puntuaciones específicas.
+  '''
+}
+
+// ======================================================
+// 11) RAG
+// ======================================================
+
+Table documentos_rag {
+  id bigint [pk, increment, note: 'Clave primaria interna del documento fuente del RAG.']
+  nombre varchar(255) [not null, note: 'Nombre visible o técnico del documento.']
+  tipo_fuente varchar(30) [note: 'Tipo de fuente: pdf, web, receta, faq, manual.']
+  archivo_url text [note: 'Ubicación física o lógica del documento.']
+  descripcion text [note: 'Descripción breve del documento o su propósito.']
+  estado varchar(20) [note: 'Estado del documento dentro del pipeline RAG: activo, procesando, error, archivado.']
+  creado_en timestamp [note: 'Fecha de creación del documento en el sistema.']
+  actualizado_en timestamp [note: 'Última actualización del documento.']
+
+  Note: '''
+  TABLA: documentos_rag
+
+  QUÉ ES:
+  Catálogo de documentos fuente del sistema RAG.
+
+  PARA QUÉ SIRVE:
+  - Registrar archivos o fuentes que alimentan la recuperación.
+  - Mantener estado de procesamiento.
+  - Relacionar fragmentos con su documento origen.
+  '''
+}
+
+Table fragmentos_rag {
+  id bigint [pk, increment, note: 'Clave primaria interna del fragmento o chunk.']
+  documento_id bigint [not null, note: 'Documento del que salió este fragmento.']
+  pagina int [note: 'Número de página original si el documento lo tiene.']
+  numero_fragmento int [not null, note: 'Orden secuencial del fragmento dentro del documento.']
+  contenido text [not null, note: 'Texto del fragmento usado para recuperación.']
+  metadata jsonb [note: 'Metadatos opcionales del fragmento.']
+  embedding varchar [note: 'Representación vectorial del fragmento. En PostgreSQL real sería vector(1536).']
+  creado_en timestamp [note: 'Fecha de creación del fragmento.']
+
+  indexes {
+    (documento_id, numero_fragmento) [unique]
+  }
+
+  Note: '''
+  TABLA: fragmentos_rag
+
+  QUÉ ES:
+  Fragmentos indexables de los documentos fuente.
+
+  PARA QUÉ SIRVE:
+  - Soportar búsqueda semántica o recuperación por chunks.
+  - Mantener trazabilidad hacia el documento original.
+  '''
+}
+
+// ======================================================
+// 12) CAMPANIAS
+// ======================================================
+
+Table campanias {
+  id bigint [pk, increment, note: 'Clave primaria interna de la campaña.']
+  titulo varchar(255) [not null, note: 'Nombre o título visible de la campaña.']
+  descripcion text [note: 'Descripción de la campaña y su propósito.']
+  tipo varchar(30) [note: 'Tipo general de campaña. Ejemplo: nutricion, anemia, salud_general.']
+  fecha_inicio timestamp [note: 'Fecha de inicio de la campaña.']
+  fecha_fin timestamp [note: 'Fecha de cierre o fin de la campaña.']
+  distrito_id bigint [note: 'Distrito donde aplica la campaña, si está geográficamente localizada.']
+  lugar varchar(255) [note: 'Lugar específico o dirección textual de la campaña.']
+  creado_en timestamp [note: 'Fecha de creación de la campaña en el sistema.']
+
+  Note: '''
+  TABLA: campanias
+
+  QUÉ ES:
+  Registro de campañas o actividades vinculadas a salud/nutrición.
+
+  PARA QUÉ SIRVE:
+  - Mostrar oportunidades o actividades por zona.
+  - Asociar campañas con ubicación.
+  - Dar contexto útil al usuario según territorio.
+  '''
+}
+
+// ======================================================
+// RELACIONES
+// ======================================================
+
+// Usuarios
+Ref: incoming_messages.usuario_id > usuarios.id
+Ref: conversation_state.usuario_id > usuarios.id
+Ref: profile_extractions.usuario_id > usuarios.id
+Ref: extraction_jobs.usuario_id > usuarios.id
+Ref: outgoing_messages.usuario_id > usuarios.id
+Ref: memoria_chat.usuario_id > usuarios.id
+
+// Geografia
+Ref: mae_provincia.departamento_id > mae_departamento.id
+Ref: mae_distrito.provincia_id > mae_provincia.id
+
+// Perfil nutricional
+Ref: perfil_nutricional.usuario_id > usuarios.id
+Ref: perfil_nutricional.patron_alimentario_id > mae_patron_alimentario.id
+Ref: perfil_nutricional.objetivo_nutricional_id > mae_objetivo_nutricional.id
+Ref: perfil_nutricional.distrito_id > mae_distrito.id
+
+Ref: perfil_nutricional_medicion.perfil_nutricional_id > perfil_nutricional.id
+
+Ref: perfil_nutricional_enfermedad.perfil_nutricional_id > perfil_nutricional.id
+Ref: perfil_nutricional_enfermedad.enfermedad_id > mae_enfermedad_cie10.id
+
+Ref: perfil_nutricional_restriccion.perfil_nutricional_id > perfil_nutricional.id
+Ref: perfil_nutricional_restriccion.restriccion_id > mae_restriccion_alimentaria.id
+
+// Orden dietetica
+Ref: orden_dietetica.perfil_nutricional_id > perfil_nutricional.id
+Ref: orden_dietetica.textura_dieta_id > mae_textura_dieta.id
+
+Ref: orden_dietetica_dieta.orden_dietetica_id > orden_dietetica.id
+Ref: orden_dietetica_dieta.dieta_terapeutica_id > mae_dieta_terapeutica.id
+
+Ref: orden_dietetica_restriccion.orden_dietetica_id > orden_dietetica.id
+Ref: orden_dietetica_restriccion.restriccion_id > mae_restriccion_alimentaria.id
+
+// Reglas nutricionales
+Ref: rel_enfermedad_grupo_nutricional.enfermedad_id > mae_enfermedad_cie10.id
+Ref: rel_enfermedad_grupo_nutricional.grupo_nutricional_id > mae_grupo_nutricional.id
+
+Ref: rel_grupo_nutricional_dieta.grupo_nutricional_id > mae_grupo_nutricional.id
+Ref: rel_grupo_nutricional_dieta.dieta_terapeutica_id > mae_dieta_terapeutica.id
+
+Ref: rel_grupo_nutricional_restriccion.grupo_nutricional_id > mae_grupo_nutricional.id
+Ref: rel_grupo_nutricional_restriccion.restriccion_id > mae_restriccion_alimentaria.id
+
+// Capa semantica
+Ref: semantic_catalog.alias_semantico_id > mae_alias_semantico.id
+Ref: semantic_match_log.usuario_id > usuarios.id
+Ref: semantic_match_log.incoming_message_id > incoming_messages.id
+Ref: semantic_review_queue.usuario_id > usuarios.id
+Ref: semantic_review_queue.incoming_message_id > incoming_messages.id
+
+// Formularios
+Ref: formulario_en_progreso.formulario_id > formularios.id
+Ref: formulario_en_progreso.usuario_id > usuarios.id
+
+Ref: respuestas_formulario.formulario_id > formularios.id
+Ref: respuestas_formulario.usuario_id > usuarios.id
+Ref: evaluacion_usabilidad.respuesta_formulario_id > respuestas_formulario.id
+
+// RAG
+Ref: fragmentos_rag.documento_id > documentos_rag.id
+
+// Campanias
+Ref: campanias.distrito_id > mae_distrito.id
+
+/*
+RELACIONES LOGICAS NO FISICAS IMPORTANTES
+
+1) mae_alias_semantico.entidad_tipo + entidad_codigo
+   referencia lógicamente a uno de los maestros:
+   - mae_enfermedad_cie10.codigo_cie10
+   - mae_grupo_nutricional.codigo
+   - mae_patron_alimentario.codigo
+   - mae_dieta_terapeutica.codigo
+   - mae_textura_dieta.codigo
+   - mae_restriccion_alimentaria.codigo
+   - mae_objetivo_nutricional.codigo
+
+2) semantic_catalog.entidad_tipo + entidad_codigo
+   sigue exactamente la misma lógica polimórfica.
+
+3) conversation_state.last_provider_message_id
+   puede alinearse lógicamente con incoming_messages.provider_message_id.
+
+4) profile_extractions puede terminar alimentando, según confirmación:
+   - perfil_nutricional
+   - perfil_nutricional_enfermedad
+   - perfil_nutricional_restriccion
+   - orden_dietetica
+
+5) semantic_resolution_cache existe para evitar recalcular:
+   - exact match repetido
+   - fuzzy lexical repetido
+   - búsqueda vectorial repetida
+   - llamadas innecesarias a IA
+*/

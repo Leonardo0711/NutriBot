@@ -1,0 +1,10 @@
+id,codigo,nombre,descripcion,activo
+1,NORMAL_SOLIDA,Normal / Sólida,"Consistencia estándar. Requiere masticación y deglución normales. Sin modificaciones mecánicas en los alimentos.",true
+2,FACIL_MASTICACION,Fácil Masticación (Blanda Mecánica),"Alimentos enteros pero de textura suave o cocidos hasta ablandar. Evita alimentos duros, fibrosos, secos o crujientes. Útil en problemas dentales o fatiga.",true
+3,TRITURADA_PURE,Triturada / Puré,"Alimentos procesados o licuados hasta alcanzar una consistencia homogénea y suave, sin grumos ni trozos. Requiere mínima o nula masticación.",true
+4,SEMILIQUIDA,Semilíquida,"Consistencia intermedia entre puré y líquido. Pasa por una cañita gruesa. Incluye cremas, yogures, compotas y papillas ligeras.",true
+5,LIQUIDA_COMPLETA,Líquida Completa,"Alimentos líquidos a temperatura ambiente o que se licúan fácilmente en la boca. Incluye leches, jugos con pulpa fina, suplementos y caldos. Aporta más nutrientes que la líquida clara.",true
+6,LIQUIDA_CLARA,Líquida Clara (Estricta),"Líquidos transparentes que no dejan residuo intestinal. Incluye agua, caldos desgrasados colados, infusiones y gelatinas. Uso típico en pre/postoperatorio inmediato.",true
+7,DISFAGIA_NECTAR,Líquido Espesado (Néctar),"Modificación para trastornos de deglución (disfagia). El líquido cae lentamente al verterlo, con una viscosidad similar a un néctar de frutas o jarabe ligero.",true
+8,DISFAGIA_MIEL,Líquido Espesado (Miel),"Modificación para disfagia. El líquido cae en gotas espesas, similar a la miel. Se puede beber de un vaso pero fluye muy lentamente.",true
+9,DISFAGIA_PUDIN,Líquido Espesado (Pudín),"Modificación para disfagia severa. Consistencia semisólida que mantiene su forma. No se puede beber, requiere forzosamente el uso de cuchara.",true

@@ -11,14 +11,19 @@ from infrastructure.evolution.client import EvolutionApiClient
 from infrastructure.openai.embeddings_adapter import OpenAIEmbeddingsAdapter
 from infrastructure.openai.media_service import DefaultMediaService
 from infrastructure.openai.responses_adapter import OpenAIResponsesAdapter
+from infrastructure.openai.stt_adapter import OpenAISpeechToTextAdapter
 from infrastructure.openai.tts_adapter import OpenAITextToSpeechAdapter
 from application.services.profile_extraction_service import ProfileExtractionService
+from application.services.profile_context_service import ProfileContextService
+from application.services.profile_interception_service import ProfileInterceptionService
+from application.services.profile_read_service import ProfileReadService
+from application.services.llm_reply_service import LlmReplyService
+from application.services.survey_flow_service import SurveyFlowService
 from application.services.survey_service import SurveyService
 from application.services.onboarding_service import OnboardingService
 from application.services.message_orchestrator import MessageOrchestratorService
 from application.workers.inbox_worker import InboxWorker
 from application.workers.outbox_worker import OutboxWorker
-from application.workers.extraction_worker import ExtractionWorker
 from application.workers.sweeper_worker import SweeperWorker
 
 SYSTEM_INSTRUCTIONS = """Eres NutriBot 🍏, un asistente de orientación nutricional básica de EsSalud.
@@ -52,7 +57,6 @@ DATOS DEL USUARIO (REGLA DE ORO):
 
 COHERENCIA MÉDICA Y BIOLÓGICA (MANDATORIO):
 - NO aceptes ni confirmes datos absurdos (ej: peso de 500kg, alergia al aire, enfermedades inexistentes).
-- REGLA DIABETES: Si el usuario menciona "diabetes" sin especificar tipo (1, 2) o con un tipo que no existe (ej: "tipo T"), NO lo des por hecho. Pregúntale amablemente: "¿Te refieres a diabetes tipo 1 o tipo 2? Para darte la mejor recomendación necesito ese detalle."
 - Si detectas una incoherencia (ej: pide bajar de peso pero dice pesar 30kg), pide aclaración con mucha calidez antes de dar un consejo.
 
 TONO: Breve (máx 3-4 oraciones), práctico, cálido y muy peruano. 🍏✨💪🏾"""
@@ -66,19 +70,35 @@ class Container:
         self.conv_repo = SqlAlchemyConversationRepository()
         self.rag_repo = RagRepository()
         self.evolution_client = EvolutionApiClient()
-        self.embeddings_adapter = OpenAIEmbeddingsAdapter()
-        self.media_service = DefaultMediaService()
-        self.tts_adapter = OpenAITextToSpeechAdapter()
 
         # Shared OpenAI Setup
         self.openai_client = AsyncOpenAI(api_key=self.settings.openai_api_key)
         self.openai_model = self.settings.openai_model
+        self.embeddings_adapter = OpenAIEmbeddingsAdapter(
+            client=self.openai_client,
+            model=self.settings.openai_embedding_model,
+        )
+        self.stt_adapter = OpenAISpeechToTextAdapter(
+            client=self.openai_client,
+            model=self.settings.openai_stt_model,
+        )
+        self.media_service = DefaultMediaService(
+            stt_service=self.stt_adapter,
+            evolution_client=self.evolution_client,
+        )
+        self.tts_adapter = OpenAITextToSpeechAdapter(
+            client=self.openai_client,
+            model=self.settings.openai_tts_model,
+            voice=self.settings.openai_tts_voice,
+        )
         
         # Application Services
         self.profile_extractor = ProfileExtractionService(
             openai_client=self.openai_client, 
             model=self.openai_model
         )
+        self.profile_reader = ProfileReadService()
+        self.profile_context = ProfileContextService()
         
         self.survey_service = SurveyService(
             openai_client=self.openai_client, 
@@ -88,19 +108,36 @@ class Container:
         self.onboarding_service = OnboardingService(
             openai_client=self.openai_client, 
             openai_model=self.openai_model,
-            profile_extractor=self.profile_extractor
+            profile_extractor=self.profile_extractor,
+            profile_reader=self.profile_reader,
         )
 
-        self.llm_service = OpenAIResponsesAdapter(system_instructions=SYSTEM_INSTRUCTIONS)
+        self.llm_service = OpenAIResponsesAdapter(
+            system_instructions=SYSTEM_INSTRUCTIONS,
+            client=self.openai_client,
+            model=self.openai_model,
+        )
+        self.llm_reply = LlmReplyService(
+            llm_service=self.llm_service,
+            system_instructions=SYSTEM_INSTRUCTIONS,
+            profile_context=self.profile_context,
+        )
+        self.profile_interception = ProfileInterceptionService(
+            onboarding_service=self.onboarding_service,
+            profile_context=self.profile_context,
+        )
+        self.survey_flow = SurveyFlowService(
+            survey_service=self.survey_service,
+        )
 
         self.message_orchestrator = MessageOrchestratorService(
-            openai_client=self.openai_client,
-            openai_model=self.openai_model,
             onboarding_service=self.onboarding_service,
-            survey_service=self.survey_service,
             profile_extractor=self.profile_extractor,
-            llm_service=self.llm_service,
-            system_instructions=SYSTEM_INSTRUCTIONS
+            profile_reader=self.profile_reader,
+            profile_context=self.profile_context,
+            profile_interception=self.profile_interception,
+            llm_reply=self.llm_reply,
+            survey_flow=self.survey_flow,
         )
 
         # Workers
@@ -121,14 +158,27 @@ class Container:
             tts_adapter=self.tts_adapter
         )
 
-        self.extraction_worker = ExtractionWorker(
-            session_factory=self.session_factory,
-            openai_client=self.openai_client,
-            model=self.openai_model
-        )
 
         self.sweeper_worker = SweeperWorker(
             session_factory=self.session_factory
         )
 
-container = Container()
+_container_instance: Container | None = None
+
+
+def get_container() -> Container:
+    """Construye el contenedor una sola vez cuando realmente se necesita."""
+    global _container_instance
+    if _container_instance is None:
+        _container_instance = Container()
+    return _container_instance
+
+
+class _LazyContainerProxy:
+    """Proxy para mantener compatibilidad con `from di import container` sin eager init."""
+
+    def __getattr__(self, item):
+        return getattr(get_container(), item)
+
+
+container = _LazyContainerProxy()

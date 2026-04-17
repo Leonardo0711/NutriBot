@@ -1,10 +1,11 @@
 """
 Nutribot Backend — RAG Repository
-Búsqueda semántica en fragmentos_rag usando pgvector.
+Busqueda semantica en fragmentos_rag usando pgvector.
 """
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 from sqlalchemy import text
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class RagRepository:
-    """Repositorio para búsqueda vectorial en fragmentos RAG."""
+    """Repositorio para Busqueda vectorial en fragmentos RAG."""
 
     async def search(
         self,
@@ -35,23 +36,35 @@ class RagRepository:
         if not query_embedding:
             return []
 
+        # Sanitizar y normalizar embedding para un cast estable en PostgreSQL.
+        cleaned_embedding: list[str] = []
+        for val in query_embedding:
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                logger.warning("RAG: embedding con valor no numerico, se descarta consulta")
+                return []
+            if not math.isfinite(num):
+                logger.warning("RAG: embedding con valor no finito, se descarta consulta")
+                return []
+            cleaned_embedding.append(f"{num:.12g}")
+
+        embedding_literal = "[" + ",".join(cleaned_embedding) + "]"
+
         factory = get_session_factory()
         try:
             async with factory() as session:
-                # pgvector cosine distance operator: <=>
-                # We must embed the vector literal directly since asyncpg
-                # can't handle ::vector cast on bind parameters
-                embedding_literal = "[" + ",".join(str(x) for x in query_embedding) + "]"
                 result = await session.execute(
-                    text(f"""
+                    text("""
                         SELECT contenido,
-                               embedding <=> '{embedding_literal}'::vector AS distance
+                               embedding <=> CAST(:embedding AS vector) AS distance
                         FROM fragmentos_rag
-                        WHERE embedding <=> '{embedding_literal}'::vector < :threshold
-                        ORDER BY embedding <=> '{embedding_literal}'::vector
+                        WHERE embedding <=> CAST(:embedding AS vector) < :threshold
+                        ORDER BY embedding <=> CAST(:embedding AS vector)
                         LIMIT :lim
                     """),
                     {
+                        "embedding": embedding_literal,
                         "threshold": _threshold,
                         "lim": _limit,
                     },
@@ -67,5 +80,6 @@ class RagRepository:
                 return [row.contenido for row in rows]
 
         except Exception:
-            logger.exception("Error en búsqueda RAG")
+            logger.exception("Error en Busqueda RAG")
             return []
+

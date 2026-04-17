@@ -1,0 +1,21 @@
+id,codigo,nombre,descripcion,activo
+1,DIABETES,Diabetes Mellitus,"Agrupa condiciones relacionadas con la alteración del metabolismo de la glucosa, incluyendo Tipo 1, Tipo 2 y Gestacional. Enfoque en control de carbohidratos y carga glucémica.",true
+2,HIPERTENSION,Hipertensión Arterial,"Agrupa condiciones de presión arterial elevada que requieren control de sodio, dieta DASH y monitoreo cardiovascular.",true
+3,RENAL_CONSERVADOR,Enfermedad Renal Crónica (Terapia Conservadora),"Pacientes con ERC estadios 1-4 que no están en diálisis. Requiere control estricto de proteínas, fósforo, potasio y sodio según analíticas.",true
+4,RENAL_DIALISIS,Enfermedad Renal Crónica (En Diálisis),"Pacientes en hemodiálisis o diálisis peritoneal. Requiere mayor aporte proteico para compensar pérdidas y control estricto de líquidos y electrolitos.",true
+5,SOBREPESO_OBESIDAD,Sobrepeso y Obesidad,"Condiciones de exceso de grasa corporal que requieren un enfoque de déficit calórico, mejora metabólica y reeducación nutricional.",true
+6,DISLIPIDEMIA,Dislipidemia,"Alteraciones en los niveles de lípidos en sangre (hipercolesterolemia, hipertrigliceridemia). Requiere control de grasas saturadas, trans y azúcares simples.",true
+7,GASTRO_ALTO,Patología Gastrointestinal Alta,"Incluye gastritis, ERGE, úlceras y dispepsia. Requiere dietas de protección gástrica, manejo de irritantes y control de fraccionamiento.",true
+8,GASTRO_BAJO,Patología Gastrointestinal Baja,"Incluye Síndrome de Intestino Irritable (SII), Crohn, Colitis, estreñimiento crónico o diarrea. Puede requerir protocolos FODMAP, dietas astringentes o altas en fibra.",true
+9,HEPATOPATIA,Enfermedad Hepática,"Incluye hígado graso no alcohólico (EHGNA), cirrosis y hepatitis. Requiere manejo específico de carbohidratos, restricción de sodio y ajuste proteico según grado de encefalopatía.",true
+10,ONCOLOGIA,Paciente Oncológico,"Cáncer en tratamiento activo (quimio/radioterapia) o cuidados paliativos. Enfoque principal en prevenir la caquexia, mantener peso y manejar efectos secundarios (náuseas, mucositis).",true
+11,DESNUTRICION,Desnutrición y Riesgo Nutricional,"Estados carenciales de macronutrientes o micronutrientes crónicos. Requiere soporte nutricional hipercalórico e hiperproteico.",true
+12,CELIAQUIA,Enfermedad Celíaca,"Intolerancia inmunológica de por vida al gluten. Requiere dieta estricta libre de prolaminas tóxicas (trigo, avena, cebada, centeno) y prevención de contaminación cruzada.",true
+13,RIESGO_CARDIOVASCULAR,Riesgo Cardiovascular,"Pacientes con antecedentes de infarto, insuficiencia cardíaca o perfil aterogénico alto. Requiere dieta cardioprotectora y antiinflamatoria.",true
+14,GESTACION_LACTANCIA,Gestación y Lactancia,"Requerimientos energéticos y de micronutrientes (hierro, ácido fólico, calcio) aumentados por el embarazo o la producción de leche materna, sin patologías adversas asociadas.",true
+15,SANO_PREVENTIVO,Población General Sana,"Personas sin patologías de base aparentes. Enfoque en alimentación preventiva, saludable, balanceada y mantenimiento de buenos hábitos.",true
+16,TCA,Trastorno de la Conducta Alimentaria,"Anorexia, bulimia, trastorno por atracón, etc. Requiere un manejo muy delicado, multidisciplinario y reestructuración cognitiva-nutricional. El bot debe ser restrictivo con los triggers aquí.",true
+17,SALUD_OSEA,Salud Ósea (Osteopenia/Osteoporosis),"Condiciones que requieren especial atención en la ingesta biodisponible de calcio, vitamina D y proteínas para preservar la masa ósea.",true
+18,ALERGIAS_MULTIPLES,Alergias Alimentarias Severas,"Pacientes con reacciones inmunológicas severas a múltiples alérgenos mayores (APLV, huevo, frutos secos, mariscos). Requiere exclusión absoluta.",true
+19,HIPOTIROIDISMO,Hipotiroidismo,"Disfunción tiroidea que suele acompañarse de ralentización metabólica, constipación y retención de líquidos. Enfoque en nutrientes clave como yodo y selenio.",true
+20,HIPERURICEMIA,Hiperuricemia y Gota,"Niveles elevados de ácido úrico en sangre con o sin ataques articulares. Requiere dieta estrictamente controlada en purinas, fructosa y alcohol.",true

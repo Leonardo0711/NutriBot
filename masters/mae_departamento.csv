@@ -1,0 +1,26 @@
+id,codigo_departamento,nombre,activo
+1,01,Amazonas,True
+2,02,Ancash,True
+3,03,Apurimac,True
+4,04,Arequipa,True
+5,05,Ayacucho,True
+6,06,Cajamarca,True
+7,07,Callao,True
+8,08,Cusco,True
+9,09,Huancavelica,True
+10,10,Huanuco,True
+11,11,Ica,True
+12,12,Junin,True
+13,13,La Libertad,True
+14,14,Lambayeque,True
+15,15,Lima,True
+16,16,Loreto,True
+17,17,Madre de Dios,True
+18,18,Moquegua,True
+19,19,Pasco,True
+20,20,Piura,True
+21,21,Puno,True
+22,22,San Martin,True
+23,23,Tacna,True
+24,24,Tumbes,True
+25,25,Ucayali,True

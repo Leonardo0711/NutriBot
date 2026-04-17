@@ -7,15 +7,33 @@ async def rescue():
     factory = get_session_factory()
     async with factory() as session:
         async with session.begin():
-            # Resetear mensajes bloqueados
-            result = await session.execute(
-                text("UPDATE incoming_messages SET status='pending' WHERE status='processing'")
+            # Resetear incoming bloqueados.
+            incoming = await session.execute(
+                text(
+                    """
+                    UPDATE incoming_messages
+                    SET status='pending',
+                        locked_at=NULL,
+                        updated_at=NOW()
+                    WHERE status='processing'
+                    """
+                )
             )
-            print(f"✅ Mensajes liberados: {result.rowcount}")
-            
-            # Limpiar jobs de extracción duplicados si los hay
-            await session.execute(text("DELETE FROM extraction_jobs WHERE status='pending'"))
-            print("✅ Cola de extracción limpiada.")
+            print(f"✅ Incoming liberados: {incoming.rowcount}")
+
+            # Resetear outbox en envío/procesamiento.
+            outbox = await session.execute(
+                text(
+                    """
+                    UPDATE outgoing_messages
+                    SET status='pending',
+                        locked_at=NULL,
+                        updated_at=NOW()
+                    WHERE status IN ('processing', 'sending')
+                    """
+                )
+            )
+            print(f"✅ Outbox liberados: {outbox.rowcount}")
             
     print("🏁 Rescate completado. NutriBot está listo para procesar de nuevo.")
 

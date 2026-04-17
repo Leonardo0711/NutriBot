@@ -1,0 +1,11 @@
+id,codigo,nombre,descripcion,activo
+1,OMNIVORA,Omnívora,"Consume todo tipo de alimentos, incluyendo carnes, aves, pescados, lácteos, huevos y vegetales.",true
+2,VEGETARIANA,Vegetariana (Ovo-lacto),"Excluye carnes y pescados, pero incluye huevos, lácteos y alimentos de origen vegetal.",true
+3,VEGANA,Vegana (Estricta),"Excluye absolutamente todos los productos de origen animal, incluyendo carnes, lácteos, huevos y miel.",true
+4,PESCETARIANA,Pescetariana,"Excluye carnes rojas y aves, pero incluye pescados, mariscos, lácteos, huevos y vegetales.",true
+5,FLEXITARIANA,Flexitariana,"Alimentación mayormente basada en plantas, pero con consumo ocasional y moderado de carnes o pescados.",true
+6,LOW_CARB,Baja en Carbohidratos (Low Carb),"Limita significativamente el consumo de carbohidratos refinados y almidones, priorizando proteínas y grasas saludables.",true
+7,KETO,Cetogénica (Keto),"Patrón muy bajo en carbohidratos, moderado en proteínas y muy alto en grasas para inducir el estado de cetosis.",true
+8,MEDITERRANEA,Dieta Mediterránea,"Patrón basado en el consumo alto de vegetales, frutas, granos enteros, aceite de oliva, pescados y consumo moderado de aves y lácteos.",true
+9,PALEO,Paleolítica (Paleo),"Se basa en alimentos similares a los que se habrían consumido en el Paleolítico: carnes magras, pescados, frutas, vegetales, frutos secos y semillas, excluyendo lácteos, legumbres y granos procesados.",true
+10,AYUNO_INTERMITENTE,Ayuno Intermitente,"No restringe grupos de alimentos per se, pero limita las ventanas de tiempo de ingesta (ej. patrón 16/8 o 12/12).",true

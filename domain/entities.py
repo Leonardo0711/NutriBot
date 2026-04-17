@@ -1,20 +1,15 @@
 """
-Nutribot Backend — Domain Entities
-Dataclasses que representan las entidades de negocio.
-Son objetos puros sin dependencia de infraestructura.
+Nutribot Backend - Domain Entities
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from .value_objects import MessageType, SessionMode
 
 
-# ──────────────────────────────────────────────
-# Entidad: Usuario
-# ──────────────────────────────────────────────
 @dataclass
 class User:
     id: int
@@ -23,9 +18,6 @@ class User:
     creado_en: Optional[datetime] = None
 
 
-# ──────────────────────────────────────────────
-# Entidad: Estado Conversacional (persistida)
-# ──────────────────────────────────────────────
 @dataclass
 class ConversationState:
     usuario_id: int
@@ -52,24 +44,18 @@ class ConversationState:
     updated_at: Optional[datetime] = None
 
 
-# ──────────────────────────────────────────────
-# Entidad: Mensaje Normalizado (transiente)
-# Resultado de media_service.normalize()
-# ──────────────────────────────────────────────
 @dataclass
 class NormalizedMessage:
-    """Mensaje ya normalizado, listo para enviar al LLM."""
     provider_message_id: str
     phone: str
     content_type: MessageType
-    text: str  # Texto original o transcripción STT
-    image_base64: Optional[str] = None  # Base64 de la imagen para Vision
-    used_audio: bool = False  # True si el input original era voz
+    text: str
+    image_base64: Optional[str] = None
+    image_mimetype: Optional[str] = None
+    used_audio: bool = False
+    interactive_id: Optional[str] = None
 
 
-# ──────────────────────────────────────────────
-# Entidad: Extracción de Perfil (persistida)
-# ──────────────────────────────────────────────
 @dataclass
 class ProfileExtraction:
     usuario_id: int
@@ -78,20 +64,23 @@ class ProfileExtraction:
     confidence: float
     evidence_text: str
     status: str = "tentative"
+    normalized_value: Optional[str] = None
+    resolved_entity_type: Optional[str] = None
+    resolved_entity_code: Optional[str] = None
+    resolution_strategy: Optional[str] = None
+    semantic_cache_hit: bool = False
     id: Optional[int] = None
     extracted_at: Optional[datetime] = None
 
 
-# ──────────────────────────────────────────────
-# Entidad: Mensaje Webhook Crudo (transiente)
-# Resultado de parse_evolution_webhook()
-# ──────────────────────────────────────────────
 @dataclass
 class IncomingWebhookMessage:
-    """Representación mínima parseada del webhook de Evolution."""
     provider_message_id: str
     phone: str
     content_type: MessageType
     text_body: Optional[str] = None
     media_url: Optional[str] = None
     media_mimetype: Optional[str] = None
+    interactive_id: Optional[str] = None
+    interactive_text: Optional[str] = None
+

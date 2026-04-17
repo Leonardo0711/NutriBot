@@ -1,0 +1,203 @@
+id,entidad_tipo,entidad_codigo,alias_texto,alias_normalizado,idioma,es_canonico,prioridad,activo
+1,GRUPO_NUTRICIONAL,DIABETES,Azúcar alta,azucar alta,es,false,1,true
+2,GRUPO_NUTRICIONAL,DIABETES,Soy diabético,soy diabetico,es,false,1,true
+3,GRUPO_NUTRICIONAL,DIABETES,Se me sube el azúcar,se me sube el azucar,es,false,2,true
+4,GRUPO_NUTRICIONAL,DIABETES,Glucosa alta,glucosa alta,es,false,1,true
+5,GRUPO_NUTRICIONAL,DIABETES,Resistencia a la insulina,resistencia a la insulina,es,false,1,true
+6,GRUPO_NUTRICIONAL,DIABETES,Prediabetes,prediabetes,es,false,1,true
+7,GRUPO_NUTRICIONAL,DIABETES,Tengo la glucosa volando,tengo la glucosa volando,es,false,3,true
+8,GRUPO_NUTRICIONAL,HIPERTENSION,Presión alta,presion alta,es,false,1,true
+9,GRUPO_NUTRICIONAL,HIPERTENSION,Soy hipertenso,soy hipertenso,es,false,1,true
+10,GRUPO_NUTRICIONAL,HIPERTENSION,Presión por las nubes,presion por las nubes,es,false,2,true
+11,GRUPO_NUTRICIONAL,HIPERTENSION,Sufro de la presión,sufro de la presion,es,false,2,true
+12,GRUPO_NUTRICIONAL,HIPERTENSION,Se me sube la presión,se me sube la presion,es,false,2,true
+13,GRUPO_NUTRICIONAL,DISLIPIDEMIA,Colesterol alto,colesterol alto,es,false,1,true
+14,GRUPO_NUTRICIONAL,DISLIPIDEMIA,Colesterol malo,colesterol malo,es,false,2,true
+15,GRUPO_NUTRICIONAL,DISLIPIDEMIA,Triglicéridos altos,trigliceridos altos,es,false,1,true
+16,GRUPO_NUTRICIONAL,DISLIPIDEMIA,Grasa en la sangre,grasa en la sangre,es,false,2,true
+17,GRUPO_NUTRICIONAL,DISLIPIDEMIA,Tengo dislipidemia,tengo dislipidemia,es,true,1,true
+18,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Estoy gordo,estoy gordo,es,false,2,true
+19,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Tengo sobrepeso,tengo sobrepeso,es,false,1,true
+20,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Kilos de más,kilos de mas,es,false,2,true
+21,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Obesidad,obesidad,es,true,1,true
+22,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Estoy subido de peso,estoy subido de peso,es,false,2,true
+23,GRUPO_NUTRICIONAL,SOBREPESO_OBESIDAD,Estoy chancho,estoy chancho,es,false,3,true
+24,GRUPO_NUTRICIONAL,GASTRO_ALTO,Gastritis,gastritis,es,true,1,true
+25,GRUPO_NUTRICIONAL,GASTRO_ALTO,Me arde el estómago,me arde el estomago,es,false,2,true
+26,GRUPO_NUTRICIONAL,GASTRO_ALTO,Acidez,acidez,es,false,1,true
+27,GRUPO_NUTRICIONAL,GASTRO_ALTO,Reflujo,reflujo,es,false,1,true
+28,GRUPO_NUTRICIONAL,GASTRO_ALTO,Boca del estómago,boca del estomago,es,false,3,true
+29,GRUPO_NUTRICIONAL,GASTRO_ALTO,Vinagreras,vinagreras,es,false,3,true
+30,GRUPO_NUTRICIONAL,GASTRO_ALTO,Tengo úlcera,tengo ulcera,es,false,1,true
+31,GRUPO_NUTRICIONAL,GASTRO_ALTO,Me empacho rápido,me empacho rapido,es,false,2,true
+32,GRUPO_NUTRICIONAL,GASTRO_ALTO,Dispepsia,dispepsia,es,true,1,true
+33,GRUPO_NUTRICIONAL,GASTRO_BAJO,Colon irritable,colon irritable,es,false,1,true
+34,GRUPO_NUTRICIONAL,GASTRO_BAJO,Se me hincha la barriga,se me hincha la barriga,es,false,2,true
+35,GRUPO_NUTRICIONAL,GASTRO_BAJO,Muchos gases,muchos gases,es,false,2,true
+36,GRUPO_NUTRICIONAL,GASTRO_BAJO,No voy al baño,no voy al baño,es,false,2,true
+37,GRUPO_NUTRICIONAL,GASTRO_BAJO,Estreñimiento,estreñimiento,es,true,1,true
+38,GRUPO_NUTRICIONAL,GASTRO_BAJO,Diarrea,diarrea,es,true,1,true
+39,GRUPO_NUTRICIONAL,GASTRO_BAJO,Estoy suelto,estoy suelto,es,false,2,true
+40,GRUPO_NUTRICIONAL,GASTRO_BAJO,Tengo churrias,tengo churrias,es,false,3,true
+41,GRUPO_NUTRICIONAL,GASTRO_BAJO,Me afloja el estómago,me afloja el estomago,es,false,2,true
+42,GRUPO_NUTRICIONAL,GASTRO_BAJO,Balonamiento,balonamiento,es,false,1,true
+43,GRUPO_NUTRICIONAL,GASTRO_BAJO,Colitis,colitis,es,true,1,true
+44,GRUPO_NUTRICIONAL,HEPATOPATIA,Hígado graso,higado graso,es,false,1,true
+45,GRUPO_NUTRICIONAL,HEPATOPATIA,Me duele el hígado,me duele el higado,es,false,2,true
+46,GRUPO_NUTRICIONAL,HEPATOPATIA,Boca amarga,boca amarga,es,false,3,true
+47,GRUPO_NUTRICIONAL,HEPATOPATIA,Cirrosis,cirrosis,es,true,1,true
+48,GRUPO_NUTRICIONAL,RENAL_CONSERVADOR,Sufro de los riñones,sufro de los riñones,es,false,2,true
+49,GRUPO_NUTRICIONAL,RENAL_CONSERVADOR,Insuficiencia renal,insuficiencia renal,es,true,1,true
+50,GRUPO_NUTRICIONAL,RENAL_CONSERVADOR,Mal de orín,mal de orin,es,false,3,true
+51,GRUPO_NUTRICIONAL,RENAL_DIALISIS,Hago diálisis,hago dialisis,es,false,1,true
+52,GRUPO_NUTRICIONAL,RENAL_DIALISIS,Hemodiálisis,hemodialisis,es,true,1,true
+53,GRUPO_NUTRICIONAL,HIPOTIROIDISMO,Tengo tiroides,tengo tiroides,es,false,2,true
+54,GRUPO_NUTRICIONAL,HIPOTIROIDISMO,Tiroides lenta,tiroides lenta,es,false,2,true
+55,GRUPO_NUTRICIONAL,HIPOTIROIDISMO,Hipotiroidismo,hipotiroidismo,es,true,1,true
+56,GRUPO_NUTRICIONAL,ONCOLOGIA,Tengo cáncer,tengo cancer,es,false,1,true
+57,GRUPO_NUTRICIONAL,ONCOLOGIA,Estoy en quimio,estoy en quimio,es,false,2,true
+58,GRUPO_NUTRICIONAL,ONCOLOGIA,Radioterapia,radioterapia,es,false,1,true
+59,GRUPO_NUTRICIONAL,ONCOLOGIA,Tumor,tumor,es,false,1,true
+60,GRUPO_NUTRICIONAL,CELIAQUIA,Soy celíaco,soy celiaco,es,true,1,true
+61,GRUPO_NUTRICIONAL,CELIAQUIA,Alergia al gluten,alergia al gluten,es,false,2,true
+62,GRUPO_NUTRICIONAL,TCA,Anorexia,anorexia,es,true,1,true
+63,GRUPO_NUTRICIONAL,TCA,Bulimia,bulimia,es,true,1,true
+64,GRUPO_NUTRICIONAL,TCA,Atracones,atracones,es,false,2,true
+65,GRUPO_NUTRICIONAL,TCA,Ansiedad por comer,ansiedad por comer,es,false,2,true
+66,OBJETIVO_NUTRICIONAL,PERDIDA_PESO_GENERAL,Quiero bajar de peso,quiero bajar de peso,es,false,1,true
+67,OBJETIVO_NUTRICIONAL,PERDIDA_PESO_GENERAL,Bajar la panza,bajar la panza,es,false,2,true
+68,OBJETIVO_NUTRICIONAL,PERDIDA_PESO_GENERAL,Adelgazar,adelgazar,es,false,1,true
+69,OBJETIVO_NUTRICIONAL,PERDIDA_PESO_GENERAL,Bajar unos kilitos,bajar unos kilitos,es,false,2,true
+70,OBJETIVO_NUTRICIONAL,PERDIDA_PESO_GENERAL,Bajar la llanta,bajar la llanta,es,false,3,true
+71,OBJETIVO_NUTRICIONAL,PERDIDA_GRASA_RECOMP,Quemar grasa,quemar grasa,es,false,1,true
+72,OBJETIVO_NUTRICIONAL,PERDIDA_GRASA_RECOMP,Bajar porcentaje de grasa,bajar porcentaje de grasa,es,false,1,true
+73,OBJETIVO_NUTRICIONAL,PERDIDA_GRASA_RECOMP,Secar,secar,es,false,2,true
+74,OBJETIVO_NUTRICIONAL,PERDIDA_GRASA_RECOMP,Marcar el abdomen,marcar el abdomen,es,false,2,true
+75,OBJETIVO_NUTRICIONAL,PERDIDA_GRASA_RECOMP,Sacar cocos,sacar cocos,es,false,3,true
+76,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Ganar músculo,ganar musculo,es,false,1,true
+77,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Ponerme agarrado,ponerme agarrado,es,false,3,true
+78,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Subir de peso limpio,subir de peso limpio,es,false,2,true
+79,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Etapa de volumen,etapa de volumen,es,false,2,true
+80,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Hipertrofia,hipertrofia,es,true,1,true
+81,OBJETIVO_NUTRICIONAL,AUMENTO_MASA_MUSCULAR,Echar cuerpo,echar cuerpo,es,false,3,true
+82,OBJETIVO_NUTRICIONAL,AUMENTO_PESO_SALUDABLE,Estoy muy flaco,estoy muy flaco,es,false,2,true
+83,OBJETIVO_NUTRICIONAL,AUMENTO_PESO_SALUDABLE,Subir de peso,subir de peso,es,false,1,true
+84,OBJETIVO_NUTRICIONAL,AUMENTO_PESO_SALUDABLE,Estoy en los huesos,estoy en los huesos,es,false,3,true
+85,OBJETIVO_NUTRICIONAL,MEJORA_CALIDAD_SUENO,No puedo dormir,no puedo dormir,es,false,2,true
+86,OBJETIVO_NUTRICIONAL,MEJORA_CALIDAD_SUENO,Insomnio,insomnio,es,false,1,true
+87,OBJETIVO_NUTRICIONAL,MEJORA_CALIDAD_SUENO,Me levanto cansado,me levanto cansado,es,false,2,true
+88,OBJETIVO_NUTRICIONAL,AUMENTO_ENERGIA,Estoy cansado todo el día,estoy cansado todo el dia,es,false,2,true
+89,OBJETIVO_NUTRICIONAL,AUMENTO_ENERGIA,Falta de energía,falta de energia,es,false,1,true
+90,OBJETIVO_NUTRICIONAL,AUMENTO_ENERGIA,Me duermo en el trabajo,me duermo en el trabajo,es,false,3,true
+91,OBJETIVO_NUTRICIONAL,AUMENTO_ENERGIA,Paro con sueño,paro con sueño,es,false,3,true
+92,OBJETIVO_NUTRICIONAL,ORGANIZACION_MEAL_PREP,No tengo tiempo para cocinar,no tengo tiempo para cocinar,es,false,2,true
+93,OBJETIVO_NUTRICIONAL,ORGANIZACION_MEAL_PREP,Menú semanal,menu semanal,es,false,1,true
+94,OBJETIVO_NUTRICIONAL,ORGANIZACION_MEAL_PREP,Meal prep,meal prep,es,true,1,true
+95,OBJETIVO_NUTRICIONAL,APOYO_GESTACION,Estoy embarazada,estoy embarazada,es,false,1,true
+96,OBJETIVO_NUTRICIONAL,APOYO_GESTACION,Gestación,gestacion,es,true,1,true
+97,OBJETIVO_NUTRICIONAL,APOYO_GESTACION,Voy a ser mamá,voy a ser mama,es,false,2,true
+98,OBJETIVO_NUTRICIONAL,APOYO_LACTANCIA,Dando de lactar,dando de lactar,es,false,1,true
+99,OBJETIVO_NUTRICIONAL,APOYO_LACTANCIA,Dando pecho,dando pecho,es,false,2,true
+100,OBJETIVO_NUTRICIONAL,MANEJO_SOP,Tengo ovarios poliquísticos,tengo ovarios poliquisticos,es,false,1,true
+101,OBJETIVO_NUTRICIONAL,MANEJO_SOP,SOP,sop,es,true,1,true
+102,OBJETIVO_NUTRICIONAL,MANEJO_MENOPAUSIA,Menopausia,menopausia,es,true,1,true
+103,OBJETIVO_NUTRICIONAL,MANEJO_MENOPAUSIA,Bochornos,bochornos,es,false,2,true
+104,OBJETIVO_NUTRICIONAL,RECUPERACION_ANEMIA,Tengo anemia,tengo anemia,es,false,1,true
+105,OBJETIVO_NUTRICIONAL,RECUPERACION_ANEMIA,Me falta hierro,me falta hierro,es,false,2,true
+106,OBJETIVO_NUTRICIONAL,RECUPERACION_ANEMIA,Hemoglobina baja,hemoglobina baja,es,false,1,true
+107,RESTRICCION_ALIMENTARIA,SIN_LACTOSA,No tolero la leche,no tolero la leche,es,false,1,true
+108,RESTRICCION_ALIMENTARIA,SIN_LACTOSA,La leche me cae mal,la leche me cae mal,es,false,2,true
+109,RESTRICCION_ALIMENTARIA,SIN_LACTOSA,Me afloja la leche,me afloja la leche,es,false,3,true
+110,RESTRICCION_ALIMENTARIA,SIN_LACTOSA,Cero lactosa,cero lactosa,es,false,2,true
+111,RESTRICCION_ALIMENTARIA,SIN_LACTOSA,Intolerante a la lactosa,intolerante a la lactosa,es,true,1,true
+112,RESTRICCION_ALIMENTARIA,SIN_GLUTEN,No como pan,no como pan,es,false,3,true
+113,RESTRICCION_ALIMENTARIA,SIN_GLUTEN,Sin tacc,sin tacc,es,false,2,true
+114,RESTRICCION_ALIMENTARIA,ALERGIA_MARISCOS,Alérgico a los mariscos,alergico a los mariscos,es,false,1,true
+115,RESTRICCION_ALIMENTARIA,ALERGIA_MARISCOS,Me enroncho con el cangrejo,me enroncho con el cangrejo,es,false,3,true
+116,RESTRICCION_ALIMENTARIA,ALERGIA_MARISCOS,Alergia a los langostinos,alergia a los langostinos,es,false,2,true
+117,RESTRICCION_ALIMENTARIA,ALERGIA_PESCADO,Alérgico al pescado,alergico al pescado,es,false,1,true
+118,RESTRICCION_ALIMENTARIA,ALERGIA_PESCADO,Me hace daño el pescado,me hace daño el pescado,es,false,2,true
+119,RESTRICCION_ALIMENTARIA,ALERGIA_MANI,Alergia al maní,alergia al mani,es,true,1,true
+120,RESTRICCION_ALIMENTARIA,ALERGIA_MANI,Me asfixio con el maní,me asfixio con el mani,es,false,2,true
+121,RESTRICCION_ALIMENTARIA,SIN_PICANTE,No como ají,no como aji,es,false,1,true
+122,RESTRICCION_ALIMENTARIA,SIN_PICANTE,Cero rocoto,cero rocoto,es,false,2,true
+123,RESTRICCION_ALIMENTARIA,SIN_PICANTE,Me hace daño el picante,me hace daño el picante,es,false,2,true
+124,RESTRICCION_ALIMENTARIA,AVERSION_VERDURAS,Odio las verduras,odio las verduras,es,false,1,true
+125,RESTRICCION_ALIMENTARIA,AVERSION_VERDURAS,No como pasto,no como pasto,es,false,3,true
+126,RESTRICCION_ALIMENTARIA,AVERSION_VERDURAS,No paso los vegetales,no paso los vegetales,es,false,2,true
+127,RESTRICCION_ALIMENTARIA,SIN_CILANTRO,El culantro me sabe a jabón,el culantro me sabe a jabon,es,false,2,true
+128,RESTRICCION_ALIMENTARIA,SIN_CILANTRO,Sin culantro,sin culantro,es,false,1,true
+129,RESTRICCION_ALIMENTARIA,SIN_CILANTRO,Odio el cilantro,odio el cilantro,es,false,2,true
+130,RESTRICCION_ALIMENTARIA,SIN_AZUCAR_ANIADIDA,Cero azúcar,cero azucar,es,false,1,true
+131,RESTRICCION_ALIMENTARIA,SIN_AZUCAR_ANIADIDA,No como dulce,no como dulce,es,false,2,true
+132,RESTRICCION_ALIMENTARIA,SIN_AZUCAR_ANIADIDA,Sin cosas dulces,sin cosas dulces,es,false,2,true
+133,RESTRICCION_ALIMENTARIA,SIN_ALCOHOL,No tomo alcohol,no tomo alcohol,es,false,1,true
+134,RESTRICCION_ALIMENTARIA,SIN_ALCOHOL,Cero trago,cero trago,es,false,3,true
+135,RESTRICCION_ALIMENTARIA,SIN_ALCOHOL,Soy abstemio,soy abstemio,es,false,2,true
+136,RESTRICCION_ALIMENTARIA,SIN_CERDO,No como chancho,no como chancho,es,false,2,true
+137,RESTRICCION_ALIMENTARIA,SIN_CERDO,Sin carne de cerdo,sin carne de cerdo,es,false,1,true
+138,RESTRICCION_ALIMENTARIA,SIN_AJO_CEBOLLA,Me cae pesada la cebolla,me cae pesada la cebolla,es,false,2,true
+139,RESTRICCION_ALIMENTARIA,SIN_AJO_CEBOLLA,Sin aderezo fuerte,sin aderezo fuerte,es,false,3,true
+140,RESTRICCION_ALIMENTARIA,SIN_AJO_CEBOLLA,Odio el ajo,odio el ajo,es,false,2,true
+141,RESTRICCION_ALIMENTARIA,AVERSION_MENESTRAS,No paso las menestras,no paso las menestras,es,false,2,true
+142,RESTRICCION_ALIMENTARIA,AVERSION_MENESTRAS,Me hinchan los frijoles,me hinchan los frijoles,es,false,2,true
+143,RESTRICCION_ALIMENTARIA,INTOLERANCIA_FRUCTOSA,La fruta me cae mal,la fruta me cae mal,es,false,2,true
+144,RESTRICCION_ALIMENTARIA,INTOLERANCIA_HISTAMINA,Alergia a la histamina,alergia a la histamina,es,false,1,true
+145,RESTRICCION_ALIMENTARIA,APLV,Alergia a la proteina de vaca,alergia a la proteina de vaca,es,true,1,true
+146,RESTRICCION_ALIMENTARIA,ALERGIA_HUEVO,Alérgico al huevo,alergico al huevo,es,false,1,true
+147,RESTRICCION_ALIMENTARIA,ALERGIA_SOYA,Alergia a la soya,alergia a la soya,es,false,1,true
+148,RESTRICCION_ALIMENTARIA,SIN_CAFEINA,No puedo tomar café,no puedo tomar cafe,es,false,2,true
+149,RESTRICCION_ALIMENTARIA,SIN_CAFEINA,El café me altera,el cafe me altera,es,false,2,true
+150,RESTRICCION_ALIMENTARIA,BAJO_EN_FOSFORO,Dieta para el fósforo,dieta para el fosforo,es,false,1,true
+151,RESTRICCION_ALIMENTARIA,BAJO_EN_POTASIO,Tengo el potasio alto,tengo el potasio alto,es,false,2,true
+152,RESTRICCION_ALIMENTARIA,CONTROL_LIQUIDOS,No puedo tomar mucha agua,no puedo tomar mucha agua,es,false,2,true
+153,RESTRICCION_ALIMENTARIA,CONTROL_LIQUIDOS,Restricción de líquidos,restriccion de liquidos,es,true,1,true
+154,RESTRICCION_ALIMENTARIA,HALAL,Comida halal,comida halal,es,true,1,true
+155,RESTRICCION_ALIMENTARIA,KOSHER,Comida kosher,comida kosher,es,true,1,true
+156,RESTRICCION_ALIMENTARIA,SIN_CARNE_RES,No como carne de res,no como carne de res,es,false,1,true
+157,RESTRICCION_ALIMENTARIA,SIN_CARNE_RES,No como vaca,no como vaca,es,false,2,true
+158,RESTRICCION_ALIMENTARIA,AVERSION_HONGOS,Odio los champiñones,odio los champiñones,es,false,2,true
+159,RESTRICCION_ALIMENTARIA,AVERSION_TEXTURAS_VISCOSAS,Me da asco la gelatina,me da asco la gelatina,es,false,3,true
+160,RESTRICCION_ALIMENTARIA,AVERSION_TEXTURAS_VISCOSAS,No me gustan las cosas babosas,no me gustan las cosas babosas,es,false,3,true
+161,RESTRICCION_ALIMENTARIA,SIN_EDULCORANTES,No uso edulcorantes,no uso edulcorantes,es,false,1,true
+162,RESTRICCION_ALIMENTARIA,SIN_EDULCORANTES,Nada de stevia,nada de stevia,es,false,2,true
+163,PATRON_ALIMENTARIO,VEGETARIANA,Soy vegetariano,soy vegetariano,es,true,1,true
+164,PATRON_ALIMENTARIO,VEGETARIANA,No como carne,no como carne,es,false,2,true
+165,PATRON_ALIMENTARIO,VEGETARIANA,Dieta vegetariana,dieta vegetariana,es,false,1,true
+166,PATRON_ALIMENTARIO,VEGANA,Soy vegano,soy vegano,es,true,1,true
+167,PATRON_ALIMENTARIO,VEGANA,No como nada animal,no como nada animal,es,false,2,true
+168,PATRON_ALIMENTARIO,VEGANA,Plant based,plant based,es,false,2,true
+169,PATRON_ALIMENTARIO,PESCETARIANA,Soy pescetariano,soy pescetariano,es,true,1,true
+170,PATRON_ALIMENTARIO,PESCETARIANA,Solo como pescado,solo como pescado,es,false,2,true
+171,PATRON_ALIMENTARIO,FLEXITARIANA,Soy flexitariano,soy flexitariano,es,true,1,true
+172,PATRON_ALIMENTARIO,LOW_CARB,Dieta low carb,dieta low carb,es,true,1,true
+173,PATRON_ALIMENTARIO,LOW_CARB,Bajo en carbohidratos,bajo en carbohidratos,es,false,1,true
+174,PATRON_ALIMENTARIO,LOW_CARB,Como pocas harinas,como pocas harinas,es,false,2,true
+175,PATRON_ALIMENTARIO,KETO,Hago dieta keto,hago dieta keto,es,true,1,true
+176,PATRON_ALIMENTARIO,KETO,Cero carbohidratos,cero carbohidratos,es,false,2,true
+177,PATRON_ALIMENTARIO,KETO,Dieta cetogénica,dieta cetogenica,es,true,1,true
+178,PATRON_ALIMENTARIO,MEDITERRANEA,Dieta mediterránea,dieta mediterranea,es,true,1,true
+179,PATRON_ALIMENTARIO,PALEO,Dieta paleo,dieta paleo,es,true,1,true
+180,PATRON_ALIMENTARIO,AYUNO_INTERMITENTE,Hago ayuno,hago ayuno,es,false,1,true
+181,PATRON_ALIMENTARIO,AYUNO_INTERMITENTE,No desayuno,no desayuno,es,false,2,true
+182,PATRON_ALIMENTARIO,AYUNO_INTERMITENTE,Ayuno intermitente,ayuno intermitente,es,true,1,true
+183,TEXTURA_DIETA,FACIL_MASTICACION,No puedo masticar bien,no puedo masticar bien,es,false,1,true
+184,TEXTURA_DIETA,FACIL_MASTICACION,Me duelen los dientes,me duelen los dientes,es,false,2,true
+185,TEXTURA_DIETA,FACIL_MASTICACION,Comida suavecita,comida suavecita,es,false,2,true
+186,TEXTURA_DIETA,FACIL_MASTICACION,Me sacaron la muela,me sacaron la muela,es,false,3,true
+187,TEXTURA_DIETA,TRITURADA_PURE,Comida licuada,comida licuada,es,false,1,true
+188,TEXTURA_DIETA,TRITURADA_PURE,Solo purés,solo pures,es,false,1,true
+189,TEXTURA_DIETA,TRITURADA_PURE,Papillas,papillas,es,false,2,true
+190,TEXTURA_DIETA,SEMILIQUIDA,Cosas espesas nomás,cosas espesas nomas,es,false,3,true
+191,TEXTURA_DIETA,SEMILIQUIDA,Cremas y mazamorras,cremas y mazamorras,es,false,3,true
+192,TEXTURA_DIETA,LIQUIDA_COMPLETA,Solo tomo caldos,solo tomo caldos,es,false,2,true
+193,TEXTURA_DIETA,LIQUIDA_COMPLETA,Full líquidos,full liquidos,es,false,2,true
+194,TEXTURA_DIETA,LIQUIDA_CLARA,Dieta de agüitas,dieta de agüitas,es,false,3,true
+195,TEXTURA_DIETA,LIQUIDA_CLARA,Líquidos transparentes,liquidos transparentes,es,false,1,true
+196,TEXTURA_DIETA,DISFAGIA_NECTAR,Me atoro al pasar,me atoro al pasar,es,false,2,true
+197,TEXTURA_DIETA,DISFAGIA_NECTAR,No paso la comida,no paso la comida,es,false,2,true
+198,TEXTURA_DIETA,DISFAGIA_NECTAR,Me ahogo tomando agua,me ahogo tomando agua,es,false,2,true
+199,TEXTURA_DIETA,DISFAGIA_NECTAR,Disfagia,disfagia,es,true,1,true
+200,TEXTURA_DIETA,DISFAGIA_PUDIN,Espesante para el agua,espesante para el agua,es,false,2,true
+201,TEXTURA_DIETA,NORMAL_SOLIDA,Como de todo,como de todo,es,false,2,true
+202,TEXTURA_DIETA,NORMAL_SOLIDA,Mastíco normal,mastico normal,es,false,2,true

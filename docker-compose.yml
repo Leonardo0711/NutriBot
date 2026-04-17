@@ -1,20 +1,53 @@
 # ──────────────────────────────────────────────
-# Nutribot Backend — Docker Compose
-# 
-# Asume que PostgreSQL y Evolution API ya corren
-# en la VPS (ya sea nativos o en sus propios containers).
-# Este compose solo levanta el backend de Nutribot.
+# Nutribot Backend — Docker Compose (Producción Desacoplada)
+#
+# Arquitectura:
+#   nutribot-redis     → Cola de mensajes + locks + cache
+#   nutribot-api       → Solo HTTP (webhook + health)
+#   nutribot-inbox     → Worker de procesamiento de mensajes
+#   nutribot-outbox    → Worker de envío de respuestas
+#   nutribot-sweeper   → Worker de rescate de zombies
+#
+# Para usar el modo monolito (todo junto), usa:
+#   docker-compose.monolith.yml
 # ──────────────────────────────────────────────
+
+x-worker-base: &worker-base
+  build: .
+  restart: unless-stopped
+  env_file:
+    - .env
+  depends_on:
+    nutribot-redis:
+      condition: service_healthy
+  networks:
+    - easypanel-nutribot
+  # Workers no necesitan ffmpeg si no procesan audio (inbox sí lo necesita)
+
 services:
-  nutribot-backend:
-    build: .
-    container_name: nutribot-backend
+
+  # ─── REDIS ────────────────────────────────────
+  nutribot-redis:
+    image: redis:7-alpine
+    container_name: nutribot-redis
     restart: unless-stopped
-    env_file:
-      - .env
-    # Usar red easypanel-nutribot para conectar con la DB y Evolution
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save 60 1000
     networks:
       - easypanel-nutribot
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - nutribot-redis-data:/data
+
+  # ─── API (solo HTTP) ──────────────────────────
+  nutribot-api:
+    <<: *worker-base
+    container_name: nutribot-backend
+    environment:
+      - NUTRIBOT_MODE=api
     ports:
       - "8000:8000"
     healthcheck:
@@ -23,6 +56,57 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ─── INBOX WORKER ─────────────────────────────
+  nutribot-inbox:
+    <<: *worker-base
+    command: ["python", "run_worker.py", "inbox"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+      # Para escalar: docker compose up -d --scale nutribot-inbox=2
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  # ─── OUTBOX WORKER ────────────────────────────
+  nutribot-outbox:
+    <<: *worker-base
+    command: ["python", "run_worker.py", "outbox"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  # ─── SWEEPER WORKER ───────────────────────────
+  nutribot-sweeper:
+    <<: *worker-base
+    command: ["python", "run_worker.py", "sweeper"]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  nutribot-redis-data:
 
 networks:
   easypanel-nutribot:

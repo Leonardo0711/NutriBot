@@ -70,6 +70,7 @@ class LLMService(abc.ABC):
         rag_context: Optional[str] = None,
         profile_context: Optional[str] = None,
         history: Optional[list[dict]] = None,
+        max_tokens: Optional[int] = None,
     ) -> tuple[str, Optional[str]]:
         """Genera respuesta. Retorna (reply_text, new_response_id)."""
         ...
@@ -101,4 +102,14 @@ class EvolutionClient(abc.ABC):
     @abc.abstractmethod
     async def send_presence(self, phone: str, presence: str = "composing") -> bool:
         """Envía señal de presencia (typing/composing)."""
+        ...
+
+    @abc.abstractmethod
+    async def send_buttons_with_result(self, phone: str, title: str, description: str, buttons: list[dict], footer: str = "", idempotency_key: str = "") -> dict:
+        """Envía mensaje de botones. Retorna el diccionario resultante."""
+        ...
+
+    @abc.abstractmethod
+    async def send_list_with_result(self, phone: str, title: str, description: str, button_text: str, sections: list[dict], footer: str = "", idempotency_key: str = "") -> dict:
+        """Envía mensaje de lista. Retorna el diccionario resultante."""
         ...

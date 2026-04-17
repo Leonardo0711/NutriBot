@@ -1,0 +1,39 @@
+id,codigo,nombre,descripcion,activo
+1,MANTENIMIENTO_PESO,Mantenimiento de Peso,"Mantener el peso actual estabilizando la ingesta calórica con el gasto energético diario.",true
+2,PERDIDA_PESO_GENERAL,Pérdida de Peso (Déficit Calórico),"Reducción del peso corporal total mediante un déficit calórico controlado.",true
+3,PERDIDA_GRASA_RECOMP,Pérdida de Grasa (Protegiendo Músculo),"Déficit calórico moderado con alto aporte proteico para oxidar grasa minimizando la pérdida de masa magra.",true
+4,AUMENTO_MASA_MUSCULAR,Aumento de Masa Muscular (Hipertrofia),"Superávit calórico y proteico acompañado de entrenamiento de fuerza para ganar tejido muscular.",true
+5,AUMENTO_PESO_SALUDABLE,Aumento de Peso Saludable,"Recuperación de peso en personas con bajo IMC, enfocándose en alimentos densamente calóricos y nutritivos.",true
+6,CONTROL_GLUCEMICO,Control Glucémico / Resistencia a la Insulina,"Estabilizar niveles de azúcar en sangre, reducir picos de insulina y manejar la carga glucémica de las comidas.",true
+7,REDUCCION_COLESTEROL,Reducción de Colesterol (LDL),"Disminución de grasas saturadas y aumento de fibra soluble/grasas saludables para mejorar el perfil lipídico.",true
+8,REDUCCION_TRIGLICERIDOS,Reducción de Triglicéridos,"Control estricto de azúcares simples, fructosa añadida, alcohol y carbohidratos refinados.",true
+9,CONTROL_PRESION_ARTERIAL,Control de Presión Arterial,"Enfoque en la reducción de sodio y aumento de potasio, magnesio y calcio (estilo dieta DASH).",true
+10,MANEJO_SINTOMAS_GASTRO,Manejo de Síntomas Gastrointestinales,"Identificar y reducir alimentos que causan inflamación, gases, acidez, reflujo o alteración del tránsito intestinal.",true
+11,RECUPERACION_MICROBIOTA,Recuperación de la Microbiota Intestinal,"Aumento progresivo de fibra prebiótica y alimentos probióticos tras uso de antibióticos o disbiosis.",true
+12,REDUCCION_INFLAMACION,Reducción de Inflamación General,"Adopción de un patrón antiinflamatorio (alto en Omega-3, antioxidantes, polifenoles) para enfermedades autoinmunes o dolor crónico.",true
+13,REDUCCION_ACIDO_URICO,Control de Ácido Úrico,"Disminución de purinas y fructosa para prevenir ataques de gota o hiperuricemia.",true
+14,MANEJO_SOP,Manejo de SOP (Síndrome de Ovario Poliquístico),"Enfoque endocrino-nutricional para mejorar la sensibilidad a la insulina y reducir la inflamación sistémica asociada al SOP.",true
+15,MANEJO_MENOPAUSIA,Manejo de Síntomas de Menopausia,"Ajuste nutricional para combatir la ralentización metabólica, sofocos y proteger la salud ósea y cardiovascular.",true
+16,APOYO_SALUD_OSEA,Protección y Salud Ósea,"Asegurar la ingesta y biodisponibilidad de calcio, vitamina D, magnesio y vitamina K para osteopenia/osteoporosis.",true
+17,RECUPERACION_ANEMIA,Recuperación de Anemia,"Optimización de la ingesta de hierro (hemo y no hemo), vitamina B12, ácido fólico y vitamina C para su absorción.",true
+18,RECUPERACION_POSTOPERATORIA,Recuperación Postoperatoria / Cicatrización,"Aporte extra de proteínas, zinc y vitaminas antioxidantes para acelerar la reparación de tejidos y cicatrización.",true
+19,APOYO_ONCOLOGICO,Soporte Nutricional Oncológico,"Prevenir la desnutrición (caquexia), mantener el peso y manejar efectos secundarios del tratamiento (náuseas, mucositis).",true
+20,RENDIMIENTO_RESISTENCIA,Mejora de Rendimiento (Deportes de Resistencia),"Optimización de cargas de carbohidratos, hidratación y geles para maratón, ciclismo, triatlón, etc.",true
+21,RENDIMIENTO_FUERZA,Mejora de Rendimiento (Deportes de Fuerza),"Timing de proteínas y carbohidratos alrededor del entrenamiento para powerlifting, halterofilia o crossfit.",true
+22,RECUPERACION_DEPORTIVA,Optimización de Recuperación Deportiva,"Enfoque en reponer glucógeno, reparar fibras musculares y rehidratación post-entrenamientos exhaustivos.",true
+23,APOYO_GESTACION,Nutrición para el Embarazo,"Cubrir requerimientos aumentados de energía y micronutrientes críticos (ácido fólico, hierro, yodo, DHA) garantizando seguridad alimentaria.",true
+24,APOYO_LACTANCIA,Nutrición durante la Lactancia,"Aporte extra de calorías e hidratación para sostener la producción de leche materna sin agotar las reservas de la madre.",true
+25,CRECIMIENTO_DESARROLLO,Apoyo al Crecimiento (Pediátrico/Adolescente),"Asegurar la energía y nutrientes necesarios para alcanzar el potencial genético de talla y desarrollo neurológico.",true
+26,ENVEJECIMIENTO_SALUDABLE,Envejecimiento Saludable / Prevención de Sarcopenia,"Adaptación de texturas si es necesario, priorizando proteína de alta calidad y densidad nutricional en adultos mayores.",true
+27,EDUCACION_PORCIONES,Aprender a Controlar Porciones,"El usuario no quiere pesar comida ni seguir dietas estrictas, solo aprender a usar el 'método del plato' o calcular al ojo.",true
+28,REDUCCION_ULTRAPROCESADOS,Transición a Comida Real (Reducir Procesados),"Objetivo educativo para limpiar la dieta de aditivos, azúcares ocultos y grasas de mala calidad progresivamente.",true
+29,TRANSICION_VEGETARIANA,Transición Segura al Vegetarianismo,"Guía para dejar las carnes sin sufrir déficits de proteína, hierro o vitamina B12.",true
+30,TRANSICION_VEGANA,Transición Segura al Veganismo,"Guía estricta para adoptar un patrón 100% plant-based, educando sobre suplementación obligatoria (ej. B12) y combinaciones proteicas.",true
+31,MEJORA_RELACION_COMIDA,Mejorar la Relación con la Comida,"Enfoque no restrictivo (alimentación intuitiva) para reducir la culpa, el ciclo de dietas yodo o los atracones.",true
+32,CONTROL_ANSIEDAD,Manejo de Ansiedad Alimentaria,"Estrategias de saciedad (fibra, proteína, grasas) y crononutrición para evitar picoteos nocturnos o por estrés.",true
+33,MEJORA_CALIDAD_SUENO,Nutrición para Mejorar el Sueño,"Cenas ligeras, ricas en triptófano y melatonina, evitando estimulantes e hiperglucemias nocturnas.",true
+34,ORGANIZACION_MEAL_PREP,Organización Semanal (Meal Prep),"El objetivo no es clínico, sino logístico: el usuario quiere que el bot le arme listas de compras y recetas en batch cooking para ahorrar tiempo.",true
+35,AUMENTO_ENERGIA,Aumento de Energía / Reducción de Fatiga,"Corregir déficits calóricos ocultos, estabilizar la glucosa y asegurar hidratación para evitar el cansancio crónico diurno.",true
+36,MEJORA_SALUD_PIEL,Salud de la Piel y Cabello,"Enfoque en vitaminas A, C, E, biotina, zinc y colágeno para acné, caída de cabello o envejecimiento prematuro.",true
+37,FORTALECIMIENTO_INMUNE,Fortalecimiento del Sistema Inmunológico,"Maximizar el aporte de prebióticos, vitamina C, D y Zinc durante cambios de estación o convalecencia.",true
+38,AYUNO_SUPERVISADO,Integración de Ayuno Intermitente,"Aprender a estructurar las ventanas de alimentación (ej. 16/8) garantizando que se cubran los nutrientes en el periodo de ingesta.",true
