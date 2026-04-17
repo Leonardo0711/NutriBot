@@ -4,6 +4,7 @@ Nutribot Backend - Profile Context Service
 from __future__ import annotations
 
 from domain.profile_snapshot import ProfileSnapshot
+from application.services.nutrition_assessment_service import NutritionAssessmentService
 
 
 class ProfileContextService:
@@ -75,10 +76,25 @@ class ProfileContextService:
         return missing
 
     def build_prompt_and_summary(self, snapshot: ProfileSnapshot) -> tuple[str, str]:
+        # Calcular IMC si hay datos
+        bmi_text = "Pendiente"
+        bmi_value = None
+        if snapshot.measurements.weight_kg and snapshot.measurements.height_cm:
+            bmi_value = NutritionAssessmentService.compute_bmi(
+                snapshot.measurements.weight_kg, snapshot.measurements.height_cm
+            )
+            if bmi_value:
+                if snapshot.measurements.age_years and snapshot.measurements.age_years < 18:
+                    bmi_text = f"{bmi_value} (referencial, menor de 18 años)"
+                else:
+                    category = NutritionAssessmentService.classify_bmi_adult(bmi_value)
+                    bmi_text = f"{bmi_value} ({category})"
+
         parts = [
             f"Edad: {self._fmt(snapshot.measurements.age_years, ' años')}",
             f"Peso: {self._fmt(snapshot.measurements.weight_kg, 'kg')}",
             f"Talla: {self._fmt_height(snapshot.measurements.height_cm)}",
+            f"IMC referencial: {bmi_text}",
             f"Tipo de dieta: {self._fmt(snapshot.health.diet_type)}",
             f"Alergias: {self._fmt_list(snapshot.health.allergies)}",
             f"Enfermedades: {self._fmt_list(snapshot.health.diseases)}",
@@ -91,6 +107,7 @@ class ProfileContextService:
             f"• Edad: {self._fmt(snapshot.measurements.age_years, ' años')}\n"
             f"• Peso: {self._fmt(snapshot.measurements.weight_kg, 'kg')}\n"
             f"• Talla: {self._fmt_height(snapshot.measurements.height_cm)}\n"
+            f"• IMC referencial: {bmi_text}\n"
             f"• Alergias: {self._fmt_list(snapshot.health.allergies)}\n"
             f"• Enfermedades: {self._fmt_list(snapshot.health.diseases)}\n"
             f"• Objetivo: {self._fmt(snapshot.health.nutrition_goal)}"
@@ -107,6 +124,11 @@ class ProfileContextService:
             weight_txt = weight if weight is not None else "?"
             h_str = self._fmt_height(height) if height is not None else "?"
             citation += f" que tienes {age_txt} años, pesas {weight_txt}kg y mides {h_str}"
+            # Agregar IMC referencial
+            if weight and height:
+                bmi = NutritionAssessmentService.compute_bmi(weight, height)
+                if bmi:
+                    citation += f" (IMC referencial: ~{bmi})"
             if snapshot.health.allergies:
                 citation += f", tienes alergia a {self._fmt_list(snapshot.health.allergies)}"
             if snapshot.health.nutrition_goal:
@@ -114,3 +136,21 @@ class ProfileContextService:
         else:
             citation += " tus datos actuales"
         return citation + ":"
+
+    def human_step_label(self, step_value: str) -> str:
+        """Devuelve un nombre amigable para el campo de onboarding, usado en la sugerencia Phase 2."""
+        labels = {
+            "edad": "edad",
+            "peso": "peso",
+            "altura": "estatura",
+            "alergias": "alergias",
+            "tipo_dieta": "tipo de dieta",
+            "enfermedades": "condición de salud",
+            "restricciones_alimentarias": "restricciones alimentarias",
+            "objetivo_nutricional": "objetivo principal",
+            "region": "región",
+            "provincia": "provincia",
+            "distrito": "distrito"
+        }
+        return labels.get(step_value, step_value)
+

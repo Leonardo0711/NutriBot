@@ -21,3 +21,5 @@ pydub>=0.25.0
 
 # Scheduling (for sweepers)
 # Using asyncio tasks instead of APScheduler for simplicity
+
+pypdf>=4.0.0

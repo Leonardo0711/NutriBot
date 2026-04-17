@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities import ConversationState
-from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER
+from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER, ONBOARDING_PHASE_1, ONBOARDING_PHASE_2
 from domain.utils import get_now_peru
 from domain.parsers import parse_weight, parse_height, standardize_text_list
 from application.services.profile_extraction_service import ProfileExtractionService
@@ -227,14 +227,13 @@ FORMATO DE SALIDA (JSON):
         intent = analysis["intent"]
         
         if intent == "RESET" or user_text.strip() == "/reset":
-            # Handle reset (clean up DB for this user) - Logic to be implemented or called
             await self._handle_system_reset(state.usuario_id, session)
             self._set_onboarding_state(state, OnboardingStatus.INVITED, OnboardingStep.INVITACION.value)
             return "¡Entendido! He borrado tus datos de perfil para que podamos empezar de cero cuando gustes. 🔄\n\n¿Quieres que empecemos ahora?"
 
         if current_step and current_step != OnboardingStep.INVITACION.value:
-            # --- MODO OBSTINADO (Prioritarios) ---
-            PRIORITARY_STEPS = [OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value, OnboardingStep.ALERGIAS.value]
+            # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
+            PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
             
             # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito):
@@ -243,7 +242,6 @@ FORMATO DE SALIDA (JSON):
                 intent in ("DOUBT", "SKIP") or is_food_request
             ):
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
-                # Si rechaza provincia, asumimos que distrito también puede omitirse en este turno.
                 if current_step == OnboardingStep.PROVINCIA.value:
                     await self._mark_field_as_skipped(session, state.usuario_id, OnboardingStep.DISTRITO.value)
 
@@ -251,15 +249,10 @@ FORMATO DE SALIDA (JSON):
                 if next_step and next_step not in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
                     self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                 else:
-                    # Pausamos para no insistir; el usuario puede retomar cuando quiera.
                     self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
-                return None  # Dejar que el orquestador responda libremente el tema actual
+                return None
             
-            # -------------------------------------
-
             # REGLA DE OBSTINACIÓN (Nutrición requiere Perfil):
-            # Si el usuario hace una pregunta de nutrición (DOUBT) y aún faltan datos esenciales,
-            # DEBEMOS ser firmes: no responder la duda y pedir el dato.
             if intent == "DOUBT" and current_step in PRIORITARY_STEPS:
                 missing_label = self.FIELD_LABELS.get(current_step, current_step)
                 return (
@@ -269,20 +262,13 @@ FORMATO DE SALIDA (JSON):
                     f"¿Me lo podrías confirmar para seguir? 🙏\n\n"
                     f"**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
                 )
-            # -------------------------------------
 
             if intent == "DOUBT":
-                # Si tenemos una explicación específica de por qué falló la extracción o coherencia:
                 explanation = analysis.get("explanation")
                 
-                # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito): Persuasión de un solo turno
                 if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
-                    # Si muestra frustración o simplemente no quiere: SKIPEAMOS Y AVANZAMOS
                     if self._check_frustration(history, current_step) or any(w in vl for w in ["aburr", "harto", "no quiero", "no deseo", "basta", "dame", "nada"]):
                         await self._mark_field_as_skipped(session, state.usuario_id, current_step)
-                        # Buscamos el siguiente campo pero NO devolvemos None aquí directamente
-                        # Si es una duda nutricional, queremos que el orquestador responda.
-                        # Si es simplemente un "no quiero", devolvemos el siguiente paso.
                         next_step = await self._find_next_missing_step(session, state.usuario_id)
                         if not next_step:
                             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
@@ -290,14 +276,12 @@ FORMATO DE SALIDA (JSON):
                         
                         self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                         if is_food_request or "dame" in vl:
-                             return None # Deja que el orquestador responda el menú
+                             return None
                         return f"No hay problema, podemos saltarlo. 😊 Sigamos con otro detalle: **{ONBOARDING_QUESTIONS[next_step]}**"
 
                 if explanation:
                     return f"{explanation}\n\n¿Seguimos con tu perfil? **{ONBOARDING_QUESTIONS.get(current_step, '')}**"
 
-                # Si pide menu/receta en pleno onboarding, respondemos con control:
-                # nunca negamos datos ya guardados y reenfocamos al paso faltante.
                 if is_food_request:
                     p = await self._get_profile_flat(session, state.usuario_id)
                     known_parts = []
@@ -320,23 +304,19 @@ FORMATO DE SALIDA (JSON):
                         f"solo me falta confirmar {campo_lindo}. {question}"
                     ).strip()
 
-                # Let the general LLM handle the explanation for continuity
                 return None
             
             if intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
-                # Fall through to advance step logic below
             
             if intent == "GREETING":
-                # Let general LLM greet, we will append anchor later
                 return None
 
             if intent == "STOP":
                 self._set_onboarding_state(state, OnboardingStatus.PAUSED, current_step)
                 return "De acuerdo, pausamos aquí. Si quieres seguir más tarde, solo dime 'continuar'. 👋"
-            
-            # -----------------------------------------------
 
+        # --- INVITACIÓN ---
         if current_step == OnboardingStep.INVITACION.value:
             prompt = f"""Analiza la respuesta del usuario a una invitación de 'Personalizar perfil nutricional'.
             Responde SOLO con una palabra: ACCEPT, REJECT o OTHER.
@@ -352,7 +332,6 @@ FORMATO DE SALIDA (JSON):
             intent = resp.choices[0].message.content.strip().upper()
             
             if "REJECT" in intent:
-                # If they say NO but added more text (length > 15), treat as OTHER (pause)
                 if len(user_text) > 15:
                     self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
                     return None
@@ -370,8 +349,8 @@ FORMATO DE SALIDA (JSON):
 
                 self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                 intro_profile = (
-                    "¡Genial! 😊 Vamos a completar tu *perfil nutricional* "
-                    "(edad, peso, talla, alergias y objetivo) para darte recomendaciones más precisas y seguras."
+                    "¡Genial! 😊 Solo necesito 5 datos rápidos "
+                    "(edad, peso, talla, alergias y objetivo) para darte orientación personalizada. ¡Es un ratito! 🚀"
                 )
                 p = await self._get_profile_flat(session, state.usuario_id)
                 known_parts = []
@@ -390,12 +369,12 @@ FORMATO DE SALIDA (JSON):
                     )
                 return f"{intro_profile}\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
+        # --- PROCESAMIENTO DE RESPUESTA ---
         current_step = state.onboarding_step
         if not current_step:
             return None
 
         meta_flags = {}
-        # Process extracted data from Switchboard if intent was ANSWER
         if intent == "ANSWER" and analysis.get("data"):
             ext_result = await self._profile_extractor.apply_cleaning_and_save(
                 raw_extractions=analysis["data"],
@@ -411,8 +390,7 @@ FORMATO DE SALIDA (JSON):
         else:
             extracted = {}
 
-        # Fallback inteligente para enfermedades:
-        # si estamos en ese paso y la extracción falla, intentamos rescatar un valor válido.
+        # Fallback inteligente para enfermedades
         if (
             intent == "ANSWER"
             and not extracted
@@ -434,7 +412,6 @@ FORMATO DE SALIDA (JSON):
 
         if not extracted:
             if intent == "ANSWER":
-                # Check frustration only when ANSWER fails
                 if self._check_frustration(history, current_step):
                     campo_lindo = self.FIELD_LABELS.get(current_step, current_step)
                     return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos **saltarlo** por ahora y seguir con lo demás para no estancarnos. ¿Te parece?\n\nO si gustas, dime tu **{campo_lindo}** para continuar."
@@ -443,7 +420,6 @@ FORMATO DE SALIDA (JSON):
             elif intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
             else:
-                # GREETING and DOUBT are already handled at the top of advance_flow
                 pass
 
         if not extracted and intent == "SKIP":
@@ -464,16 +440,16 @@ FORMATO DE SALIDA (JSON):
         was_current_answered = any(col in updated_cols for col in [current_step, "peso_kg" if current_step=="peso" else current_step])
         was_current_skipped = not extracted and any(w in vl.split() or vl.startswith(w) for w in ["saltar", "paso", "omitir", "luego", "siguiente"])
         
-        # If the current step was NOT answered/skipped (i.e., it was a correction of a past field),
-        # we should start looking for the next missing step starting FROM the current step.
         search_start_idx = current_idx + 1 if (was_current_answered or was_current_skipped) else current_idx
 
+        # PHASE 1: buscar solo en pasos de Phase 1 durante onboarding activo
         next_step = await self._find_next_missing_step(
-            session, 
-            state.usuario_id, 
-            treat_ninguna_as_missing=treat_ninguna_as_missing, 
+            session,
+            state.usuario_id,
+            treat_ninguna_as_missing=treat_ninguna_as_missing,
             start_from_idx=search_start_idx,
-            ignore_cols=updated_cols
+            ignore_cols=updated_cols,
+            phase=ONBOARDING_PHASE_1,
         )
         if next_step:
             self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
@@ -483,33 +459,36 @@ FORMATO DE SALIDA (JSON):
                     transition = "¡Qué bueno! Me encanta esa zona. 📍"
                 return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
             
-            # Si no hubo extracción pero llegamos aquí, es que estamos repitiendo el paso actual
             if next_step == current_step:
                 return f"Para poder ayudarte mejor, necesito este dato: **{ONBOARDING_QUESTIONS[current_step]}**"
 
             return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         else:
-            p_final = await self._get_profile_flat(session, state.usuario_id)
-            skipped_final = {}
-            if p_final and p_final.get("skipped_fields"):
-                skipped_final = p_final.get("skipped_fields") if isinstance(p_final.get("skipped_fields"), dict) else {}
-
-            needs_provincia = bool(
-                p_final and not p_final.get("provincia") and not skipped_final.get(OnboardingStep.PROVINCIA.value, False)
-            )
-            needs_distrito = bool(
-                p_final and not p_final.get("distrito") and not skipped_final.get(OnboardingStep.DISTRITO.value, False)
-            )
-
-            if needs_provincia or needs_distrito:
-                force_step = OnboardingStep.PROVINCIA.value if needs_provincia else OnboardingStep.DISTRITO.value
-                self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, force_step)
-                return f"¡Casi terminamos! 🎯 Solo un pequeño detalle final: {ONBOARDING_QUESTIONS[force_step].lower()}"
-
+            # Phase 1 completada → dar valor inmediato y pasar a active_chat
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-            return "¡Excelente, perfil completado! 🎯 Muchas gracias por tu tiempo. Esto me ayudará a darte recomendaciones mucho más precisas. ¿En qué más puedo ayudarte hoy?"
+            completion_msg = "¡Excelente, perfil básico completado! 🎯 Muchas gracias por tu tiempo."
+            try:
+                from application.services.nutrition_assessment_service import NutritionAssessmentService
+                p_final_data = await self._get_profile_flat(session, state.usuario_id)
+                bmi_msg = NutritionAssessmentService.build_referential_message_from_flat(p_final_data)
+                if bmi_msg:
+                    completion_msg += f"\n\n{bmi_msg}"
+            except Exception as e:
+                logger.warning("No se pudo calcular IMC al completar Phase 1: %s", e)
+            completion_msg += "\n\n¿En qué más puedo ayudarte hoy?"
+            return completion_msg
 
-    async def _find_next_missing_step(self, session: AsyncSession, uid: int, ignore_skips: bool = False, treat_ninguna_as_missing: bool = False, skip_step: Optional[str] = None, start_from_idx: Optional[int] = None, ignore_cols: Optional[list[str]] = None) -> Optional[str]:
+    async def _find_next_missing_step(
+        self,
+        session: AsyncSession,
+        uid: int,
+        ignore_skips: bool = False,
+        treat_ninguna_as_missing: bool = False,
+        skip_step: Optional[str] = None,
+        start_from_idx: Optional[int] = None,
+        ignore_cols: Optional[list[str]] = None,
+        phase: Optional[list] = None,
+    ) -> Optional[str]:
         p = await self._get_profile_flat(session, uid)
         
         if not p:
@@ -533,8 +512,9 @@ FORMATO DE SALIDA (JSON):
             OnboardingStep.DISTRITO.value: "distrito"
         }
 
+        steps_to_search = phase if phase is not None else ONBOARDING_PHASE_1
         base_idx = start_from_idx if start_from_idx is not None else 1
-        for step in ONBOARDING_STEPS_ORDER[base_idx:]:
+        for step in steps_to_search[base_idx:]:
             if skip_step and step.value == skip_step:
                 continue
                 

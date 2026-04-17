@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from application.services.profile_context_service import ProfileContextService
+from application.services.localization_service import LocalizationService
 from domain.context_builder import build_llm_context, try_fast_response
 from domain.entities import ConversationState, NormalizedMessage
 from domain.ports import LLMService
@@ -18,10 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 class LlmReplyService:
-    def __init__(self, llm_service: LLMService, system_instructions: str, profile_context: ProfileContextService):
+    def __init__(self, llm_service: LLMService, system_instructions: str, profile_context: ProfileContextService, localization_service: Optional[LocalizationService] = None):
         self._llm_service = llm_service
         self._system_instructions = system_instructions
         self._profile_context = profile_context
+        self._localization = localization_service or LocalizationService()
 
     async def generate_reply(
         self,
@@ -141,12 +143,38 @@ class LlmReplyService:
             )
         return reply
 
-    @staticmethod
-    def sanitize_final_reply(final_bot_reply: BotReply, uid: int) -> BotReply:
+    _DISCLAIMER = (
+        "\n\n_Recuerda que esto es orientación referencial y no reemplaza "
+        "una evaluación personalizada por nutrición._ 🏥"
+    )
+    _DISCLAIMER_TRIGGERS = [
+        "menú", "menu", "plan ", "dieta", "recomendación", "recomendacion",
+        "te sugiero", "te recomiendo", "podrías comer", "podrias comer",
+        "desayuno", "almuerzo", "cena", "refrigerio",
+    ]
+
+    @classmethod
+    def _needs_disclaimer(cls, text: str) -> bool:
+        if not text:
+            return False
+        lower = text.lower()
+        if cls._DISCLAIMER.strip().lower()[:30] in lower:
+            return False  # ya lo tiene
+        return any(t in lower for t in cls._DISCLAIMER_TRIGGERS)
+
+    @classmethod
+    def sanitize_final_reply(cls, final_bot_reply: BotReply, uid: int, localization: Optional[LocalizationService] = None) -> BotReply:
         if final_bot_reply.content_type == "text":
             if not final_bot_reply.text or not str(final_bot_reply.text).strip():
                 final_bot_reply.text = "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
                 logger.warning("Fallback por respuesta vacia en orchestrator user=%s", uid)
+            else:
+                # Peruanizar texto
+                if localization:
+                    final_bot_reply.text = localization.peruanize(final_bot_reply.text)
+                # Disclaimer determinístico
+                if cls._needs_disclaimer(final_bot_reply.text):
+                    final_bot_reply.text += cls._DISCLAIMER
             return final_bot_reply
 
         if not final_bot_reply.payload_json:

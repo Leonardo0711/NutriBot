@@ -10,7 +10,8 @@ from application.services.profile_context_service import ProfileContextService
 from domain.entities import ConversationState
 from domain.profile_snapshot import ProfileSnapshot
 from domain.utils import get_now_peru
-from domain.value_objects import OnboardingStatus, OnboardingStep
+from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_PHASE_2
+from application.services.onboarding_service import ONBOARDING_QUESTIONS
 
 
 class ProfileInterceptionService:
@@ -133,10 +134,12 @@ class ProfileInterceptionService:
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola, soy **NutriBot**, tu agente con IA para guiarte y acompanarte en tu alimentacion.\n\n"
-                    "Si te parece, empezamos completando tu *perfil nutricional* "
-                    "(edad, peso, talla, alergias y objetivo) para darte recomendaciones mas exactas y seguras.\n\n"
-                    "Te gustaria empezar ahora?"
+                    "Hola, soy **NutriBot** 🍏, una herramienta de **orientación nutricional referencial** de EsSalud.\n\n"
+                    "Puedo darte tips, sugerencias de alimentación y orientación general basada en tu perfil. "
+                    "Recuerda que mis recomendaciones no reemplazan la consulta con un nutricionista profesional.\n\n"
+                    "Si te parece, empezamos completando tu *perfil básico* "
+                    "(edad, peso, talla, alergias y objetivo) para darte orientación personalizada. ¡Son solo 5 datos rápidos! 🚀\n\n"
+                    "¿Te gustaría empezar ahora?"
                 )
             else:
                 reply = (
@@ -151,3 +154,45 @@ class ProfileInterceptionService:
             return reply, True
 
         return reply, onboarding_interception_happened
+
+    async def maybe_suggest_phase2_field(
+        self,
+        *,
+        session,
+        state: ConversationState,
+        user_id: int,
+        snapshot: ProfileSnapshot,
+        reply: Optional[str],
+    ) -> Optional[str]:
+        """Si el onboarding básico (Phase 1) ya está completo, sugiere amablemente
+        1 dato de Phase 2 cada ~4 turnos útiles. No bloquea la conversación."""
+        if state.onboarding_status != OnboardingStatus.COMPLETED.value:
+            return reply
+        if not reply:  # no hay respuesta base donde agregar
+            return reply
+        if state.turns_since_last_prompt < 4:
+            return reply
+
+        # Buscar el primer campo de Phase 2 que falte
+        next_phase2 = await self._onboarding_service._find_next_missing_step(
+            session,
+            user_id,
+            phase=[s for s in ONBOARDING_PHASE_2],
+            start_from_idx=0,
+        )
+        if not next_phase2:
+            return reply  # Phase 2 ya completa
+
+        step_label = self._profile_context.human_step_label(next_phase2)
+        question = ONBOARDING_QUESTIONS.get(next_phase2, "")
+
+        # Resetear contador para no insistir cada turno
+        state.turns_since_last_prompt = 0
+
+        suggestion = (
+            f"\n\n\U0001f4ac Por cierto, para que mis orientaciones sean aún más precisas, "
+            f"\u00bfme podrías compartir tu **{step_label}**? "
+            f"{question}\n"
+            f"_(Si prefieres no decirlo, no hay problema, solo ignora este mensaje.)_"
+        )
+        return reply + suggestion

@@ -72,19 +72,25 @@ class OnboardingStep(str, Enum):
     RESTRICCIONES = "restricciones_alimentarias"
 
 
-ONBOARDING_STEPS_ORDER = [
+ONBOARDING_PHASE_1 = [
     OnboardingStep.INVITACION,
     OnboardingStep.EDAD,
     OnboardingStep.PESO,
     OnboardingStep.ALTURA,
     OnboardingStep.ALERGIAS,
+    OnboardingStep.OBJETIVO,
+]
+
+ONBOARDING_PHASE_2 = [
+    OnboardingStep.TIPO_DIETA,
     OnboardingStep.ENFERMEDADES,
     OnboardingStep.RESTRICCIONES,
-    OnboardingStep.TIPO_DIETA,
-    OnboardingStep.OBJETIVO,
     OnboardingStep.PROVINCIA,
     OnboardingStep.DISTRITO,
 ]
+
+# Backward-compat: orden completo para búsquedas exhaustivas
+ONBOARDING_STEPS_ORDER = ONBOARDING_PHASE_1 + ONBOARDING_PHASE_2
 
 class ExtractionStatus(str, Enum):
     """Estado de confianza de una extracción de perfil."""
