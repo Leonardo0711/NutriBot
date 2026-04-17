@@ -75,7 +75,7 @@ class OutboxWorker:
                             attempt_count = attempt_count + 1
                         WHERE id = :id
                           AND status = 'pending'
-                          AND scheduled_at <= NOW()
+                          AND COALESCE(scheduled_at, NOW()) <= NOW()
                         RETURNING *
                     """),
                     {"id": msg_id},
@@ -98,7 +98,7 @@ class OutboxWorker:
                             SELECT id FROM outgoing_messages
                             WHERE status IN ('pending', 'failed')
                               AND attempt_count < :max_retry
-                              AND scheduled_at <= NOW()
+                              AND COALESCE(scheduled_at, NOW()) <= NOW()
                             ORDER BY scheduled_at ASC, created_at ASC
                             LIMIT 10
                             FOR UPDATE SKIP LOCKED
@@ -304,4 +304,3 @@ class OutboxWorker:
                     text("UPDATE outgoing_messages SET status='failed', updated_at=NOW() WHERE id=:id"),
                     {"id": msg_id},
                 )
-

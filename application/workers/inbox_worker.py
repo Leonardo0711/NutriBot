@@ -271,8 +271,8 @@ class InboxWorker:
 
                     outbox_insert_stmt = text("""
                             INSERT INTO outgoing_messages
-                                (idempotency_key, usuario_id, phone, content_type, content, payload_json)
-                            VALUES (:ikey, :uid, :ph, :ctype, :txt, :payload)
+                                (idempotency_key, usuario_id, phone, content_type, content, payload_json, scheduled_at)
+                            VALUES (:ikey, :uid, :ph, :ctype, :txt, :payload, NOW())
                             ON CONFLICT (idempotency_key) DO NOTHING
                             RETURNING id
                         """).bindparams(bindparam("payload", type_=JSONB))

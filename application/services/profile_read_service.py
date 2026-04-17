@@ -18,7 +18,7 @@ class ProfileReadService:
     _PROFILE_PROJECTION_SQL = text(
         """
         WITH base_user AS (
-            SELECT CAST(:uid AS bigint) AS usuario_id
+            SELECT :uid::bigint AS usuario_id
         ),
         profile_base AS (
             SELECT *
@@ -151,7 +151,7 @@ class ProfileReadService:
             COALESCE(dep.nombre, ep.region) AS region,
             COALESCE(prov.nombre, ep.provincia) AS provincia,
             COALESCE(dist.nombre, ep.distrito) AS distrito,
-            COALESCE(pb.skipped_fields, CAST('{}' AS jsonb)) AS skipped_fields
+            COALESCE(pb.skipped_fields, '{}'::jsonb) AS skipped_fields
         FROM base_user bu
         LEFT JOIN profile_base pb ON pb.usuario_id = bu.usuario_id
         LEFT JOIN peso_actual pw ON pw.perfil_nutricional_id = pb.id
