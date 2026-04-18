@@ -1,5 +1,5 @@
 """
-Nutribot Backend — Conversation Repository (SQLAlchemy)
+Nutribot Backend - Conversation Repository (SQLAlchemy)
 Implementa el puerto ConversationRepository.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ class SqlAlchemyConversationRepository(ConversationRepository):
     async def get_state_no_lock(self, usuario_id: int) -> ConversationState:
         """
         Lee el estado conversacional SIN lock.
-        Usa una sesión corta aislada para evitar retener transacciones
+        Usa una sesion corta aislada para evitar retener transacciones
         mientras el llamador hace operaciones de red (STT, LLM, etc.).
         """
         factory = get_session_factory()
@@ -49,7 +49,7 @@ class SqlAlchemyConversationRepository(ConversationRepository):
     ) -> ConversationState:
         """
         Lee el estado con SELECT ... FOR UPDATE.
-        DEBE ejecutarse dentro de una transacción activa (session.begin()).
+        DEBE ejecutarse dentro de una transaccion activa (session.begin()).
         """
         result = await session.execute(
             text("SELECT * FROM conversation_state WHERE usuario_id = :uid FOR UPDATE"),
@@ -77,7 +77,7 @@ class SqlAlchemyConversationRepository(ConversationRepository):
     ) -> None:
         """
         Persiste el estado actualizado.
-        DEBE ejecutarse dentro de la misma transacción que get_state_for_update.
+        DEBE ejecutarse dentro de la misma transaccion que get_state_for_update.
         """
         await session.execute(
             text("""
@@ -85,7 +85,7 @@ class SqlAlchemyConversationRepository(ConversationRepository):
                     mode = :mode,
                     awaiting_question_code = :aqc,
                     last_provider_message_id = :lpmid,
-                    last_turn_at = NOW(),
+                    last_turn_at = TIMEZONE('America/Lima', NOW()),
                     last_form_prompt_at = :lfpa,
                     turns_since_last_prompt = :tslp,
                     profile_completion_pct = :pcp,
@@ -99,7 +99,7 @@ class SqlAlchemyConversationRepository(ConversationRepository):
                     onboarding_skip_count = :osc,
                     onboarding_updated_at = :ouat,
                     version = :ver,
-                    updated_at = NOW()
+                    updated_at = TIMEZONE('America/Lima', NOW())
                 WHERE usuario_id = :uid
             """),
             {
@@ -149,3 +149,4 @@ class SqlAlchemyConversationRepository(ConversationRepository):
             version=row.version,
             updated_at=row.updated_at,
         )
+

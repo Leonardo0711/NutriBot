@@ -1,6 +1,6 @@
 """
 Nutribot Backend - ConversationMemoryService
-Maneja la recuperación y persistencia de memoria_chat.
+Maneja la recuperacion y persistencia de memoria_chat.
 """
 import logging
 from sqlalchemy import text, bindparam
@@ -33,7 +33,7 @@ class ConversationMemoryService:
                 text(
                     """
                     INSERT INTO memoria_chat (usuario_id, historial_mensajes, actualizado_en)
-                    VALUES (:uid, '[]'::jsonb, NOW())
+                    VALUES (:uid, '[]'::jsonb, TIMEZONE('America/Lima', NOW()))
                     ON CONFLICT (usuario_id) DO NOTHING
                     """
                 ),
@@ -52,11 +52,12 @@ class ConversationMemoryService:
                 """
                 UPDATE memoria_chat
                 SET historial_mensajes = :hist,
-                    actualizado_en = NOW()
+                    actualizado_en = TIMEZONE('America/Lima', NOW())
                 WHERE usuario_id = :uid
                 """
             ).bindparams(bindparam("hist", type_=JSONB))
             await session.execute(update_stmt, {"uid": uid, "hist": hist})
         except Exception as e:
             logger.error("Error actualizando memoria_chat para usuario %s: %s", uid, e)
+
 

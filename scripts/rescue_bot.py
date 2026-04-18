@@ -14,7 +14,7 @@ async def rescue():
                     UPDATE incoming_messages
                     SET status='pending',
                         locked_at=NULL,
-                        updated_at=NOW()
+                        updated_at=TIMEZONE('America/Lima', NOW())
                     WHERE status='processing'
                     """
                 )
@@ -28,7 +28,7 @@ async def rescue():
                     UPDATE outgoing_messages
                     SET status='pending',
                         locked_at=NULL,
-                        updated_at=NOW()
+                        updated_at=TIMEZONE('America/Lima', NOW())
                     WHERE status IN ('processing', 'sending')
                     """
                 )

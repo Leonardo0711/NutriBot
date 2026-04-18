@@ -59,7 +59,7 @@ class GenericChatHandler(BaseHandler):
         if int_happened:
             ctx.onboarding_interception_happened = True
 
-        # 2. Generación LLM (si no hay una respuesta impuesta previamente)
+        # 2. Generacion LLM (si no hay una respuesta impuesta previamente)
         reply, new_response_id = await self._llm_reply.generate_reply(
             onboarding_interception_happened=ctx.onboarding_interception_happened,
             reply=reply,
@@ -99,7 +99,7 @@ class GenericChatHandler(BaseHandler):
             is_requesting_survey=ctx.is_requesting_survey,
         )
 
-        # 5. Inyección de Encuestas (Satisfacción, etc.)
+        # 5. Inyeccion de Encuestas (Satisfaccion, etc.)
         final_bot_reply, survey_was_interrupted = await self._survey_flow.compose_reply_with_survey(
             session=ctx.session,
             state=ctx.state,
@@ -121,7 +121,7 @@ class GenericChatHandler(BaseHandler):
                 projected_interactions_count=projected_interactions_count
             )
 
-        # 7. Limpieza Final (sanitización)
+        # 7. Limpieza Final (sanitizacion)
         final_bot_reply = self._llm_reply.sanitize_final_reply(final_bot_reply, ctx.user.id)
         
         return final_bot_reply, new_response_id
@@ -136,7 +136,7 @@ class GenericChatHandler(BaseHandler):
             stmt = text(
                 """
                 INSERT INTO outgoing_messages (usuario_id, phone, content_type, content, payload_json, idempotency_key, status, scheduled_at, created_at, updated_at)
-                VALUES (:uid, :phone, :ctype, :content, :payload, :key, 'pending', NOW() + INTERVAL '1 second', NOW(), NOW())
+                VALUES (:uid, :phone, :ctype, :content, :payload, :key, 'pending', TIMEZONE('America/Lima', NOW()) + INTERVAL '1 second', TIMEZONE('America/Lima', NOW()), TIMEZONE('America/Lima', NOW()))
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """
             ).bindparams(bindparam("payload", type_=JSONB))
@@ -154,4 +154,5 @@ class GenericChatHandler(BaseHandler):
             logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
         except Exception as e:
             logger.error("Error scheduling separate message: %s", e)
+
 

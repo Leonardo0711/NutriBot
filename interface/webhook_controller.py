@@ -159,7 +159,7 @@ async def receive_webhook(request: Request):
                         UPDATE incoming_messages
                         SET status = 'done',
                             error_detail = :detail,
-                            updated_at = NOW()
+                            updated_at = TIMEZONE('America/Lima', NOW())
                         WHERE id = :id
                         """
                     ),
@@ -192,3 +192,4 @@ async def receive_webhook(request: Request):
         rate_limited,
     )
     return {"status": "rate_limited" if rate_limited else "ok"}
+

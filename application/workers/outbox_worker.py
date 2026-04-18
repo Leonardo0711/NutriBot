@@ -1,7 +1,7 @@
 """
-Nutribot Backend — OutboxWorker
+Nutribot Backend - OutboxWorker
 Worker de outbox: consume IDs desde Redis (o SQL fallback)
-y envía mensajes vía Evolution.
+y envia mensajes via Evolution.
 """
 from __future__ import annotations
 
@@ -70,12 +70,12 @@ class OutboxWorker:
                     text("""
                         UPDATE outgoing_messages
                         SET status = 'processing',
-                            locked_at = NOW(),
-                            updated_at = NOW(),
+                            locked_at = TIMEZONE('America/Lima', NOW()),
+                            updated_at = TIMEZONE('America/Lima', NOW()),
                             attempt_count = attempt_count + 1
                         WHERE id = :id
                           AND status = 'pending'
-                          AND COALESCE(scheduled_at, NOW()) <= NOW()
+                          AND COALESCE(scheduled_at, TIMEZONE('America/Lima', NOW())) <= TIMEZONE('America/Lima', NOW())
                         RETURNING *
                     """),
                     {"id": msg_id},
@@ -91,14 +91,14 @@ class OutboxWorker:
                     text("""
                         UPDATE outgoing_messages
                         SET status = 'processing',
-                            locked_at = NOW(),
-                            updated_at = NOW(),
+                            locked_at = TIMEZONE('America/Lima', NOW()),
+                            updated_at = TIMEZONE('America/Lima', NOW()),
                             attempt_count = attempt_count + 1
                         WHERE id IN (
                             SELECT id FROM outgoing_messages
                             WHERE status IN ('pending', 'failed')
                               AND attempt_count < :max_retry
-                              AND COALESCE(scheduled_at, NOW()) <= NOW()
+                              AND COALESCE(scheduled_at, TIMEZONE('America/Lima', NOW())) <= TIMEZONE('America/Lima', NOW())
                             ORDER BY scheduled_at ASC, created_at ASC
                             LIMIT 10
                             FOR UPDATE SKIP LOCKED
@@ -141,9 +141,9 @@ class OutboxWorker:
                         """
                         UPDATE outgoing_messages
                         SET status='sending',
-                            last_attempt_at=NOW(),
+                            last_attempt_at=TIMEZONE('America/Lima', NOW()),
                             error_detail=NULL,
-                            updated_at=NOW()
+                            updated_at=TIMEZONE('America/Lima', NOW())
                         WHERE id=:id
                         """
                     ),
@@ -221,10 +221,10 @@ class OutboxWorker:
                         """
                         UPDATE outgoing_messages
                         SET status='sent',
-                            sent_at=NOW(),
+                            sent_at=TIMEZONE('America/Lima', NOW()),
                             provider_delivery_id=:provider_delivery_id,
                             provider_response=:provider_response,
-                            updated_at=NOW()
+                            updated_at=TIMEZONE('America/Lima', NOW())
                         WHERE id=:id
                         """
                     ).bindparams(bindparam("provider_response", type_=JSONB))
@@ -239,7 +239,7 @@ class OutboxWorker:
             return
         except Exception:
             logger.exception(
-                "outbox _mark_sent detallado falló para id=%s, aplicando fallback",
+                "outbox _mark_sent detallado fallo para id=%s, aplicando fallback",
                 msg_id,
             )
 
@@ -247,7 +247,7 @@ class OutboxWorker:
         async with self.session_factory() as fallback_session:
             async with fallback_session.begin():
                 await fallback_session.execute(
-                    text("UPDATE outgoing_messages SET status='sent', sent_at=NOW(), updated_at=NOW() WHERE id=:id"),
+                    text("UPDATE outgoing_messages SET status='sent', sent_at=TIMEZONE('America/Lima', NOW()), updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                     {"id": msg_id},
                 )
 
@@ -274,7 +274,7 @@ class OutboxWorker:
                                 WHEN :cap_attempt IS NULL THEN attempt_count
                                 ELSE GREATEST(attempt_count, :cap_attempt)
                             END,
-                            updated_at=NOW()
+                            updated_at=TIMEZONE('America/Lima', NOW())
                         WHERE id=:id
                         """
                     ).bindparams(
@@ -293,7 +293,7 @@ class OutboxWorker:
             return
         except Exception:
             logger.exception(
-                "outbox _mark_failed detallado falló para id=%s, aplicando fallback",
+                "outbox _mark_failed detallado fallo para id=%s, aplicando fallback",
                 msg_id,
             )
 
@@ -301,6 +301,6 @@ class OutboxWorker:
         async with self.session_factory() as fallback_session:
             async with fallback_session.begin():
                 await fallback_session.execute(
-                    text("UPDATE outgoing_messages SET status='failed', updated_at=NOW() WHERE id=:id"),
+                    text("UPDATE outgoing_messages SET status='failed', updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                     {"id": msg_id},
                 )

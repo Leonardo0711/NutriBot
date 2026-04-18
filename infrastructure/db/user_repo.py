@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities import User
 from domain.ports import UserRepository
+from domain.utils import get_now_peru
 from .connection import get_session_factory
 
 
@@ -23,14 +24,17 @@ class SqlAlchemyUserRepository(UserRepository):
         factory = get_session_factory()
         async with factory() as session:
             async with session.begin():
+                now_peru = get_now_peru()
                 # 1. Upsert del usuario
                 await session.execute(
                     text("""
-                        INSERT INTO usuarios (whatsapp_jid, numero_whatsapp)
-                        VALUES (:jid, :phone)
-                        ON CONFLICT (numero_whatsapp) DO NOTHING
+                        INSERT INTO usuarios (whatsapp_jid, numero_whatsapp, creado_en, actualizado_en)
+                        VALUES (:jid, :phone, :now, :now)
+                        ON CONFLICT (numero_whatsapp) DO UPDATE
+                        SET whatsapp_jid = EXCLUDED.whatsapp_jid,
+                            actualizado_en = :now
                     """),
-                    {"jid": f"{phone}@s.whatsapp.net", "phone": phone},
+                    {"jid": f"{phone}@s.whatsapp.net", "phone": phone, "now": now_peru},
                 )
 
                 # 2. Leer el usuario (nuevo o existente)
@@ -43,30 +47,30 @@ class SqlAlchemyUserRepository(UserRepository):
                 # 3. Garantizar conversation_state para este usuario
                 await session.execute(
                     text("""
-                        INSERT INTO conversation_state (usuario_id)
-                        VALUES (:uid)
+                        INSERT INTO conversation_state (usuario_id, updated_at)
+                        VALUES (:uid, :now)
                         ON CONFLICT (usuario_id) DO NOTHING
                     """),
-                    {"uid": row.id},
+                    {"uid": row.id, "now": now_peru},
                 )
 
                 # 4. Garantizar registros en las tablas de "memoria" para nuevos usuarios
                 # Esto evita errores de "record not found" en los servicios.
                 await session.execute(
                     text("""
-                        INSERT INTO memoria_chat (usuario_id)
-                        VALUES (:uid)
+                        INSERT INTO memoria_chat (usuario_id, ultima_interaccion, actualizado_en)
+                        VALUES (:uid, :now, :now)
                         ON CONFLICT (usuario_id) DO NOTHING
                     """),
-                    {"uid": row.id},
+                    {"uid": row.id, "now": now_peru},
                 )
                 await session.execute(
                     text("""
-                        INSERT INTO perfil_nutricional (usuario_id)
-                        VALUES (:uid)
+                        INSERT INTO perfil_nutricional (usuario_id, creado_en, actualizado_en)
+                        VALUES (:uid, :now, :now)
                         ON CONFLICT (usuario_id) DO NOTHING
                     """),
-                    {"uid": row.id},
+                    {"uid": row.id, "now": now_peru},
                 )
                 # NO insertar en formulario_en_progreso aquí:
                 # requiere formulario_id NOT NULL y se crea desde SurveyService

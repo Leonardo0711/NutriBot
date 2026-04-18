@@ -1,7 +1,7 @@
 """
 Nutribot Backend - MessageOrchestratorService
 Coordinador del pipeline conversacional. Funciona como director de la orquesta,
-construyendo el contexto, resolviendo el handler y delegando la ejecución.
+construyendo el contexto, resolviendo el handler y delegando la ejecucion.
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class MessageOrchestratorService:
             route.confidence,
         )
 
-        # 1. Cargar contexto mínimo del turno
+        # 1. Cargar contexto minimo del turno
         ctx = await self._turn_context_service.build(
             session=session,
             user=user,
@@ -70,7 +70,7 @@ class MessageOrchestratorService:
             rag_text=rag_text,
         )
 
-        # 2. Decidir qué flujo aplica
+        # 2. Decidir que flujo aplica
         handler = self._handler_registry.resolve(ctx)
         
         logger.info("Orchestrator: Delegando a %s", handler.__class__.__name__)
@@ -105,7 +105,7 @@ class MessageOrchestratorService:
             stmt = text(
                 """
                 INSERT INTO outgoing_messages (usuario_id, phone, content_type, content, payload_json, idempotency_key, status, scheduled_at, created_at, updated_at)
-                VALUES (:uid, :phone, :ctype, :content, :payload, :key, 'pending', NOW() + INTERVAL '1 second', NOW(), NOW())
+                VALUES (:uid, :phone, :ctype, :content, :payload, :key, 'pending', TIMEZONE('America/Lima', NOW()) + INTERVAL '1 second', TIMEZONE('America/Lima', NOW()), TIMEZONE('America/Lima', NOW()))
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """
             ).bindparams(bindparam("payload", type_=JSONB))
@@ -123,4 +123,5 @@ class MessageOrchestratorService:
             logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
         except Exception as e:
             logger.error("Error scheduling separate message: %s", e)
+
 

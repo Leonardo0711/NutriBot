@@ -5,7 +5,7 @@ Este backend usa arquitectura de perfil nutricional normalizada y onboarding pro
 ## Fuente de verdad
 
 - Modelo de datos funcional y relaciones: `BD/dbdiagram.txt`
-- Evolucion de esquema en produccion: `migrations/001_v3_schema.sql`, `migrations/002_v3_profile_compat.sql`, `migrations/003_semantic_alias_local_food_terms.sql`
+- Evolucion de esquema en produccion: `migrations/001_v3_schema.sql`, `migrations/002_v3_profile_compat.sql`, `migrations/003_semantic_alias_local_food_terms.sql`, `migrations/004_peru_timestamp_defaults.sql`
 
 ## Flujo conversacional vigente
 

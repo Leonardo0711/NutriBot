@@ -1,6 +1,6 @@
 """
-Nutribot Backend — SweeperWorker
-Procesos periódicos que recuperan jobs/mensajes zombie.
+Nutribot Backend - SweeperWorker
+Procesos periodicos que recuperan jobs/mensajes zombie.
 Reinyecta IDs recuperados en Redis para reprocesamiento inmediato.
 """
 from __future__ import annotations
@@ -26,9 +26,9 @@ class SweeperWorker:
                 r1 = await session.execute(
                     text("""
                         UPDATE incoming_messages
-                        SET status = 'pending', updated_at = NOW(), locked_at = NULL
+                        SET status = 'pending', updated_at = TIMEZONE('America/Lima', NOW()), locked_at = NULL
                         WHERE status = 'processing'
-                          AND locked_at < NOW() - MAKE_INTERVAL(mins => :timeout)
+                          AND locked_at < TIMEZONE('America/Lima', NOW()) - MAKE_INTERVAL(mins => :timeout)
                         RETURNING id
                     """),
                     {"timeout": timeout},
@@ -39,9 +39,9 @@ class SweeperWorker:
                 r2 = await session.execute(
                     text("""
                         UPDATE outgoing_messages
-                        SET status = 'pending', updated_at = NOW(), locked_at = NULL
+                        SET status = 'pending', updated_at = TIMEZONE('America/Lima', NOW()), locked_at = NULL
                         WHERE status IN ('processing', 'sending')
-                          AND locked_at < NOW() - MAKE_INTERVAL(mins => :timeout)
+                          AND locked_at < TIMEZONE('America/Lima', NOW()) - MAKE_INTERVAL(mins => :timeout)
                         RETURNING id
                     """),
                     {"timeout": timeout},
@@ -51,7 +51,7 @@ class SweeperWorker:
         total = len(inbox_ids) + len(outbox_ids)
         if total > 0:
             logger.warning(
-                "Sweeper recuperó %d zombies (incoming=%d, outgoing=%d)",
+                "Sweeper recupero %d zombies (incoming=%d, outgoing=%d)",
                 total,
                 len(inbox_ids),
                 len(outbox_ids),
@@ -68,3 +68,4 @@ class SweeperWorker:
                     await enqueue(OUTBOX_QUEUE, mid)
                 except Exception:
                     pass
+

@@ -1,5 +1,5 @@
 """
-Nutribot Backend — InboxWorker
+Nutribot Backend - InboxWorker
 Consumidor del Inbox: consume IDs desde Redis (o SQL fallback)
 y delega al MessageOrchestratorService.
 """
@@ -51,7 +51,7 @@ class InboxWorker:
         """Consume mensajes: primero de Redis, luego fallback SQL."""
         processed = 0
 
-        # --- Estrategia 1: Consumir de Redis (instantáneo) ---
+        # --- Estrategia 1: Consumir de Redis (instantaneo) ---
         redis_available = True
         try:
             msg_id = await dequeue(INBOX_QUEUE, timeout=0.5)
@@ -73,7 +73,7 @@ class InboxWorker:
                     await self._mark_failed(inbox_msg.id, str(e))
             return processed
 
-        # --- Estrategia 2: Fallback SQL (polling clásico) ---
+        # --- Estrategia 2: Fallback SQL (polling clasico) ---
         if not redis_available or not msg_id:
             messages = await self._claim_from_sql()
             if not messages:
@@ -100,8 +100,8 @@ class InboxWorker:
                     text("""
                         UPDATE incoming_messages
                         SET status = 'processing',
-                            locked_at = NOW(),
-                            updated_at = NOW()
+                            locked_at = TIMEZONE('America/Lima', NOW()),
+                            updated_at = TIMEZONE('America/Lima', NOW())
                         WHERE id = :id AND status = 'pending'
                         RETURNING *
                     """),
@@ -119,8 +119,8 @@ class InboxWorker:
                     text("""
                         UPDATE incoming_messages
                         SET status = 'processing',
-                            locked_at = NOW(),
-                            updated_at = NOW()
+                            locked_at = TIMEZONE('America/Lima', NOW()),
+                            updated_at = TIMEZONE('America/Lima', NOW())
                         WHERE id IN (
                             SELECT id FROM incoming_messages
                             WHERE status IN ('pending', 'failed')
@@ -149,7 +149,7 @@ class InboxWorker:
             async with self.session_factory() as session:
                 async with session.begin():
                     await session.execute(
-                        text("UPDATE incoming_messages SET status='done', updated_at=NOW() WHERE id=:id"),
+                        text("UPDATE incoming_messages SET status='done', updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                         {"id": inbox_msg.id},
                     )
             return
@@ -162,7 +162,7 @@ class InboxWorker:
             async with self.session_factory() as session:
                 async with session.begin():
                     await session.execute(
-                        text("UPDATE incoming_messages SET status='done', updated_at=NOW() WHERE id=:id"),
+                        text("UPDATE incoming_messages SET status='done', updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                         {"id": inbox_msg.id},
                     )
             return
@@ -193,7 +193,7 @@ class InboxWorker:
 
             # 2. RUTEAR POR TEXTO TRANSCRITO (no por content_type)
             #    Audio pasa por STT primero y se rutea como texto.
-            #    used_audio es metadato, no razón para ruta cara.
+            #    used_audio es metadato, no razon para ruta cara.
             router_content_type = "text"
             if msg.content_type == MessageType.IMAGE:
                 router_content_type = "image"
@@ -234,10 +234,10 @@ class InboxWorker:
 
                     if state.version > state_snapshot.version:
                         raise ConcurrentStateUpdateError(
-                            f"Estado cambió (v{state_snapshot.version} → v{state.version}) mientras se procesaba."
+                            f"Estado cambio (v{state_snapshot.version} -> v{state.version}) mientras se procesaba."
                         )
 
-                    # INICIO DEL SAVEPOINT. Ninguna mutación sobrevivirá si gana la carrera de idempotencia.
+                    # INICIO DEL SAVEPOINT. Ninguna mutacion sobrevivira si gana la carrera de idempotencia.
                     nested_sp = await session.begin_nested()
 
                     bot_reply, new_response_id = await self.orchestrator.process_turn(
@@ -272,7 +272,7 @@ class InboxWorker:
                     outbox_insert_stmt = text("""
                             INSERT INTO outgoing_messages
                                 (idempotency_key, usuario_id, phone, content_type, content, payload_json, scheduled_at)
-                            VALUES (:ikey, :uid, :ph, :ctype, :txt, :payload, NOW())
+                            VALUES (:ikey, :uid, :ph, :ctype, :txt, :payload, TIMEZONE('America/Lima', NOW()))
                             ON CONFLICT (idempotency_key) DO NOTHING
                             RETURNING id
                         """).bindparams(bindparam("payload", type_=JSONB))
@@ -295,16 +295,16 @@ class InboxWorker:
                         
                         # Marcamos como "done" fuera del savepoint revocado pero dentro de la transaccion principal
                         await session.execute(
-                            text("UPDATE incoming_messages SET status='done', updated_at=NOW() WHERE id=:id"),
+                            text("UPDATE incoming_messages SET status='done', updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                             {"id": inbox_msg.id},
                         )
                         return
                     else:
                         await nested_sp.commit()
 
-                    # Side-effects solo si el outbox ganó
+                    # Side-effects solo si el outbox gano
                     await session.execute(
-                        text("UPDATE incoming_messages SET status='done', updated_at=NOW() WHERE id=:id"),
+                        text("UPDATE incoming_messages SET status='done', updated_at=TIMEZONE('America/Lima', NOW()) WHERE id=:id"),
                         {"id": inbox_msg.id},
                     )
 
@@ -314,15 +314,15 @@ class InboxWorker:
                     state.version += 1
                     await self.conv_repo.save_state(session, state)
 
-                    # Persistir memoria solo después de confirmar que el outbox ganó
+                    # Persistir memoria solo despues de confirmar que el outbox gano
                     await self.orchestrator._append_to_chat_memory(session, user.id, normalized.text, safe_reply)
 
-            # Publicar outbox ID en Redis para entrega instantánea
+            # Publicar outbox ID en Redis para entrega instantanea
             if outbox_row:
                 try:
                     await enqueue(OUTBOX_QUEUE, outbox_row.id)
                 except Exception:
-                    pass  # OutboxWorker usará fallback SQL
+                    pass  # OutboxWorker usara fallback SQL
 
         finally:
             # Siempre liberar el lock del usuario
@@ -363,7 +363,7 @@ class InboxWorker:
                                 retry_count = retry_count + 1,
                                 transient_error_count = transient_error_count + 1,
                                 error_detail = :err,
-                                updated_at = NOW()
+                                updated_at = TIMEZONE('America/Lima', NOW())
                             WHERE id = :id
                         """),
                         {"err": error[:500], "id": msg_id},
@@ -376,7 +376,7 @@ class InboxWorker:
                             SET status = 'failed',
                                 retry_count = retry_count + 1,
                                 error_detail = :err,
-                                updated_at = NOW()
+                                updated_at = TIMEZONE('America/Lima', NOW())
                             WHERE id = :id
                         """),
                         {"err": error[:500], "id": msg_id},
@@ -395,7 +395,7 @@ class InboxWorker:
                                 locked_at = NULL,
                                 conflict_count = conflict_count + 1,
                                 error_detail = :detail,
-                                updated_at = NOW()
+                                updated_at = TIMEZONE('America/Lima', NOW())
                             WHERE id = :id
                             """
                         ),
@@ -410,7 +410,7 @@ class InboxWorker:
                             SET status = 'pending',
                                 locked_at = NULL,
                                 error_detail = :detail,
-                                updated_at = NOW()
+                                updated_at = TIMEZONE('America/Lima', NOW())
                             WHERE id = :id
                             """
                         ),
@@ -422,5 +422,6 @@ class InboxWorker:
             await enqueue(INBOX_QUEUE, msg_id)
             logger.info("Reencolado recoverable inbox id=%s delay=%.3fs", msg_id, delay_seconds)
         except Exception:
-            # Si Redis no está disponible, el fallback SQL lo volverá a reclamar.
+            # Si Redis no esta disponible, el fallback SQL lo volvera a reclamar.
             logger.exception("No se pudo reencolar recoverable inbox id=%s", msg_id)
+
