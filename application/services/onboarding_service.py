@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import timedelta
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -19,6 +18,8 @@ from domain.utils import get_now_peru
 from domain.parsers import parse_weight, parse_height, standardize_text_list
 from application.services.profile_extraction_service import ProfileExtractionService
 from application.services.profile_read_service import ProfileReadService
+from application.services.nutrition_assessment_service import NutritionAssessmentService
+from application.services.conversation_state_service import ConversationStateService
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,15 @@ FORMATO DE SALIDA (JSON):
         openai_model: str,
         profile_extractor: ProfileExtractionService,
         profile_reader: Optional[ProfileReadService] = None,
+        nutrition_assessment: Optional[NutritionAssessmentService] = None,
+        state_service: Optional[ConversationStateService] = None,
     ):
         self._openai_client = openai_client
         self._openai_model = openai_model
         self._profile_extractor = profile_extractor
         self._profile_reader = profile_reader or ProfileReadService()
+        self._nutrition_assessment = nutrition_assessment or NutritionAssessmentService()
+        self._state_service = state_service or ConversationStateService()
 
     def _validate_onboarding_field(self, step: str, raw_value: str) -> tuple[bool, Optional[str], Optional[str]]:
         v = raw_value.strip()
@@ -183,20 +188,23 @@ FORMATO DE SALIDA (JSON):
 
     def _set_onboarding_state(self, state: ConversationState, status: OnboardingStatus, step: Optional[str], **kwargs):
         old_status = state.onboarding_status
-        state.onboarding_status = status.value
-        state.onboarding_step = step
-        state.onboarding_updated_at = get_now_peru()
-        
         if status == OnboardingStatus.INVITED:
-            state.onboarding_last_invited_at = get_now_peru()
-        
-        if status == OnboardingStatus.SKIPPED:
-            state.onboarding_next_eligible_at = get_now_peru() + timedelta(days=14)
+            self._state_service.set_onboarding_invited(state)
+        elif status == OnboardingStatus.IN_PROGRESS:
+            if step:
+                self._state_service.set_onboarding_in_progress(state, step)
+        elif status == OnboardingStatus.COMPLETED:
+            self._state_service.set_onboarding_completed(state)
+        elif status == OnboardingStatus.SKIPPED:
+            self._state_service.set_onboarding_skipped(state, days_until_retry=14)
             if "skip_count" in kwargs:
                 state.onboarding_skip_count = kwargs["skip_count"]
-        
-        if status == OnboardingStatus.PAUSED:
-            state.onboarding_next_eligible_at = get_now_peru() + timedelta(days=3)
+        elif status == OnboardingStatus.PAUSED:
+            self._state_service.set_onboarding_paused(state, days_until_retry=3)
+        else:
+            state.onboarding_status = status.value
+            state.onboarding_step = step
+            state.onboarding_updated_at = get_now_peru()
         
         logger.info(
             "Onboarding state change: user=%s, status=%s -> %s, step=%s",
@@ -466,16 +474,17 @@ FORMATO DE SALIDA (JSON):
         else:
             # Phase 1 completada → dar valor inmediato y pasar a active_chat
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-            completion_msg = "¡Excelente, perfil básico completado! 🎯 Muchas gracias por tu tiempo."
+            completion_msg = "Listo 😊 ya tengo lo básico de tu perfil."
             try:
-                from application.services.nutrition_assessment_service import NutritionAssessmentService
                 p_final_data = await self._get_profile_flat(session, state.usuario_id)
-                bmi_msg = NutritionAssessmentService.build_referential_message_from_flat(p_final_data)
+                bmi_msg = self._nutrition_assessment.build_referential_message_from_flat(p_final_data)
                 if bmi_msg:
                     completion_msg += f"\n\n{bmi_msg}"
             except Exception as e:
                 logger.warning("No se pudo calcular IMC al completar Phase 1: %s", e)
-            completion_msg += "\n\n¿En qué más puedo ayudarte hoy?"
+            completion_msg += (
+                "\n\nSi quieres, luego completamos más datos poquito a poco para personalizar aún más tus orientaciones 🍏."
+            )
             return completion_msg
 
     async def _find_next_missing_step(
@@ -513,7 +522,14 @@ FORMATO DE SALIDA (JSON):
         }
 
         steps_to_search = phase if phase is not None else ONBOARDING_PHASE_1
-        base_idx = start_from_idx if start_from_idx is not None else 1
+        if start_from_idx is not None:
+            base_idx = start_from_idx
+        else:
+            starts_with_invitation = bool(
+                steps_to_search
+                and getattr(steps_to_search[0], "value", None) == OnboardingStep.INVITACION.value
+            )
+            base_idx = 1 if starts_with_invitation else 0
         for step in steps_to_search[base_idx:]:
             if skip_step and step.value == skip_step:
                 continue

@@ -1,6 +1,6 @@
 """
 Nutribot Backend - Onboarding Handler
-Maneja los turnos cuando el usuario está en el flujo de Onboarding.
+Maneja los turnos cuando el usuario esta en el flujo de Onboarding.
 """
 from typing import Optional, Tuple
 
@@ -20,7 +20,6 @@ class OnboardingHandler(BaseHandler):
         self._fallback_handler = fallback_handler
 
     async def handle(self, ctx: TurnContext) -> Tuple[Optional[BotReply], Optional[str]]:
-        # Intentamos avanzar explícitamente en el flujo de onboarding
         reply = await self._onboarding_service.advance_flow(
             user_text=ctx.normalized.text,
             state=ctx.state,
@@ -29,15 +28,12 @@ class OnboardingHandler(BaseHandler):
             pre_extracted_data=None,
             history=ctx.history,
         )
-        
+
         if reply is not None:
-            # El Onboarding manejó la respuesta (ej. guardó un dato y pide el siguiente)
-            # Registramos que la intercepción de onboarding ocurrió
             ctx.onboarding_interception_happened = True
+            if isinstance(reply, str):
+                reply = BotReply(text=reply, content_type="text")
             return reply, None
-            
-        # Si el OnboardingService retornó None, significa que no entendió la respuesta
-        # o que el usuario dijo algo fuera de contexto. Delegamos al flujo general.
+
         ctx.onboarding_interception_happened = False
         return await self._fallback_handler.handle(ctx)
-

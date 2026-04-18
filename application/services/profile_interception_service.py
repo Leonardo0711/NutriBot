@@ -5,19 +5,24 @@ from __future__ import annotations
 
 from typing import Optional
 
-from application.services.onboarding_service import OnboardingService
+from application.services.conversation_state_service import ConversationStateService
+from application.services.onboarding_service import ONBOARDING_QUESTIONS, OnboardingService
 from application.services.profile_context_service import ProfileContextService
 from domain.entities import ConversationState
 from domain.profile_snapshot import ProfileSnapshot
-from domain.utils import get_now_peru
-from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_PHASE_2
-from application.services.onboarding_service import ONBOARDING_QUESTIONS
+from domain.value_objects import ONBOARDING_PHASE_2, OnboardingStatus
 
 
 class ProfileInterceptionService:
-    def __init__(self, onboarding_service: OnboardingService, profile_context: ProfileContextService):
+    def __init__(
+        self,
+        onboarding_service: OnboardingService,
+        profile_context: ProfileContextService,
+        state_service: ConversationStateService,
+    ):
         self._onboarding_service = onboarding_service
         self._profile_context = profile_context
+        self._state_service = state_service
 
     async def maybe_start_personalization_flow(
         self,
@@ -40,6 +45,7 @@ class ProfileInterceptionService:
             user_id,
             ignore_skips=True,
             treat_ninguna_as_missing=False,
+            phase=[s for s in ONBOARDING_PHASE_2] if state.onboarding_status == OnboardingStatus.COMPLETED.value else None,
         )
         if next_step:
             pending_fields = self._profile_context.pending_fields(snapshot)
@@ -51,8 +57,7 @@ class ProfileInterceptionService:
                 f"Pendiente por completar: {pending_line}.\n\n"
                 f"Empezamos por confirmar tu **{step_label}**?"
             )
-            state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
-            state.onboarding_step = next_step
+            self._state_service.set_onboarding_in_progress(state, next_step)
             return reply, True
 
         if not is_asking_for_recommendation:
@@ -103,15 +108,11 @@ class ProfileInterceptionService:
             if known_parts:
                 intro += f" Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
 
-            missing_step = await self._onboarding_service._find_next_missing_step(session, user_id)
+            missing_step = await self._onboarding_service._find_next_missing_step(session, user_id, phase=None)
             if not missing_step:
                 return reply, onboarding_interception_happened
 
-            step_name = (
-                "talla (estatura)"
-                if missing_step == "altura_cm"
-                else ("peso" if missing_step == "peso_kg" else missing_step)
-            )
+            step_name = "talla (estatura)" if missing_step == "altura_cm" else ("peso" if missing_step == "peso_kg" else missing_step)
             if "peso_kg" in missing_essential or "altura_cm" in missing_essential:
                 reply = (
                     f"{intro}\n\n"
@@ -125,21 +126,18 @@ class ProfileInterceptionService:
                     f"Te parece si confirmamos tu **{step_name}**?"
                 )
 
-            state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
-            state.onboarding_step = missing_step
-            state.onboarding_last_invited_at = get_now_peru()
-            state.version += 1
+            self._state_service.set_onboarding_in_progress(state, missing_step)
             return reply, True
 
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola, soy **NutriBot** 🍏, una herramienta de **orientación nutricional referencial** de EsSalud.\n\n"
-                    "Puedo darte tips, sugerencias de alimentación y orientación general basada en tu perfil. "
+                    "Hola, soy **NutriBot**, una herramienta de **orientacion nutricional referencial** de EsSalud.\n\n"
+                    "Puedo darte tips, sugerencias de alimentacion y orientacion general basada en tu perfil. "
                     "Recuerda que mis recomendaciones no reemplazan la consulta con un nutricionista profesional.\n\n"
-                    "Si te parece, empezamos completando tu *perfil básico* "
-                    "(edad, peso, talla, alergias y objetivo) para darte orientación personalizada. ¡Son solo 5 datos rápidos! 🚀\n\n"
-                    "¿Te gustaría empezar ahora?"
+                    "Si te parece, empezamos completando tu *perfil basico* "
+                    "(edad, peso, talla, alergias y objetivo) para darte orientacion personalizada. Son solo 5 datos rapidos.\n\n"
+                    "Te gustaria empezar ahora?"
                 )
             else:
                 reply = (
@@ -147,10 +145,7 @@ class ProfileInterceptionService:
                     "Aun nos faltan algunos datos de tu *perfil nutricional* para que mis consejos sean mas precisos para ti.\n\n"
                     "Te gustaria completarlos ahora? Es un ratito."
                 )
-            state.onboarding_status = OnboardingStatus.INVITED.value
-            state.onboarding_step = OnboardingStep.INVITACION.value
-            state.onboarding_last_invited_at = get_now_peru()
-            state.version += 1
+            self._state_service.set_onboarding_invited(state)
             return reply, True
 
         return reply, onboarding_interception_happened
@@ -164,16 +159,14 @@ class ProfileInterceptionService:
         snapshot: ProfileSnapshot,
         reply: Optional[str],
     ) -> Optional[str]:
-        """Si el onboarding básico (Phase 1) ya está completo, sugiere amablemente
-        1 dato de Phase 2 cada ~4 turnos útiles. No bloquea la conversación."""
+        """Si el onboarding basico (Phase 1) ya esta completo, sugiere 1 dato de Phase 2 cada ~4 turnos utiles."""
         if state.onboarding_status != OnboardingStatus.COMPLETED.value:
             return reply
-        if not reply:  # no hay respuesta base donde agregar
+        if not reply:
             return reply
         if state.turns_since_last_prompt < 4:
             return reply
 
-        # Buscar el primer campo de Phase 2 que falte
         next_phase2 = await self._onboarding_service._find_next_missing_step(
             session,
             user_id,
@@ -181,17 +174,16 @@ class ProfileInterceptionService:
             start_from_idx=0,
         )
         if not next_phase2:
-            return reply  # Phase 2 ya completa
+            return reply
 
         step_label = self._profile_context.human_step_label(next_phase2)
         question = ONBOARDING_QUESTIONS.get(next_phase2, "")
 
-        # Resetear contador para no insistir cada turno
-        state.turns_since_last_prompt = 0
+        self._state_service.set_turns_since_last_prompt(state, 0)
 
         suggestion = (
-            f"\n\n\U0001f4ac Por cierto, para que mis orientaciones sean aún más precisas, "
-            f"\u00bfme podrías compartir tu **{step_label}**? "
+            f"\n\nPor cierto, para que mis orientaciones sean aun mas precisas, "
+            f"me podrias compartir tu **{step_label}**? "
             f"{question}\n"
             f"_(Si prefieres no decirlo, no hay problema, solo ignora este mensaje.)_"
         )

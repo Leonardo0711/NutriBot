@@ -4,10 +4,12 @@ Nutribot Backend - LLM Reply Service
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import Optional
 
-from application.services.profile_context_service import ProfileContextService
 from application.services.localization_service import LocalizationService
+from application.services.profile_context_service import ProfileContextService
 from domain.context_builder import build_llm_context, try_fast_response
 from domain.entities import ConversationState, NormalizedMessage
 from domain.ports import LLMService
@@ -19,7 +21,63 @@ logger = logging.getLogger(__name__)
 
 
 class LlmReplyService:
-    def __init__(self, llm_service: LLMService, system_instructions: str, profile_context: ProfileContextService, localization_service: Optional[LocalizationService] = None):
+    _DISCLAIMER = (
+        "\n\nRecuerda: esta orientacion es referencial y no reemplaza "
+        "una evaluacion personalizada por nutricion."
+    )
+    _DISCLAIMER_TRIGGERS = [
+        "menu",
+        "plan ",
+        "dieta",
+        "recomendacion",
+        "recomendacion personalizada",
+        "te sugiero",
+        "te recomiendo",
+        "podrias comer",
+        "desayuno",
+        "almuerzo",
+        "cena",
+        "refrigerio",
+        "imc",
+        "indice de masa corporal",
+        "alergia",
+        "alergias",
+        "enfermedad",
+        "enfermedades",
+        "restriccion",
+        "restricciones",
+        "sugerencia de alimentacion",
+        "cambio de alimentacion",
+        "porciones",
+        "calorias",
+    ]
+    _ERROR_MARKERS = [
+        "no logre",
+        "no pude",
+        "no entendi",
+        "perdon",
+        "problema interno",
+        "error",
+        "aclaracion",
+    ]
+    _POSITIVE_MARKERS = [
+        "listo",
+        "perfecto",
+        "excelente",
+        "genial",
+        "ya anote",
+        "ya registre",
+        "registrado",
+        "guardado",
+    ]
+
+    def __init__(
+        self,
+        llm_service: LLMService,
+        system_instructions: str,
+        profile_context: ProfileContextService,
+        localization_service: Optional[LocalizationService] = None,
+    ):
         self._llm_service = llm_service
         self._system_instructions = system_instructions
         self._profile_context = profile_context
@@ -143,38 +201,193 @@ class LlmReplyService:
             )
         return reply
 
-    _DISCLAIMER = (
-        "\n\n_Recuerda que esto es orientación referencial y no reemplaza "
-        "una evaluación personalizada por nutrición._ 🏥"
-    )
-    _DISCLAIMER_TRIGGERS = [
-        "menú", "menu", "plan ", "dieta", "recomendación", "recomendacion",
-        "te sugiero", "te recomiendo", "podrías comer", "podrias comer",
-        "desayuno", "almuerzo", "cena", "refrigerio",
-    ]
+    @classmethod
+    def _normalize_text_for_match(cls, text: str) -> str:
+        base = unicodedata.normalize("NFKD", text or "")
+        without_accents = "".join(ch for ch in base if not unicodedata.combining(ch))
+        return without_accents.lower()
+
+    @staticmethod
+    def _contains_emoji(text: str) -> bool:
+        return bool(re.search(r"[\U0001F300-\U0001FAFF]", text or ""))
 
     @classmethod
     def _needs_disclaimer(cls, text: str) -> bool:
         if not text:
             return False
-        lower = text.lower()
-        if cls._DISCLAIMER.strip().lower()[:30] in lower:
-            return False  # ya lo tiene
-        return any(t in lower for t in cls._DISCLAIMER_TRIGGERS)
+        normalized = cls._normalize_text_for_match(text)
+        if "orientacion referencial" in normalized and "no reemplaza" in normalized:
+            return False
+        return any(trigger in normalized for trigger in cls._DISCLAIMER_TRIGGERS)
 
     @classmethod
-    def sanitize_final_reply(cls, final_bot_reply: BotReply, uid: int, localization: Optional[LocalizationService] = None) -> BotReply:
-        if final_bot_reply.content_type == "text":
-            if not final_bot_reply.text or not str(final_bot_reply.text).strip():
-                final_bot_reply.text = "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
-                logger.warning("Fallback por respuesta vacia en orchestrator user=%s", uid)
+    def _starts_warm(cls, text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped:
+            return False
+        normalized = cls._normalize_text_for_match(stripped[:80])
+        if normalized.startswith(("hola", "claro", "buenisimo", "perfecto", "listo", "vamos")):
+            return True
+        return cls._contains_emoji(stripped[:40])
+
+    @classmethod
+    def _looks_like_error_or_clarification(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        return any(marker in normalized for marker in cls._ERROR_MARKERS)
+
+    @classmethod
+    def _looks_positive(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        return any(marker in normalized for marker in cls._POSITIVE_MARKERS)
+
+    @classmethod
+    def _looks_recommendation(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        return any(marker in normalized for marker in cls._DISCLAIMER_TRIGGERS)
+
+    @staticmethod
+    def _has_close_phrase(text: str) -> bool:
+        tail = (text or "").strip().lower()
+        return any(
+            marker in tail[-160:]
+            for marker in (
+                "si quieres",
+                "cuando quieras",
+                "te ayudo",
+                "vamos paso a paso",
+            )
+        )
+
+    def polish_tone(self, text: str) -> str:
+        safe = (text or "").strip()
+        if not safe:
+            return safe
+
+        is_error = self._looks_like_error_or_clarification(safe)
+        is_positive = self._looks_positive(safe) and not is_error
+        is_recommendation = self._looks_recommendation(safe)
+
+        if not self._starts_warm(safe):
+            if is_error:
+                safe = "Te ayudo con eso 😊\n" + safe
+            elif is_positive:
+                safe = "¡Buenisimo! 🎉\n" + safe
             else:
-                # Peruanizar texto
-                if localization:
-                    final_bot_reply.text = localization.peruanize(final_bot_reply.text)
-                # Disclaimer determinístico
-                if cls._needs_disclaimer(final_bot_reply.text):
-                    final_bot_reply.text += cls._DISCLAIMER
+                safe = "Claro 😊\n" + safe
+
+        if len(safe) <= 450 and not self._has_close_phrase(safe):
+            if is_error:
+                safe += "\n\nSi quieres, lo intentamos otra vez paso a paso 💪"
+            elif is_recommendation:
+                safe += "\n\nSi quieres, lo afinamos poquito a poco segun tu perfil 🍏"
+            elif is_positive:
+                safe += "\n\nSeguimos cuando quieras 😊"
+
+        return safe
+
+    @staticmethod
+    def _sanitize_markdown_line(line: str) -> str:
+        if not line:
+            return line
+
+        out: list[str] = []
+        in_emphasis = False
+        open_index: Optional[int] = None
+        n = len(line)
+
+        for idx, ch in enumerate(line):
+            if ch != "*":
+                out.append(ch)
+                continue
+
+            prev_ch = line[idx - 1] if idx > 0 else " "
+            next_ch = line[idx + 1] if idx + 1 < n else " "
+
+            can_open = (
+                not in_emphasis
+                and not next_ch.isspace()
+                and next_ch != "*"
+                and (idx == 0 or prev_ch.isspace() or prev_ch in "([{\"'¿¡-")
+            )
+            can_close = (
+                in_emphasis
+                and not prev_ch.isspace()
+                and prev_ch != "*"
+                and (idx == n - 1 or next_ch.isspace() or next_ch in ".,;:!?)]}\"'")
+            )
+
+            if can_open:
+                open_index = len(out)
+                out.append("*")
+                in_emphasis = True
+            elif can_close:
+                out.append("*")
+                in_emphasis = False
+                open_index = None
+            else:
+                # Asterisco huerfano o ruido de formato: se elimina.
+                continue
+
+        if in_emphasis and open_index is not None and open_index < len(out) and out[open_index] == "*":
+            del out[open_index]
+
+        normalized = "".join(out)
+        normalized = re.sub(r"\*{2,}", "*", normalized)
+        return normalized
+
+    def cleanup_whatsapp_markdown(self, text: str) -> str:
+        safe = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not safe:
+            return safe
+
+        # Normaliza variantes de markdown a un solo estilo WhatsApp: *texto*
+        safe = re.sub(r"\*{2,}\s*([^*\n][^*\n]*?)\s*\*{2,}", r"*\1*", safe)
+        safe = re.sub(r"_\s*([^_\n][^_\n]*?)\s*_", r"*\1*", safe)
+        safe = re.sub(r"\*\s*\*\s*", " ", safe)
+        safe = re.sub(r"\*{3,}", "*", safe)
+        safe = re.sub(r"(\w)\*([^\s*][^*\n]*?)\*(\w)", r"\1 *\2* \3", safe)
+
+        cleaned_lines = [self._sanitize_markdown_line(line) for line in safe.split("\n")]
+        safe = "\n".join(cleaned_lines)
+        # Evita pegar palabras al marcador de enfasis (*texto*palabra / palabra*texto*).
+        safe = re.sub(r"(\w)(\*[^\s*\n](?:[^*\n]*?[^\s*\n])?\*)", r"\1 \2", safe)
+        safe = re.sub(r"(\*[^\s*\n](?:[^*\n]*?[^\s*\n])?\*)(\w)", r"\1 \2", safe)
+        safe = re.sub(
+            r"\*([^*\n]+)\*",
+            lambda m: f"*{m.group(1).strip()}*" if m.group(1).strip() else "",
+            safe,
+        )
+        safe = re.sub(r"[ \t]+\n", "\n", safe)
+        safe = re.sub(r"\n{3,}", "\n\n", safe)
+        safe = re.sub(r"[ \t]{2,}", " ", safe)
+        return safe.strip()
+
+    def _append_disclaimer_if_needed(self, text: str) -> str:
+        if not self._needs_disclaimer(text):
+            return text
+        return f"{text.rstrip()}{self._DISCLAIMER}"
+
+    def _finalize_text_reply(self, text: str, uid: int) -> str:
+        safe = (text or "").strip()
+        if not safe:
+            logger.warning("Fallback por respuesta vacia en orchestrator user=%s", uid)
+            return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
+
+        # Pipeline final unico: localizacion -> tono -> markdown WhatsApp -> disclaimer -> trim.
+        safe = self._localization.peruanize(safe)
+        safe = self.polish_tone(safe)
+        safe = self.cleanup_whatsapp_markdown(safe)
+        safe = self._append_disclaimer_if_needed(safe)
+        safe = safe.strip()
+
+        if not safe:
+            logger.warning("Fallback por respuesta vacia post-pipeline user=%s", uid)
+            return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
+        return safe
+
+    def sanitize_final_reply(self, final_bot_reply: BotReply, uid: int) -> BotReply:
+        if final_bot_reply.content_type == "text":
+            final_bot_reply.text = self._finalize_text_reply(final_bot_reply.text or "", uid)
             return final_bot_reply
 
         if not final_bot_reply.payload_json:
@@ -182,6 +395,12 @@ class LlmReplyService:
                 text="Perdon, tuve un problema interno. Intenta nuevamente en unos segundos.",
                 content_type="text",
             )
+
         if not final_bot_reply.text:
             final_bot_reply.text = str(final_bot_reply.payload_json.get("body") or "").strip()
+
+        # En mensajes interactivos aplicamos el mismo pipeline final sobre el texto visible.
+        final_bot_reply.text = self._finalize_text_reply(final_bot_reply.text, uid)
+        if isinstance(final_bot_reply.payload_json, dict):
+            final_bot_reply.payload_json["body"] = final_bot_reply.text
         return final_bot_reply

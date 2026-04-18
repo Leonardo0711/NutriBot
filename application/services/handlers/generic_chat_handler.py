@@ -122,7 +122,7 @@ class GenericChatHandler(BaseHandler):
             )
 
         # 7. Limpieza Final (sanitización)
-        final_bot_reply = self._llm_reply.sanitize_final_reply(final_bot_reply, ctx.user.id, localization=self._llm_reply._localization)
+        final_bot_reply = self._llm_reply.sanitize_final_reply(final_bot_reply, ctx.user.id)
         
         return final_bot_reply, new_response_id
 
@@ -154,5 +154,4 @@ class GenericChatHandler(BaseHandler):
             logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
         except Exception as e:
             logger.error("Error scheduling separate message: %s", e)
-
 

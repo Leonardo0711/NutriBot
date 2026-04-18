@@ -1,9 +1,12 @@
 """
 Nutribot Backend - ConversationStateService
-Encapsula la mutación controlada de la entidad ConversationState.
+Encapsula la mutacion controlada de la entidad ConversationState.
 """
+from datetime import timedelta
+
 from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, SessionMode
+from domain.utils import get_now_peru
 
 
 class ConversationStateService:
@@ -15,8 +18,56 @@ class ConversationStateService:
         self.bump_version(state)
 
     def bump_version(self, state: ConversationState) -> None:
-        """Incrementa la versión para control optimista de concurrencia."""
+        """Incrementa la version para control optimista de concurrencia."""
         state.version += 1
+
+    def set_turns_since_last_prompt(self, state: ConversationState, value: int) -> None:
+        state.turns_since_last_prompt = max(0, int(value))
+
+    def set_onboarding_in_progress(self, state: ConversationState, step: str) -> None:
+        now = get_now_peru()
+        state.onboarding_status = OnboardingStatus.IN_PROGRESS.value
+        state.onboarding_step = step
+        state.onboarding_updated_at = now
+        self.bump_version(state)
+
+    def set_onboarding_invited(self, state: ConversationState) -> None:
+        now = get_now_peru()
+        state.onboarding_status = OnboardingStatus.INVITED.value
+        state.onboarding_step = OnboardingStep.INVITACION.value
+        state.onboarding_last_invited_at = now
+        state.onboarding_updated_at = now
+        self.bump_version(state)
+
+    def set_onboarding_completed(self, state: ConversationState) -> None:
+        now = get_now_peru()
+        state.onboarding_status = OnboardingStatus.COMPLETED.value
+        state.onboarding_step = None
+        state.mode = SessionMode.ACTIVE_CHAT.value
+        state.onboarding_updated_at = now
+        self.bump_version(state)
+
+    def set_onboarding_paused(self, state: ConversationState, days_until_retry: int = 3) -> None:
+        now = get_now_peru()
+        state.onboarding_status = OnboardingStatus.PAUSED.value
+        state.onboarding_next_eligible_at = now + timedelta(days=days_until_retry)
+        state.onboarding_updated_at = now
+        self.bump_version(state)
+
+    def set_onboarding_skipped(self, state: ConversationState, days_until_retry: int = 14) -> None:
+        now = get_now_peru()
+        state.onboarding_status = OnboardingStatus.SKIPPED.value
+        state.onboarding_step = None
+        state.onboarding_skip_count += 1
+        state.onboarding_next_eligible_at = now + timedelta(days=days_until_retry)
+        state.onboarding_updated_at = now
+        self.bump_version(state)
+
+    def schedule_next_onboarding_eligibility(self, state: ConversationState, days_until_retry: int) -> None:
+        now = get_now_peru()
+        state.onboarding_next_eligible_at = now + timedelta(days=days_until_retry)
+        state.onboarding_updated_at = now
+        self.bump_version(state)
 
     def update_interaction_details(
         self,
@@ -24,7 +75,7 @@ class ConversationStateService:
         provider_message_id: str,
         openai_response_id: str | None = None
     ) -> None:
-        """Actualiza metadatos de interacción tras un turno válido."""
+        """Actualiza metadatos de interaccion tras un turno valido."""
         state.last_provider_message_id = provider_message_id
         if openai_response_id:
             state.last_openai_response_id = openai_response_id
@@ -43,4 +94,3 @@ class ConversationStateService:
                 state.meaningful_interactions_count = 0
             else:
                 state.meaningful_interactions_count = projected_interactions_count
-
