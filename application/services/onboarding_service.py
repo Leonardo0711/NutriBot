@@ -27,13 +27,13 @@ ONBOARDING_QUESTIONS: dict[str, str] = {
     OnboardingStep.EDAD.value: "Para empezar, ¿cuántos años tienes? 🎂",
     OnboardingStep.PESO.value: "¿Y cuál es tu peso aproximado en kilos? ⚖️",
     OnboardingStep.ALTURA.value: "¿Y cuál es tu estatura aproximada? Puedes usar centímetros o metros (Ej. 1.70m, 170cm) 📐",
-    OnboardingStep.TIPO_DIETA.value: "¿Sigues algún **tipo de dieta** especial? 🥗 (Ej: *Omnívora* si comes de todo, *Vegetariana*, *Vegana*, *Keto*, *Sin gluten*, o ninguna en particular)",
-    OnboardingStep.ALERGIAS.value: "¿Tienes alguna **alergia** o intolerancia alimentaria? (Ej. Maní, mariscos, lactosa...) 🍎",
-    OnboardingStep.ENFERMEDADES.value: "¿Padeces alguna condición de salud relevante? 🏥 (Ej: *Diabetes*, *Hipertensión*, *Hipotiroidismo* o ninguna)",
-    OnboardingStep.RESTRICCIONES.value: "¿Tienes alguna **restricción alimentaria** por religión, ética o gusto personal? 🚫 (Ej: No como cerdo, no como carnes rojas, no me gusta el brócoli...)",
-    OnboardingStep.OBJETIVO.value: "¿Cuál es tu **objetivo principal** al usar Nutribot? 🎯 (Ej. *Bajar de peso*, *Ganar masa muscular*, *Controlar mi glucemia*, o simplemente *Comer más sano*)",
-    OnboardingStep.PROVINCIA.value: "¿En qué **provincia** de Perú te encuentras actualmente? 😊",
-    OnboardingStep.DISTRITO.value: "¿Y en qué **distrito** vives específicamente? 🏠 (Para darte recomendaciones locales)"
+    OnboardingStep.TIPO_DIETA.value: "¿Sigues algun tipo de dieta especial? 🥗 (Ej: omnivora, vegetariana, vegana, keto, sin gluten o ninguna en particular)",
+    OnboardingStep.ALERGIAS.value: "¿Tienes alguna alergia o intolerancia alimentaria? (Ej. mani, mariscos, lactosa...) 🍎",
+    OnboardingStep.ENFERMEDADES.value: "¿Padeces alguna condicion de salud relevante? 🏥 (Ej: diabetes, hipertension, hipotiroidismo o ninguna)",
+    OnboardingStep.RESTRICCIONES.value: "¿Tienes alguna restriccion alimentaria por religion, etica o gusto personal? 🚫 (Ej: no como cerdo, no como carnes rojas, no me gusta el brocoli...)",
+    OnboardingStep.OBJETIVO.value: "¿Cual es tu objetivo principal al usar Nutribot? 🎯 (Ej. bajar de peso, ganar masa muscular, controlar mi glucemia, o simplemente comer mas sano)",
+    OnboardingStep.PROVINCIA.value: "¿En que provincia de Peru te encuentras actualmente? 😊",
+    OnboardingStep.DISTRITO.value: "¿Y en que distrito vives especificamente? 🏠 (Para darte recomendaciones locales)"
 }
 
 class OnboardingService:
@@ -67,16 +67,16 @@ class OnboardingService:
     }
 
     FIELD_LABELS = {
-        OnboardingStep.EDAD.value: "tu **edad**",
-        OnboardingStep.PESO.value: "tu **peso**",
-        OnboardingStep.ALTURA.value: "tu **talla (estatura)**",
-        OnboardingStep.ALERGIAS.value: "si tienes alguna **alergia o restriccion**",
-        OnboardingStep.TIPO_DIETA.value: "si sigues algun **tipo de dieta**",
-        OnboardingStep.ENFERMEDADES.value: "si padeces alguna **condicion de salud**",
-        OnboardingStep.RESTRICCIONES.value: "si tienes alguna **restriccion alimentaria**",
-        OnboardingStep.OBJETIVO.value: "tu **objetivo nutricional**",
-        OnboardingStep.PROVINCIA.value: "la **provincia** donde te encuentras",
-        OnboardingStep.DISTRITO.value: "tu **distrito**",
+        OnboardingStep.EDAD.value: "tu edad",
+        OnboardingStep.PESO.value: "tu peso",
+        OnboardingStep.ALTURA.value: "tu talla (estatura)",
+        OnboardingStep.ALERGIAS.value: "si tienes alguna alergia o restriccion",
+        OnboardingStep.TIPO_DIETA.value: "si sigues algun tipo de dieta",
+        OnboardingStep.ENFERMEDADES.value: "si padeces alguna condicion de salud",
+        OnboardingStep.RESTRICCIONES.value: "si tienes alguna restriccion alimentaria",
+        OnboardingStep.OBJETIVO.value: "tu objetivo nutricional",
+        OnboardingStep.PROVINCIA.value: "la provincia donde te encuentras",
+        OnboardingStep.DISTRITO.value: "tu distrito",
     }
 
     @staticmethod
@@ -265,10 +265,10 @@ FORMATO DE SALIDA (JSON):
                 missing_label = self.FIELD_LABELS.get(current_step, current_step)
                 return (
                     f"Entiendo perfectamente tu duda y me encantaría ayudarte con eso ahora mismo. 🍏 "
-                    f"Sin embargo, para poder darte una recomendación que sea **asertiva, segura y 100% a tu medida**, "
-                    f"todavía necesito completar tu **{missing_label}**.\n\n"
+                    f"Para poder darte una recomendacion segura y a tu medida, "
+                    f"todavia necesito completar {missing_label}.\n\n"
                     f"¿Me lo podrías confirmar para seguir? 🙏\n\n"
-                    f"**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+                    f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
                 )
 
             if intent == "DOUBT":
@@ -285,10 +285,10 @@ FORMATO DE SALIDA (JSON):
                         self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                         if is_food_request or "dame" in vl:
                              return None
-                        return f"No hay problema, podemos saltarlo. 😊 Sigamos con otro detalle: **{ONBOARDING_QUESTIONS[next_step]}**"
+                        return f"No hay problema, podemos saltarlo. 😊 Sigamos con otro detalle: {ONBOARDING_QUESTIONS[next_step]}"
 
                 if explanation:
-                    return f"{explanation}\n\n¿Seguimos con tu perfil? **{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+                    return f"{explanation}\n\n¿Seguimos con tu perfil? {ONBOARDING_QUESTIONS.get(current_step, '')}"
 
                 if is_food_request:
                     p = await self._get_profile_flat(session, state.usuario_id)
@@ -305,7 +305,7 @@ FORMATO DE SALIDA (JSON):
                         known_parts.append(f"Alergias: {p['alergias']}")
 
                     known_line = f"Tengo registrado: {', '.join(known_parts)}. " if known_parts else ""
-                    campo_lindo = self.FIELD_LABELS.get(current_step, f"tu **{current_step}**")
+                    campo_lindo = self.FIELD_LABELS.get(current_step, f"tu {current_step}")
                     question = ONBOARDING_QUESTIONS.get(current_step, "")
                     return (
                         f"Vamos bien. {known_line}Para darte una recomendacion 100% personalizada, "
@@ -357,8 +357,8 @@ FORMATO DE SALIDA (JSON):
 
                 self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                 intro_profile = (
-                    "¡Genial! 😊 Solo necesito 5 datos rápidos "
-                    "(edad, peso, talla, alergias y objetivo) para darte orientación personalizada. ¡Es un ratito! 🚀"
+                    "¡Genial! 😊 Solo necesito 5 datos rapidos "
+                    "(edad, peso, talla, alergias y objetivo) para darte orientacion personalizada. ¡Es un ratito! 🚀"
                 )
                 p = await self._get_profile_flat(session, state.usuario_id)
                 known_parts = []
@@ -372,8 +372,8 @@ FORMATO DE SALIDA (JSON):
                 if known_parts:
                     return (
                         f"{intro_profile}\n\n"
-                        f"Ya tengo registrado: **{', '.join(known_parts)}**. "
-                        f"Ahora necesito completar unos datos más.\n\n{ONBOARDING_QUESTIONS[next_step]}"
+                        f"Ya tengo registrado: {', '.join(known_parts)}. "
+                        f"Ahora necesito completar unos datos mas.\n\n{ONBOARDING_QUESTIONS[next_step]}"
                     )
                 return f"{intro_profile}\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
@@ -422,9 +422,9 @@ FORMATO DE SALIDA (JSON):
             if intent == "ANSWER":
                 if self._check_frustration(history, current_step):
                     campo_lindo = self.FIELD_LABELS.get(current_step, current_step)
-                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos **saltarlo** por ahora y seguir con lo demás para no estancarnos. ¿Te parece?\n\nO si gustas, dime tu **{campo_lindo}** para continuar."
+                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos saltarlo por ahora y seguir con lo demas para no estancarnos. ¿Te parece?\n\nO si gustas, dime {campo_lindo} para continuar."
 
-                return f"No logré captar ese detalle para tu perfil. 😅 ¿Podrías decírmelo de forma más simple?\n\n**{ONBOARDING_QUESTIONS.get(current_step, '')}**"
+                return f"No logre captar ese detalle para tu perfil. 😅 ¿Podrias decirmelo de forma mas simple?\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
             elif intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
             else:
@@ -468,7 +468,7 @@ FORMATO DE SALIDA (JSON):
                 return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
             
             if next_step == current_step:
-                return f"Para poder ayudarte mejor, necesito este dato: **{ONBOARDING_QUESTIONS[current_step]}**"
+                return f"Para poder ayudarte mejor, necesito este dato: {ONBOARDING_QUESTIONS[current_step]}"
 
             return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
         else:

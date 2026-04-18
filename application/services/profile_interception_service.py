@@ -52,17 +52,17 @@ class ProfileInterceptionService:
             pending_line = ", ".join(pending_fields) if pending_fields else "ninguno"
             step_label = self._profile_context.human_step_label(next_step)
             reply = (
-                "Claro, me encantaria que personalicemos tus recomendaciones.\n\n"
-                f"Esto es lo que tengo registrado:\n{summary}\n\n"
-                f"Pendiente por completar: {pending_line}.\n\n"
-                f"Empezamos por confirmar tu **{step_label}**?"
+                "Claro 😊 personalicemos tus recomendaciones.\n\n"
+                f"Tengo registrado:\n{summary}\n\n"
+                f"Nos falta: {pending_line}.\n\n"
+                f"Empezamos por confirmar tu {step_label}?"
             )
             self._state_service.set_onboarding_in_progress(state, next_step)
             return reply, True
 
         if not is_asking_for_recommendation:
             reply = (
-                "Ya tengo tu perfil completo.\n\n"
+                "Ya tengo tu perfil completo 😊\n\n"
                 f"{summary}\n\n"
                 "Si quieres cambiar algun dato especifico (como tu peso o talla), solo dimelo directamente en cualquier momento."
             )
@@ -106,7 +106,7 @@ class ProfileInterceptionService:
             if snapshot.health.allergies:
                 known_parts.append(f"Alergias: {', '.join(snapshot.health.allergies)}")
             if known_parts:
-                intro += f" Veo que ya tengo algunos datos registrados: **{', '.join(known_parts)}**."
+                intro += f" Ya tengo algunos datos: {', '.join(known_parts)}."
 
             missing_step = await self._onboarding_service._find_next_missing_step(session, user_id, phase=None)
             if not missing_step:
@@ -117,13 +117,13 @@ class ProfileInterceptionService:
                 reply = (
                     f"{intro}\n\n"
                     "Pero para que mi sugerencia sea 100% precisa y calcular tu IMC, "
-                    f"solo me faltaria completar un par de datos mas. Te parece si empezamos por tu **{step_name}**?"
+                    f"solo me faltaria completar un par de datos mas. Te parece si empezamos por tu {step_name}?"
                 )
             else:
                 reply = (
                     f"{intro}\n\n"
                     "Solo me faltaria completar un pequeno detalle para ser mas preciso. "
-                    f"Te parece si confirmamos tu **{step_name}**?"
+                    f"Te parece si confirmamos tu {step_name}?"
                 )
 
             self._state_service.set_onboarding_in_progress(state, missing_step)
@@ -132,18 +132,16 @@ class ProfileInterceptionService:
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola, soy **NutriBot**, una herramienta de **orientacion nutricional referencial** de EsSalud.\n\n"
-                    "Puedo darte tips, sugerencias de alimentacion y orientacion general basada en tu perfil. "
-                    "Recuerda que mis recomendaciones no reemplazan la consulta con un nutricionista profesional.\n\n"
-                    "Si te parece, empezamos completando tu *perfil basico* "
-                    "(edad, peso, talla, alergias y objetivo) para darte orientacion personalizada. Son solo 5 datos rapidos.\n\n"
-                    "Te gustaria empezar ahora?"
+                    "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud 🍏.\n\n"
+                    "Puedo ayudarte con tips y recomendaciones segun tu perfil.\n\n"
+                    "Si quieres, armamos tu perfil basico con 5 datos rapidos "
+                    "(edad, peso, talla, alergias y objetivo). ¿Empezamos?"
                 )
             else:
                 reply = (
-                    "Hola de nuevo.\n\n"
-                    "Aun nos faltan algunos datos de tu *perfil nutricional* para que mis consejos sean mas precisos para ti.\n\n"
-                    "Te gustaria completarlos ahora? Es un ratito."
+                    "Hola de nuevo 😊\n\n"
+                    "Si te parece, completamos los datos que faltan para personalizar mejor tus recomendaciones.\n\n"
+                    "¿Te animas? Es rapidito 🍏"
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True
@@ -183,8 +181,8 @@ class ProfileInterceptionService:
 
         suggestion = (
             f"\n\nPor cierto, para que mis orientaciones sean aun mas precisas, "
-            f"me podrias compartir tu **{step_label}**? "
+            f"me podrias compartir tu {step_label}? "
             f"{question}\n"
-            f"_(Si prefieres no decirlo, no hay problema, solo ignora este mensaje.)_"
+            f"(Si prefieres no decirlo, no hay problema, solo ignora este mensaje.)"
         )
         return reply + suggestion
