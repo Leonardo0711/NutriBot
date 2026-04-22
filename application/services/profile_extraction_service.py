@@ -24,6 +24,11 @@ class ExtractionResult:
     meta_flags: dict[str, Any]
 
 class ProfileExtractionService:
+    OP_CLEAR = "CLEAR"
+    OP_REPLACE = "REPLACE"
+    OP_ADD = "ADD"
+    OP_REMOVE = "REMOVE"
+
     ABSURD_TERMS = {
         "sayayin",
         "saiyajin",
@@ -46,6 +51,68 @@ class ProfileExtractionService:
         "no padezco",
         "sin",
     }
+
+    CORRECTION_MARKERS = (
+        "me equivoque",
+        "me equivoqué",
+        "corrijo",
+        "correccion",
+        "corrección",
+        "quise decir",
+        "no era",
+        "no, era",
+        "en realidad",
+        "mas bien",
+    )
+
+    CHANGE_OVER_TIME_MARKERS = (
+        "ahora peso",
+        "ahora mido",
+        "he bajado",
+        "he subido",
+        "subi a",
+        "subí a",
+        "baje a",
+        "bajé a",
+        "ultimo peso",
+        "último peso",
+        "mi ultimo peso",
+        "mi último peso",
+    )
+
+    REMOVE_MARKERS = (
+        "ya no",
+        "quita",
+        "quitar",
+        "elimina",
+        "eliminar",
+        "borra",
+        "saca",
+        "remueve",
+        "remove",
+    )
+
+    ADD_MARKERS = (
+        "agrega",
+        "agregar",
+        "anade",
+        "añade",
+        "suma",
+        "tambien",
+        "también",
+        "ademas",
+        "además",
+    )
+
+    REPLACE_MARKERS = (
+        "mis ",
+        "son ",
+        "ahora son",
+        "actualiza",
+        "actualizar",
+        "reemplaza",
+        "cambia a",
+    )
 
     FIELD_CONFIG = {
         "edad": {"col": "edad", "parser": parse_age},
@@ -158,6 +225,81 @@ REGLAS CRITICAS DE ROBUSTEZ:
         return False
 
     @classmethod
+    def _contains_any_marker(cls, source_text: str, markers: tuple[str, ...]) -> bool:
+        norm = cls._normalize_text(source_text)
+        if not norm:
+            return False
+        return any(cls._normalize_text(marker) in norm for marker in markers)
+
+    @classmethod
+    def _step_matches_field(cls, current_step: Optional[str], field_code: str) -> bool:
+        if not current_step:
+            return False
+        step = cls._normalize_text(current_step)
+        field = cls._normalize_text(field_code)
+        aliases = {
+            "peso_kg": {"peso", "peso kg", "peso_kg"},
+            "altura_cm": {"altura", "talla", "altura cm", "altura_cm"},
+            "alergias": {"alergias", "alergia"},
+            "enfermedades": {"enfermedades", "enfermedad", "condicion"},
+            "restricciones_alimentarias": {"restricciones", "restriccion", "restricciones alimentarias"},
+        }
+        valid = aliases.get(field, {field})
+        return step in valid
+
+    def _infer_measurement_correction_mode(
+        self,
+        *,
+        source_text: str,
+        field_code: str,
+        current_step: Optional[str],
+        current_measurement_row: Optional[dict[str, Any]],
+        now_peru,
+    ) -> bool:
+        has_correction_marker = self._contains_any_marker(source_text, self.CORRECTION_MARKERS)
+        has_time_change_marker = self._contains_any_marker(source_text, self.CHANGE_OVER_TIME_MARKERS)
+        matches_step = self._step_matches_field(current_step, field_code)
+
+        recent_current = False
+        if current_measurement_row and current_measurement_row.get("fecha_medicion"):
+            try:
+                delta = now_peru - current_measurement_row["fecha_medicion"]
+                recent_current = delta.total_seconds() <= 20 * 60
+            except Exception:
+                recent_current = False
+
+        if has_correction_marker and not has_time_change_marker:
+            return True
+        if matches_step:
+            return True
+        if recent_current and has_correction_marker:
+            return True
+        return False
+
+    def _infer_list_operation(
+        self,
+        *,
+        raw_value: str,
+        source_text: str,
+        field_code: str,
+        current_step: Optional[str],
+    ) -> str:
+        if self._is_negative_value(raw_value):
+            return self.OP_CLEAR
+
+        if self._contains_any_marker(source_text, self.REMOVE_MARKERS):
+            return self.OP_REMOVE
+        if self._contains_any_marker(source_text, self.ADD_MARKERS):
+            return self.OP_ADD
+        if self._contains_any_marker(source_text, self.CORRECTION_MARKERS):
+            return self.OP_REPLACE
+        if self._contains_any_marker(source_text, self.REPLACE_MARKERS):
+            return self.OP_REPLACE
+        if self._step_matches_field(current_step, field_code):
+            return self.OP_REPLACE
+        return self.OP_ADD
+
+    @classmethod
     def _split_values(cls, value: str) -> list[str]:
         if not value:
             return []
@@ -167,6 +309,15 @@ REGLAS CRITICAS DE ROBUSTEZ:
         seen: set[str] = set()
         for raw in parts:
             candidate = raw.strip(" .:-")
+            if not candidate:
+                continue
+            candidate = re.sub(
+                r"^(?:ya no|no|tengo|padezco|sufro de|soy alergic[oa] a|alergia a|evito|no como|no consumo)\s+",
+                "",
+                candidate,
+                flags=re.IGNORECASE,
+            ).strip(" .:-")
+            candidate = re.sub(r"\b(?:por favor|gracias)$", "", candidate, flags=re.IGNORECASE).strip(" .:-")
             if not candidate:
                 continue
             key = cls._normalize_text(candidate)
@@ -336,7 +487,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
         clean_data, updates, meta_flags = self._apply_bulletproof_logic(raw_extractions, user_text, current_step)
         
         if clean_data:
-            await self._persist_updates(usuario_id, clean_data, session)
+            await self._persist_updates(
+                usuario_id,
+                clean_data,
+                session,
+                source_text=user_text,
+                current_step=current_step,
+            )
             
         return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
 
@@ -358,14 +515,34 @@ REGLAS CRITICAS DE ROBUSTEZ:
         clean_data, updates, meta_flags = self._apply_bulletproof_logic(raw_extractions, user_text, current_step)
         
         if clean_data:
-            await self._persist_updates(usuario_id, clean_data, session)
+            await self._persist_updates(
+                usuario_id,
+                clean_data,
+                session,
+                source_text=user_text,
+                current_step=current_step,
+            )
             
         return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
 
-    async def save_clean_data(self, usuario_id: int, clean_data: Dict[str, Any], session: AsyncSession):
+    async def save_clean_data(
+        self,
+        usuario_id: int,
+        clean_data: Dict[str, Any],
+        session: AsyncSession,
+        *,
+        source_text: str = "",
+        current_step: Optional[str] = None,
+    ):
         """Persiste directamente datos ya limpios."""
         if clean_data:
-            await self._persist_updates(usuario_id, clean_data, session)
+            await self._persist_updates(
+                usuario_id,
+                clean_data,
+                session,
+                source_text=source_text,
+                current_step=current_step,
+            )
 
     async def _run_llm_extraction(self, user_text: str, current_step: Optional[str]) -> Dict[str, Any]:
         context_info = f"\nPASO ACTUAL: {current_step}" if current_step else ""
@@ -466,7 +643,31 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 
         return clean_data, updates, meta_flags
 
-    async def _set_current_measurement(
+    async def _get_current_measurement(
+        self,
+        session: AsyncSession,
+        perfil_id: int,
+        measurement_type: str,
+    ) -> Optional[dict[str, Any]]:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, valor_decimal, unidad, fecha_medicion
+                    FROM perfil_nutricional_medicion
+                    WHERE perfil_nutricional_id = :pid
+                      AND tipo_medicion = :mtype
+                      AND es_valor_actual = TRUE
+                    ORDER BY fecha_medicion DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"pid": perfil_id, "mtype": measurement_type},
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+    async def _upsert_measurement_with_semantics(
         self,
         session: AsyncSession,
         perfil_id: int,
@@ -474,7 +675,49 @@ REGLAS CRITICAS DE ROBUSTEZ:
         numeric_value: float,
         unit: str,
         now_peru,
+        *,
+        correction_mode: bool,
     ) -> None:
+        current_row = await self._get_current_measurement(session, perfil_id, measurement_type)
+
+        if current_row:
+            current_value = float(current_row["valor_decimal"])
+            if abs(current_value - float(numeric_value)) < 1e-6:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE perfil_nutricional_medicion
+                        SET unidad = :unit,
+                            fecha_medicion = :now,
+                            origen = :origin
+                        WHERE id = :mid
+                        """
+                    ),
+                    {
+                        "mid": current_row["id"],
+                        "unit": unit,
+                        "now": now_peru,
+                        "origin": "SELF_REPORT_CORRECTION" if correction_mode else "SELF_REPORT",
+                    },
+                )
+                return
+
+        if correction_mode and current_row:
+            await session.execute(
+                text(
+                    """
+                    UPDATE perfil_nutricional_medicion
+                    SET valor_decimal = :val,
+                        unidad = :unit,
+                        fecha_medicion = :now,
+                        origen = 'SELF_REPORT_CORRECTION'
+                    WHERE id = :mid
+                    """
+                ),
+                {"mid": current_row["id"], "val": numeric_value, "unit": unit, "now": now_peru},
+            )
+            return
+
         await session.execute(
             text(
                 """
@@ -493,10 +736,17 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 INSERT INTO perfil_nutricional_medicion
                     (perfil_nutricional_id, tipo_medicion, valor_decimal, unidad, fecha_medicion, es_valor_actual, origen, creado_en)
                 VALUES
-                    (:pid, :mtype, :val, :unit, :now, TRUE, 'SELF_REPORT', :now)
+                    (:pid, :mtype, :val, :unit, :now, TRUE, :origin, :now)
                 """
             ),
-            {"pid": perfil_id, "mtype": measurement_type, "val": numeric_value, "unit": unit, "now": now_peru},
+            {
+                "pid": perfil_id,
+                "mtype": measurement_type,
+                "val": numeric_value,
+                "unit": unit,
+                "now": now_peru,
+                "origin": "SELF_REPORT",
+            },
         )
 
     async def _sync_enfermedades(
@@ -505,9 +755,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
         perfil_id: int,
         raw_value: str,
         now_peru,
+        *,
+        operation: str,
     ) -> None:
         today = now_peru.date()
-        if self._is_negative_value(raw_value):
+        if operation == self.OP_CLEAR:
             await session.execute(
                 text(
                     """
@@ -525,18 +777,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if not values:
             return
 
-        await session.execute(
-            text(
-                """
-                UPDATE perfil_nutricional_enfermedad
-                SET vigente = FALSE, fecha_fin = :today
-                WHERE perfil_nutricional_id = :pid
-                  AND vigente = TRUE
-                """
-            ),
-            {"pid": perfil_id, "today": today},
-        )
-
+        resolved_ids: list[int] = []
         for value in values:
             enfermedad_id = await self._resolve_master_id(
                 session,
@@ -548,6 +789,39 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if not enfermedad_id:
                 logger.info("No se encontro enfermedad en maestro para valor='%s'", value)
                 continue
+            resolved_ids.append(enfermedad_id)
+
+        if not resolved_ids:
+            return
+
+        if operation == self.OP_REPLACE:
+            await session.execute(
+                text(
+                    """
+                    UPDATE perfil_nutricional_enfermedad
+                    SET vigente = FALSE, fecha_fin = :today
+                    WHERE perfil_nutricional_id = :pid
+                      AND vigente = TRUE
+                    """
+                ),
+                {"pid": perfil_id, "today": today},
+            )
+        elif operation == self.OP_REMOVE:
+            await session.execute(
+                text(
+                    """
+                    UPDATE perfil_nutricional_enfermedad
+                    SET vigente = FALSE, fecha_fin = :today
+                    WHERE perfil_nutricional_id = :pid
+                      AND vigente = TRUE
+                      AND enfermedad_id = ANY(CAST(:ids AS bigint[]))
+                    """
+                ),
+                {"pid": perfil_id, "today": today, "ids": resolved_ids},
+            )
+            return
+
+        for enfermedad_id in resolved_ids:
             await session.execute(
                 text(
                     """
@@ -574,6 +848,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         now_peru,
         *,
         only_alergenos: bool,
+        operation: str,
     ) -> None:
         today = now_peru.date()
         where_master = "tipo = 'ALERGENO'" if only_alergenos else "TRUE"
@@ -591,7 +866,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
               )
             """
 
-        if self._is_negative_value(raw_value):
+        if operation == self.OP_CLEAR:
             await session.execute(text(deactivate_query), {"pid": perfil_id, "today": today})
             return
 
@@ -599,8 +874,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if not values:
             return
 
-        await session.execute(text(deactivate_query), {"pid": perfil_id, "today": today})
-
+        resolved_ids: list[int] = []
         for value in values:
             restriccion_id = await self._resolve_master_id(
                 session,
@@ -612,6 +886,31 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if not restriccion_id:
                 logger.info("No se encontro restriccion en maestro para valor='%s'", value)
                 continue
+            resolved_ids.append(restriccion_id)
+
+        if not resolved_ids:
+            return
+
+        if operation == self.OP_REPLACE:
+            await session.execute(text(deactivate_query), {"pid": perfil_id, "today": today})
+        elif operation == self.OP_REMOVE:
+            remove_query = """
+                UPDATE perfil_nutricional_restriccion pr
+                SET vigente = FALSE, fecha_fin = :today
+                WHERE pr.perfil_nutricional_id = :pid
+                  AND pr.vigente = TRUE
+                  AND pr.restriccion_id = ANY(CAST(:ids AS bigint[]))
+            """
+            if only_alergenos:
+                remove_query += """
+                  AND pr.restriccion_id IN (
+                        SELECT id FROM mae_restriccion_alimentaria WHERE tipo = 'ALERGENO'
+                  )
+                """
+            await session.execute(text(remove_query), {"pid": perfil_id, "today": today, "ids": resolved_ids})
+            return
+
+        for restriccion_id in resolved_ids:
             await session.execute(
                 text(
                     """
@@ -630,7 +929,15 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 {"pid": perfil_id, "rid": restriccion_id, "today": today, "now": now_peru},
             )
 
-    async def _persist_updates(self, usuario_id: int, updates: dict, session: AsyncSession):
+    async def _persist_updates(
+        self,
+        usuario_id: int,
+        updates: dict,
+        session: AsyncSession,
+        *,
+        source_text: str = "",
+        current_step: Optional[str] = None,
+    ):
         now_peru = get_now_peru()
 
         profile_res = await session.execute(
@@ -673,13 +980,22 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
             if field_code == "peso_kg":
                 try:
-                    await self._set_current_measurement(
+                    current_row = await self._get_current_measurement(session, perfil_id, "PESO_KG")
+                    correction_mode = self._infer_measurement_correction_mode(
+                        source_text=source_text,
+                        field_code=field_code,
+                        current_step=current_step,
+                        current_measurement_row=current_row,
+                        now_peru=now_peru,
+                    )
+                    await self._upsert_measurement_with_semantics(
                         session,
                         perfil_id,
                         "PESO_KG",
                         float(value),
                         "kg",
                         now_peru,
+                        correction_mode=correction_mode,
                     )
                 except (TypeError, ValueError):
                     logger.info("Peso invalido para persistencia V3: %s", value)
@@ -687,13 +1003,22 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
             if field_code == "altura_cm":
                 try:
-                    await self._set_current_measurement(
+                    current_row = await self._get_current_measurement(session, perfil_id, "ALTURA_CM")
+                    correction_mode = self._infer_measurement_correction_mode(
+                        source_text=source_text,
+                        field_code=field_code,
+                        current_step=current_step,
+                        current_measurement_row=current_row,
+                        now_peru=now_peru,
+                    )
+                    await self._upsert_measurement_with_semantics(
                         session,
                         perfil_id,
                         "ALTURA_CM",
                         float(value),
                         "cm",
                         now_peru,
+                        correction_mode=correction_mode,
                     )
                 except (TypeError, ValueError):
                     logger.info("Altura invalida para persistencia V3: %s", value)
@@ -728,17 +1053,55 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 continue
 
             if field_code == "enfermedades":
-                await self._sync_enfermedades(session, perfil_id, str(value), now_peru)
+                op = self._infer_list_operation(
+                    raw_value=str(value),
+                    source_text=source_text,
+                    field_code=field_code,
+                    current_step=current_step,
+                )
+                await self._sync_enfermedades(
+                    session,
+                    perfil_id,
+                    str(value),
+                    now_peru,
+                    operation=op,
+                )
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
             if field_code == "alergias":
-                await self._sync_restricciones(session, perfil_id, str(value), now_peru, only_alergenos=True)
+                op = self._infer_list_operation(
+                    raw_value=str(value),
+                    source_text=source_text,
+                    field_code=field_code,
+                    current_step=current_step,
+                )
+                await self._sync_restricciones(
+                    session,
+                    perfil_id,
+                    str(value),
+                    now_peru,
+                    only_alergenos=True,
+                    operation=op,
+                )
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
             if field_code == "restricciones_alimentarias":
-                await self._sync_restricciones(session, perfil_id, str(value), now_peru, only_alergenos=False)
+                op = self._infer_list_operation(
+                    raw_value=str(value),
+                    source_text=source_text,
+                    field_code=field_code,
+                    current_step=current_step,
+                )
+                await self._sync_restricciones(
+                    session,
+                    perfil_id,
+                    str(value),
+                    now_peru,
+                    only_alergenos=False,
+                    operation=op,
+                )
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 

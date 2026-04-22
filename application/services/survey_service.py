@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from typing import Optional, Any
 
 from openai import AsyncOpenAI
@@ -14,10 +15,6 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from application.services.interactive_message_factory import (
-    build_scale_list,
-    build_yes_no_buttons,
-)
 from domain.entities import ConversationState, NormalizedMessage
 from domain.reply_objects import BotReply
 from domain.value_objects import MessageType
@@ -49,7 +46,10 @@ FORM_STATES_ORDER = [
 ]
 
 FORM_QUESTIONS: dict[str, str] = {
-    "esperando_correo": "Me encantaria seguir en contacto. Podrias compartir tu correo?",
+    "esperando_correo": (
+        "Si te parece, comparte tu correo para avisarte de campañas de salud y nutrición "
+        "cerca de ti (opcional)."
+    ),
     "esperando_p1": "Que tan realista y atractiva te parecio mi personalidad?",
     "esperando_p2": "Que tan bien explique mi proposito y alcance?",
     "esperando_p3": "Que tan facil te pareci de navegar?",
@@ -63,11 +63,17 @@ FORM_QUESTIONS: dict[str, str] = {
     "esperando_imagen_optin": "Te gustaria probar reconocimiento de imagenes para luego evaluarlo?",
     "esperando_imagen_prueba": "Enviame una foto o imagen para poder evaluar esa funcion.",
     "esperando_p9": "Que tan bien reconoci el contexto de la imagen?",
-    "esperando_p10": "Que tan bien me enfoque solo en nutricion?",
+    "esperando_p10": "Que tan bien me enfoque solo en nutrición?",
     "esperando_nps": "Del 1 al 10, que tan probable es que me recomiendes?",
     "esperando_comentario": "(Opcional) Que te gusto o no te gusto?",
     "esperando_autorizacion": "Autorizas el uso anonimo y agregado de tus respuestas para investigacion? (Si autorizo / No autorizo)",
 }
+
+EMAIL_REASK_COPY = (
+    "Tu correo es opcional, pero ayuda a enviarte avisos de campañas de salud y nutrición "
+    "cerca de ti.\n\n"
+    "Si deseas, compártelo ahora. Si no, escribe *no* y seguimos con la encuesta."
+)
 
 _SCALE_PREFIX = {
     "esperando_p1": "survey:p1",
@@ -89,7 +95,7 @@ class SurveyResponseExtractor:
 
     _SKIP_EXACT = {"paso", "saltar", "skip", "no quiero", "siguiente", "prefiero no", "omitir"}
     _CANCEL_PHRASES = {"cancelar todo", "detener bot", "salir de todo", "stop survey"}
-    _YES_WORDS = re.compile(r"(?:\b|^)(si|yes|claro|dale|ok|de acuerdo|acepto|autorizo)(?:\b|$)", re.IGNORECASE)
+    _YES_WORDS = re.compile(r"(?:\b|^)(si|sí|sii|sip|yes|claro|dale|ok|de acuerdo|acepto|autorizo)(?:\b|$)", re.IGNORECASE)
     _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(para que|por que|que uso|que finalidad)", re.IGNORECASE)
     _NUTRITION_HINTS = (
@@ -97,6 +103,25 @@ class SurveyResponseExtractor:
         "cena", "peso", "talla", "proteina", "carbohidratos", "grasa",
         "nutricion", "plan alimentario", "porciones", "macros",
     )
+    _INTERRUPTIBLE_STATES = {
+        "esperando_p1",
+        "esperando_p2",
+        "esperando_p3",
+        "esperando_p4",
+        "esperando_p5",
+        "esperando_p6",
+        "esperando_p7",
+        "esperando_p8",
+        "esperando_p9",
+        "esperando_p10",
+        "esperando_nps",
+        "esperando_comentario",
+        "esperando_autorizacion",
+        "esperando_audio_optin",
+        "esperando_audio_prueba",
+        "esperando_imagen_optin",
+        "esperando_imagen_prueba",
+    }
 
     def __init__(self, openai_client: AsyncOpenAI, model: str):
         self._client = openai_client
@@ -172,6 +197,9 @@ class SurveyResponseExtractor:
                 return {"intent": "INTERRUPT", "value": None}
             return None
 
+        if state_name in self._INTERRUPTIBLE_STATES and self._contains_nutrition_hint(vl):
+            return {"intent": "INTERRUPT", "value": None}
+
         if state_name in ("esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
             if self._YES_WORDS.search(vl):
                 return {"intent": "ANSWER", "value": "Si"}
@@ -180,10 +208,10 @@ class SurveyResponseExtractor:
             return None
 
         if state_name.startswith("esperando_p") or state_name == "esperando_nps":
-            m = re.match(r"^\s*(\d{1,2})\s*$", v)
+            m = re.search(r"\b(\d{1,2})\b", v)
             if m:
                 return {"intent": "ANSWER", "value": m.group(1)}
-            return None
+            return {"intent": "ANSWER", "value": v}
 
         if state_name == "esperando_comentario":
             if self._contains_nutrition_hint(vl):
@@ -228,15 +256,76 @@ class SurveyResponseExtractor:
 
 
 class SurveyService:
+    _NUMBER_WORDS = {
+        "cero": 0,
+        "uno": 1,
+        "una": 1,
+        "dos": 2,
+        "tres": 3,
+        "cuatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "siete": 7,
+        "ocho": 8,
+        "nueve": 9,
+        "diez": 10,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+
     def __init__(self, openai_client: AsyncOpenAI, openai_model: str):
         self.extractor = SurveyResponseExtractor(openai_client, openai_model)
+
+    @staticmethod
+    def _normalize_token(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        base = unicodedata.normalize("NFKD", raw)
+        without_accents = "".join(ch for ch in base if not unicodedata.combining(ch))
+        return without_accents.lower().strip()
 
     @staticmethod
     def _parse_int(value: Any, minimum: int, maximum: int) -> Optional[int]:
         if value is None:
             return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        digit_match = re.search(r"\b(\d{1,2})\b", raw)
+        if digit_match:
+            number = int(digit_match.group(1))
+            if minimum <= number <= maximum:
+                return number
+            return None
+
+        normalized = SurveyService._normalize_token(raw)
+        if normalized in SurveyService._NUMBER_WORDS:
+            number = SurveyService._NUMBER_WORDS[normalized]
+            if minimum <= number <= maximum:
+                return number
+            return None
+
+        for token in re.split(r"[\s,.;:!?/\\-]+", normalized):
+            if not token:
+                continue
+            mapped = SurveyService._NUMBER_WORDS.get(token)
+            if mapped is None:
+                continue
+            if minimum <= mapped <= maximum:
+                return mapped
+            return None
+
         try:
-            number = int(str(value).strip())
+            number = int(raw)
             if minimum <= number <= maximum:
                 return number
         except Exception:
@@ -256,7 +345,7 @@ class SurveyService:
     def _normalize_auth(value: Any) -> Optional[bool]:
         if value is None:
             return None
-        text_value = str(value).strip().lower()
+        text_value = SurveyService._normalize_token(value)
         if text_value in {"si", "yes", "si autorizo", "autorizo", "acepto"}:
             return True
         if text_value in {"no", "no autorizo", "rechazo"}:
@@ -271,73 +360,57 @@ class SurveyService:
     def _is_image_message(normalized: NormalizedMessage) -> bool:
         return normalized.content_type == MessageType.IMAGE or bool(normalized.image_base64)
 
+    @staticmethod
+    def _is_multimedia_message(normalized: NormalizedMessage) -> bool:
+        return (
+            normalized.content_type in (MessageType.IMAGE, MessageType.AUDIO, MessageType.PTT)
+            or bool(normalized.image_base64)
+            or bool(normalized.used_audio)
+        )
+
     def _build_question_reply(self, state_name: str, prefix: str = "") -> BotReply:
         question = FORM_QUESTIONS.get(state_name, "")
+        lines: list[str] = []
+        if prefix:
+            lines.append(prefix)
+        if question:
+            lines.append(question)
+
+        has_prefix = bool(prefix and str(prefix).strip())
         if state_name in _SCALE_PREFIX and state_name != "esperando_nps":
-            payload = build_scale_list(question, _SCALE_PREFIX[state_name], 1, 5, "Selecciona una calificacion")
-            if prefix:
-                payload["body"] = f"{prefix}\n\n{payload['body']}"
-            return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
+            if not has_prefix:
+                lines.append("Responde con un numero del 1 al 5.")
+        elif state_name == "esperando_nps":
+            if not has_prefix:
+                lines.append("Responde con un numero del 1 al 10.")
+        elif state_name in {"esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion"}:
+            if not has_prefix:
+                lines.append("Responde: Si o No.")
+        elif state_name == "esperando_correo":
+            lines.append("Si no deseas compartirlo, escribe *no*.")
 
-        if state_name == "esperando_nps":
-            payload = build_scale_list(question, _SCALE_PREFIX[state_name], 1, 10, "Selecciona una calificacion")
-            if prefix:
-                payload["body"] = f"{prefix}\n\n{payload['body']}"
-            return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
+        deduped_lines: list[str] = []
+        seen_keys: set[str] = set()
+        for part in lines:
+            clean = str(part or "").strip()
+            if not clean:
+                continue
+            key = self._normalize_token(clean)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped_lines.append(clean)
 
-        if state_name == "esperando_audio_optin":
-            payload = build_yes_no_buttons(
-                body=question + "\n*(Tambien puedes responder Si o No)*",
-                button_yes_id="survey:audio_optin:yes",
-                button_no_id="survey:audio_optin:no",
-                yes_label="Si, probar",
-                no_label="Omitir",
-            )
-            if prefix:
-                payload["body"] = f"{prefix}\n\n{payload['body']}"
-            return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
-
-        if state_name == "esperando_imagen_optin":
-            payload = build_yes_no_buttons(
-                body=question + "\n*(Tambien puedes responder Si o No)*",
-                button_yes_id="survey:image_optin:yes",
-                button_no_id="survey:image_optin:no",
-                yes_label="Si, probar",
-                no_label="Omitir",
-            )
-            if prefix:
-                payload["body"] = f"{prefix}\n\n{payload['body']}"
-            return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
-
-        if state_name == "esperando_autorizacion":
-            payload = build_yes_no_buttons(
-                body=question,
-                button_yes_id="survey:auth:yes",
-                button_no_id="survey:auth:no",
-                yes_label="Si autorizo",
-                no_label="No autorizo",
-            )
-            if prefix:
-                payload["body"] = f"{prefix}\n\n{payload['body']}"
-            return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
-
-        text_msg = f"{prefix}\n\n{question}" if prefix else question
+        text_msg = "\n\n".join(deduped_lines).strip()
         return BotReply(text=text_msg, content_type="text")
 
     def _build_consent_reply(self) -> BotReply:
-        payload = build_yes_no_buttons(
-            body=(
-                "Muchas gracias por chatear conmigo. Me encantaria hacerte unas breves "
-                "preguntas del formulario de satisfaccion.\n\n"
-                "Este formulario es aparte de tu perfil nutricional.\n\n"
-                "Estas de acuerdo?\n*(Tambien puedes escribir Si o No)*"
-            ),
-            button_yes_id="survey:consent:yes",
-            button_no_id="survey:consent:no",
-            yes_label="Si",
-            no_label="No",
+        text_msg = (
+            "Gracias por tu tiempo. Quiero hacerte unas preguntas cortas "
+            "del formulario de satisfacción.\n\n"
+            "Si estás de acuerdo, empezamos."
         )
-        return BotReply(text=payload["body"], content_type="interactive_list", payload_json=payload)
+        return BotReply(text=text_msg, content_type="text")
 
     async def _load_active_progress(self, session: AsyncSession, usuario_id: int):
         result = await session.execute(
@@ -538,6 +611,11 @@ class SurveyService:
         if state.mode == "active_chat":
             effective = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
             if effective >= 5 and state.usability_completion_pct < 100:
+                active_form = await self._get_active_form(session)
+                if not active_form:
+                    # Evita invitar a un formulario inexistente.
+                    state.meaningful_interactions_count = 0
+                    return None
                 state.awaiting_question_code = CONSENT_STATE
                 state.meaningful_interactions_count = 0
                 return self._build_consent_reply()
@@ -549,9 +627,16 @@ class SurveyService:
         state: ConversationState,
         normalized: NormalizedMessage,
     ) -> Optional[BotReply]:
+        # Si llega multimedia, no forzamos consentimiento: devolvemos control al chat normal.
+        if self._is_multimedia_message(normalized):
+            state.awaiting_question_code = None
+            state.mode = "active_chat"
+            state.meaningful_interactions_count = 0
+            return None
+
         result = await self.extractor.extract(CONSENT_STATE, normalized.text, normalized.interactive_id)
         intent = result.get("intent", "ANSWER").upper()
-        value = str(result.get("value") or "").strip().lower()
+        value = self._normalize_token(result.get("value"))
 
         if intent == "INTERRUPT":
             state.awaiting_question_code = None
@@ -572,13 +657,15 @@ class SurveyService:
         return self._build_consent_reply()
 
     async def _try_start_form(self, session: AsyncSession, state: ConversationState) -> Optional[BotReply]:
-        result = await session.execute(
-            text("SELECT id FROM formularios WHERE activo = TRUE ORDER BY version DESC, id DESC LIMIT 1")
-        )
-        form = result.fetchone()
+        form = await self._get_active_form(session)
         if not form:
             state.meaningful_interactions_count = 0
-            return None
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return BotReply(
+                text="Gracias por aceptar 😊. Por ahora no tengo un formulario activo; seguimos con tu chat normal.",
+                content_type="text",
+            )
 
         progress = await self._load_active_progress(session, state.usuario_id)
         if progress and progress.formulario_id == form.id:
@@ -625,6 +712,20 @@ class SurveyService:
         state.meaningful_interactions_count = 0
         return self._build_question_reply(first_state)
 
+    async def _get_active_form(self, session: AsyncSession):
+        result = await session.execute(
+            text(
+                """
+                SELECT id, codigo, version
+                FROM formularios
+                WHERE activo = TRUE
+                ORDER BY version DESC, id DESC
+                LIMIT 1
+                """
+            )
+        )
+        return result.fetchone()
+
     async def get_current_question_reply(self, session: AsyncSession, state: ConversationState) -> Optional[BotReply]:
         """Retorna la respuesta/pregunta actual basada en el estado, sin procesar nada."""
         current_state = state.awaiting_question_code
@@ -651,6 +752,25 @@ class SurveyService:
             return None
 
         parciales = dict(progress.respuestas_parciales or {})
+        if self._is_multimedia_message(normalized) and current_state not in {"esperando_audio_prueba", "esperando_imagen_prueba"}:
+            await self._persist_progress(
+                session=session,
+                progress_id=progress.id,
+                parciales=parciales,
+                next_state=current_state,
+                audio_test_requested=bool(getattr(progress, "audio_test_requested", False)),
+                audio_test_completed=bool(getattr(progress, "audio_test_completed", False)),
+                audio_test_declined=bool(getattr(progress, "audio_test_declined", False)),
+                image_test_requested=bool(getattr(progress, "image_test_requested", False)),
+                image_test_completed=bool(getattr(progress, "image_test_completed", False)),
+                image_test_declined=bool(getattr(progress, "image_test_declined", False)),
+                uso_audio=bool(getattr(progress, "uso_audio", False)),
+                uso_imagen=bool(getattr(progress, "uso_imagen", False)),
+            )
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return None
+
         result = await self.extractor.extract(current_state, normalized.text, normalized.interactive_id)
         intent = str(result.get("intent", "ANSWER")).upper()
         value = result.get("value")
@@ -660,8 +780,22 @@ class SurveyService:
             state.awaiting_question_code = None
             return BotReply(text="Entendido, dejamos el formulario por ahora.", content_type="text")
         if intent == "INTERRUPT":
-            # Mantenemos el modo y el estado actual para que el orquestador pueda re-anclar después.
-            # Solo retornamos None para que el orquestador sepa que debe responder con el LLM.
+            await self._persist_progress(
+                session=session,
+                progress_id=progress.id,
+                parciales=parciales,
+                next_state=current_state,
+                audio_test_requested=bool(getattr(progress, "audio_test_requested", False)),
+                audio_test_completed=bool(getattr(progress, "audio_test_completed", False)),
+                audio_test_declined=bool(getattr(progress, "audio_test_declined", False)),
+                image_test_requested=bool(getattr(progress, "image_test_requested", False)),
+                image_test_completed=bool(getattr(progress, "image_test_completed", False)),
+                image_test_declined=bool(getattr(progress, "image_test_declined", False)),
+                uso_audio=bool(getattr(progress, "uso_audio", False)),
+                uso_imagen=bool(getattr(progress, "uso_imagen", False)),
+            )
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
             return None
 
         audio_test_requested = bool(getattr(progress, "audio_test_requested", False))
@@ -672,6 +806,7 @@ class SurveyService:
         image_test_declined = bool(getattr(progress, "image_test_declined", False))
         uso_audio = bool(getattr(progress, "uso_audio", False))
         uso_imagen = bool(getattr(progress, "uso_imagen", False))
+        transition_prefix = ""
 
         if current_state == "esperando_audio_optin":
             txt = str(value or "").lower()
@@ -682,6 +817,7 @@ class SurveyService:
                 audio_test_declined = True
                 parciales["p8_no_aplica"] = True
                 parciales.pop("p8", None)
+                transition_prefix = "Como no probaste audio, esa pregunta no aplica."
                 next_state = "esperando_imagen_optin"
             else:
                 return self._build_question_reply(current_state)
@@ -694,6 +830,7 @@ class SurveyService:
                 audio_test_declined = True
                 parciales["p8_no_aplica"] = True
                 parciales.pop("p8", None)
+                transition_prefix = "Como no probaste audio, esa pregunta no aplica."
                 next_state = "esperando_imagen_optin"
             else:
                 return BotReply(
@@ -709,6 +846,7 @@ class SurveyService:
                 image_test_declined = True
                 parciales["p9_no_aplica"] = True
                 parciales.pop("p9", None)
+                transition_prefix = "Como no probaste imagen, esa pregunta no aplica."
                 next_state = "esperando_p10"
             else:
                 return self._build_question_reply(current_state)
@@ -721,6 +859,7 @@ class SurveyService:
                 image_test_declined = True
                 parciales["p9_no_aplica"] = True
                 parciales.pop("p9", None)
+                transition_prefix = "Como no probaste imagen, esa pregunta no aplica."
                 next_state = "esperando_p10"
             else:
                 return BotReply(
@@ -730,28 +869,72 @@ class SurveyService:
         else:
             field_key = current_state.replace("esperando_", "")
             cleaned_value = value
-            if intent in {"WHY", "SKIP"}:
-                if current_state in {"esperando_correo", "esperando_comentario"}:
-                    cleaned_value = None
-                else:
-                    return self._build_question_reply(current_state, prefix="Necesito tu respuesta para continuar.")
-
             if current_state == "esperando_correo":
+                if intent == "WHY":
+                    return BotReply(
+                        text=(
+                            "Te lo pido solo para avisarte campañas de salud y nutrición cerca de ti. "
+                            "Es opcional.\n\nPuedes compartir tu correo o escribir *no* para continuar."
+                        ),
+                        content_type="text",
+                    )
+                if intent == "SKIP":
+                    decline_count = int(parciales.get("correo_decline_count") or 0) + 1
+                    parciales["correo_decline_count"] = decline_count
+                    if decline_count == 1:
+                        await self._persist_progress(
+                            session=session,
+                            progress_id=progress.id,
+                            parciales=parciales,
+                            next_state=current_state,
+                            audio_test_requested=audio_test_requested,
+                            audio_test_completed=audio_test_completed,
+                            audio_test_declined=audio_test_declined,
+                            image_test_requested=image_test_requested,
+                            image_test_completed=image_test_completed,
+                            image_test_declined=image_test_declined,
+                            uso_audio=uso_audio,
+                            uso_imagen=uso_imagen,
+                        )
+                        state.awaiting_question_code = current_state
+                        return BotReply(text=EMAIL_REASK_COPY, content_type="text")
+                    cleaned_value = None
                 normalized_email = self._normalize_email(cleaned_value)
                 if cleaned_value is not None and not normalized_email:
-                    return BotReply(text="Ese correo no parece valido. Ejemplo: tunombre@gmail.com", content_type="text")
+                    return BotReply(
+                        text=(
+                            "Ese correo no parece valido. Ejemplo: tunombre@gmail.com\n\n"
+                            "Si prefieres no compartirlo, escribe *no* y continuamos."
+                        ),
+                        content_type="text",
+                    )
                 cleaned_value = normalized_email
+                parciales["correo_decline_count"] = 0 if normalized_email else int(parciales.get("correo_decline_count") or 0)
+            elif intent in {"WHY", "SKIP"}:
+                if current_state == "esperando_comentario":
+                    cleaned_value = None
+                else:
+                    return self._build_question_reply(
+                        current_state,
+                        prefix="Necesito tu respuesta para continuar.",
+                    )
 
             if current_state.startswith("esperando_p") or current_state == "esperando_nps":
                 min_v, max_v = (1, 10) if current_state == "esperando_nps" else (1, 5)
                 parsed = self._parse_int(cleaned_value, min_v, max_v)
                 if parsed is None:
-                    return self._build_question_reply(current_state, prefix=f"La respuesta debe ser un numero entre {min_v} y {max_v}.")
+                    if max_v == 5:
+                        hint = "La respuesta debe ser un numero del 1 al 5."
+                    else:
+                        hint = "La respuesta debe ser un numero del 1 al 10."
+                    return self._build_question_reply(current_state, prefix=hint)
                 cleaned_value = str(parsed)
 
             if current_state == "esperando_autorizacion":
-                if str(cleaned_value or "").lower() not in {"si", "no"}:
+                auth = self._normalize_auth(cleaned_value)
+                if auth is None:
                     return self._build_question_reply(current_state)
+                cleaned_value = "Si" if auth else "No"
 
             parciales[field_key] = cleaned_value
             idx = FORM_STATES_ORDER.index(current_state)
@@ -793,4 +976,4 @@ class SurveyService:
             uso_imagen=uso_imagen,
         )
         state.awaiting_question_code = next_state
-        return self._build_question_reply(next_state)
+        return self._build_question_reply(next_state, prefix=transition_prefix)

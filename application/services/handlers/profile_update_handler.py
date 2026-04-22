@@ -41,12 +41,17 @@ class ProfileUpdateHandler(BaseHandler):
             and ctx.route.intent in (Intent.PROFILE_UPDATE, Intent.CORRECTION_PAST_FIELD, Intent.ANSWER_CURRENT_STEP)
         ):
             raw_extractions = {ctx.route.resolved_field: ctx.route.resolved_value}
+            current_step_hint = (
+                ctx.route.resolved_field
+                if ctx.route.intent == Intent.ANSWER_CURRENT_STEP
+                else None
+            )
             ext_result = await self._profile_extractor.apply_cleaning_and_save(
                 raw_extractions=raw_extractions,
                 user_text=ctx.normalized.text,
                 usuario_id=ctx.user.id,
                 session=ctx.session,
-                current_step=ctx.route.resolved_field,
+                current_step=current_step_hint,
             )
             logger.info(
                 "Router-based profile update (no LLM): user=%s field=%s value=%s",
@@ -89,4 +94,3 @@ class ProfileUpdateHandler(BaseHandler):
         # Si llegamos aquí, se actualizaron los datos o no hubo match exacto.
         # Continuamos con el flujo general para generar la respuesta contextual final.
         return await self._fallback_handler.handle(ctx)
-

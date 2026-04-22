@@ -3,6 +3,7 @@ Nutribot Backend - LLM Reply Service
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import logging
 import re
 import unicodedata
@@ -26,14 +27,6 @@ class LlmReplyService:
         "una evaluacion personalizada por nutricion."
     )
     _DISCLAIMER_TRIGGERS = [
-        "menu semanal",
-        "menu",
-        "plan alimenticio",
-        "dieta para",
-        "desayuno",
-        "almuerzo",
-        "cena",
-        "refrigerio",
         "imc",
         "indice de masa corporal",
         "alergia",
@@ -42,11 +35,24 @@ class LlmReplyService:
         "enfermedades",
         "restriccion",
         "restricciones",
-        "sobrepeso",
-        "obesidad",
-        "porciones",
-        "calorias",
+        "diabetes",
+        "hipertension",
+        "hipotiroidismo",
+        "embarazo",
     ]
+    _DISCLAIMER_ALWAYS_TRIGGERS = [
+        "imc",
+        "indice de masa corporal",
+        "alergia",
+        "alergias",
+        "enfermedad",
+        "enfermedades",
+        "restriccion",
+        "restricciones",
+    ]
+    _DISCLAIMER_COOLDOWN_MINUTES = 1440
+    _DISCLAIMER_HIGH_RISK_COOLDOWN_MINUTES = 480
+    _DISCLAIMER_LAST_SHOWN_AT_BY_UID: dict[int, datetime] = {}
     _ERROR_MARKERS = [
         "no logre",
         "no pude",
@@ -191,16 +197,22 @@ class LlmReplyService:
     ) -> Optional[str]:
         if not reply or onboarding_interception_happened:
             return reply
+        normalized = LlmReplyService._normalize_text_for_match(reply)
         should_append_tip = bool(
-            "PD:" not in reply
+            "tip nutribot" not in normalized
+            and "quiero actualizar mi perfil nutricional" not in normalized
             and turns_since_last_prompt > 0
-            and turns_since_last_prompt % 4 == 0
+            and turns_since_last_prompt % 24 == 0
             and not is_requesting_survey
+            and len(reply) <= 260
+            and "correo" not in normalized
+            and not LlmReplyService._needs_disclaimer(reply)
+            and not LlmReplyService._is_survey_or_form_text(reply)
         )
         if should_append_tip:
             reply += (
-                '\n\nTip NutriBot: Si quieres actualizar tu perfil cuando gustes, solo escribe: '
-                '"Nutribot, quiero actualizar mi perfil nutricional".'
+                "\n\nTip NutriBot 🍏: para personalizar mas tus recomendaciones, "
+                "escribe *quiero actualizar mi perfil nutricional*."
             )
         return reply
 
@@ -219,9 +231,18 @@ class LlmReplyService:
         if not text:
             return False
         normalized = cls._normalize_text_for_match(text)
+        if "tip nutribot" in normalized:
+            return False
+        if cls._is_survey_or_form_text(text):
+            return False
         if "orientacion referencial" in normalized and "no reemplaza" in normalized:
             return False
         return any(trigger in normalized for trigger in cls._DISCLAIMER_TRIGGERS)
+
+    @classmethod
+    def _is_high_risk_disclaimer_context(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        return any(trigger in normalized for trigger in cls._DISCLAIMER_ALWAYS_TRIGGERS)
 
     @classmethod
     def _starts_warm(cls, text: str) -> bool:
@@ -229,7 +250,7 @@ class LlmReplyService:
         if not stripped:
             return False
         normalized = cls._normalize_text_for_match(stripped[:80])
-        if normalized.startswith(("hola", "claro", "buenisimo", "perfecto", "listo", "vamos")):
+        if normalized.startswith(("hola", "claro", "buenisimo", "genial", "perfecto", "listo", "vamos")):
             return True
         return cls._contains_emoji(stripped[:40])
 
@@ -258,8 +279,36 @@ class LlmReplyService:
                 "cuando quieras",
                 "te ayudo",
                 "vamos paso a paso",
+                "no dudes en",
+                "estoy aqui para ayudarte",
+                "cualquier otra pregunta",
             )
         )
+
+    @classmethod
+    def _is_survey_or_form_text(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        survey_markers = (
+            "formulario de satisfaccion",
+            "encuesta",
+            "formulario",
+            "responde con un numero",
+            "responde: si o no",
+            "autorizas el uso anonimo",
+            "comparte tu correo",
+            "si no deseas compartirlo",
+            "que tan ",
+            "te gustaria probar",
+            "enviame un audio",
+            "enviame una foto",
+            "que te gusto o no te gusto",
+            "completar el formulario",
+            "como no probaste audio",
+            "como no probaste imagen",
+            "del 1 al 10",
+            "del 1 al 5",
+        )
+        return any(marker in normalized for marker in survey_markers)
 
     @classmethod
     def _strip_internal_leaks(cls, text: str) -> str:
@@ -384,9 +433,19 @@ class LlmReplyService:
 
         return re.sub(r"\*([^*\n]+)\*", _repl, text or "")
 
-    def _append_disclaimer_if_needed(self, text: str) -> str:
+    def _append_disclaimer_if_needed(self, text: str, uid: int) -> str:
         if not self._needs_disclaimer(text):
             return text
+        now = datetime.utcnow()
+        cooldown = self._DISCLAIMER_COOLDOWN_MINUTES
+        if self._is_high_risk_disclaimer_context(text):
+            cooldown = self._DISCLAIMER_HIGH_RISK_COOLDOWN_MINUTES
+
+        last_shown = self._DISCLAIMER_LAST_SHOWN_AT_BY_UID.get(uid)
+        if last_shown and (now - last_shown) < timedelta(minutes=cooldown):
+            return text
+
+        self._DISCLAIMER_LAST_SHOWN_AT_BY_UID[uid] = now
         return f"{text.rstrip()}{self._DISCLAIMER}"
 
     def _finalize_text_reply(self, text: str, uid: int) -> str:
@@ -395,13 +454,31 @@ class LlmReplyService:
             logger.warning("Fallback por respuesta vacia en orchestrator user=%s", uid)
             return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
 
+        normalized_first_pass = self._normalize_text_for_match(safe)
+        if any(
+            marker in normalized_first_pass
+            for marker in (
+                "no puedo responder a imagen",
+                "no puedo ver imagen",
+                "no puedo procesar imagen",
+                "no puedo escuchar audio",
+                "no puedo procesar audio",
+            )
+        ):
+            safe = (
+                "Si puedo ayudarte con imagenes y audios 😊 "
+                "Envialo de nuevo y dime que quieres que analice."
+            )
+
         # Pipeline final unico: localizacion -> tono -> markdown WhatsApp -> disclaimer -> trim.
         safe = self._strip_internal_leaks(safe)
         safe = self._localization.peruanize(safe)
-        safe = self.polish_tone(safe)
+        if not self._is_survey_or_form_text(safe):
+            safe = self.polish_tone(safe)
         safe = self.cleanup_whatsapp_markdown(safe)
         safe = self._limit_whatsapp_emphasis(safe, max_pairs=4)
-        safe = self._append_disclaimer_if_needed(safe)
+        if not self._is_survey_or_form_text(safe):
+            safe = self._append_disclaimer_if_needed(safe, uid)
         safe = safe.strip()
 
         if not safe:

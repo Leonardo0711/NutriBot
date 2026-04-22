@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Optional
 
 from application.services.conversation_state_service import ConversationStateService
-from application.services.onboarding_service import ONBOARDING_QUESTIONS, OnboardingService
+from application.services.onboarding_service import OnboardingService
 from application.services.profile_context_service import ProfileContextService
 from domain.entities import ConversationState
 from domain.profile_snapshot import ProfileSnapshot
@@ -64,7 +64,7 @@ class ProfileInterceptionService:
             reply = (
                 "Ya tengo tu perfil completo 😊\n\n"
                 f"{summary}\n\n"
-                "Si quieres cambiar algun dato especifico (como tu peso o talla), solo dimelo directamente en cualquier momento."
+                "Si luego quieres corregir algun dato, como tu peso, talla o alergias, solo dimelo directo y lo actualizo 😊."
             )
         return reply, onboarding_interception_happened
 
@@ -157,12 +157,17 @@ class ProfileInterceptionService:
         snapshot: ProfileSnapshot,
         reply: Optional[str],
     ) -> Optional[str]:
-        """Si el onboarding basico (Phase 1) ya esta completo, sugiere 1 dato de Phase 2 cada ~4 turnos utiles."""
+        """Si el onboarding basico ya esta completo, sugiere personalizacion extra de forma suave."""
         if state.onboarding_status != OnboardingStatus.COMPLETED.value:
             return reply
         if not reply:
             return reply
-        if state.turns_since_last_prompt < 4:
+        if state.awaiting_question_code:
+            return reply
+        normalized_reply = (reply or "").lower()
+        if "tip nutribot" in normalized_reply:
+            return reply
+        if state.turns_since_last_prompt < 22:
             return reply
 
         next_phase2 = await self._onboarding_service._find_next_missing_step(
@@ -174,15 +179,11 @@ class ProfileInterceptionService:
         if not next_phase2:
             return reply
 
-        step_label = self._profile_context.human_step_label(next_phase2)
-        question = ONBOARDING_QUESTIONS.get(next_phase2, "")
-
         self._state_service.set_turns_since_last_prompt(state, 0)
 
         suggestion = (
-            f"\n\nPor cierto, para que mis orientaciones sean aun mas precisas, "
-            f"me podrias compartir tu {step_label}? "
-            f"{question}\n"
-            f"(Si prefieres no decirlo, no hay problema, solo ignora este mensaje.)"
+            "\n\nTip NutriBot: si quieres personalizar mas tu perfil, escribe "
+            "*quiero actualizar mi perfil nutricional*."
         )
         return reply + suggestion
+

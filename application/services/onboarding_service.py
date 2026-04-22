@@ -415,7 +415,13 @@ FORMATO DE SALIDA (JSON):
                     and not self._profile_extractor.contains_absurd_claim(candidate)
                 ):
                     extracted = {"enfermedades": candidate}
-                    await self._profile_extractor.save_clean_data(state.usuario_id, extracted, session)
+                    await self._profile_extractor.save_clean_data(
+                        state.usuario_id,
+                        extracted,
+                        session,
+                        source_text=user_text,
+                        current_step=current_step,
+                    )
                     logger.info("Onboarding fallback: user=%s, enfermedades=%s", state.usuario_id, candidate)
 
         if not extracted:

@@ -4,6 +4,7 @@ Async HTTP adapter for WhatsApp sends via Evolution API.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -48,9 +49,18 @@ class EvolutionApiClient(EvolutionClientPort):
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
             "apikey": self._api_key,
         }
+
+    @staticmethod
+    def _json_bytes(payload: dict[str, Any]) -> bytes:
+        """
+        Serialize payload preserving Unicode characters and forcing UTF-8 bytes.
+        This avoids mojibake in providers that mishandle default charset inference.
+        """
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     async def send_text(self, phone: str, text: str) -> bool:
         result = await self.send_text_with_result(phone, text)
@@ -256,7 +266,7 @@ class EvolutionApiClient(EvolutionClientPort):
     async def _post_detailed(self, url: str, payload: dict) -> DeliveryResult:
         try:
             client = self._get_client()
-            resp = await client.post(url, json=payload, headers=self._headers())
+            resp = await client.post(url, content=self._json_bytes(payload), headers=self._headers())
             body = None
             provider_message_id = None
             try:

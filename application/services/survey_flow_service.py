@@ -45,21 +45,22 @@ class SurveyFlowService:
             if original_mode == SessionMode.COLLECTING_USABILITY.value or is_requesting_survey:
                 final_bot_reply = addon
             elif reply:
-                if addon.content_type == "text":
-                    final_bot_reply = BotReply(text=f"{reply}\n\n{addon.text or ''}", content_type="text")
-                else:
-                    final_bot_reply = BotReply(text=reply, content_type="text")
-                    addon_seed = new_response_id or normalized.provider_message_id
-                    await schedule_separate_message(
-                        session=session,
-                        uid=user.id,
-                        phone=user.numero_whatsapp,
-                        addon=addon,
-                        idemp_key=f"addon:{user.id}:{addon_seed}",
-                    )
+                final_bot_reply = BotReply(text=reply, content_type="text")
+                addon_seed = new_response_id or normalized.provider_message_id
+                await schedule_separate_message(
+                    session=session,
+                    uid=user.id,
+                    phone=user.numero_whatsapp,
+                    addon=addon,
+                    idemp_key=f"addon:{user.id}:{addon_seed}",
+                )
             else:
                 final_bot_reply = addon
-        elif original_mode == SessionMode.COLLECTING_USABILITY.value and reply:
+        elif (
+            original_mode == SessionMode.COLLECTING_USABILITY.value
+            and state.mode == SessionMode.COLLECTING_USABILITY.value
+            and reply
+        ):
             re_anchor = await self._survey_service.get_current_question_reply(session, state)
             if re_anchor:
                 anchor_text = (
@@ -87,4 +88,8 @@ class SurveyFlowService:
             and state.mode == SessionMode.ACTIVE_CHAT.value
             and addon is None
         )
+        if survey_was_interrupted and final_bot_reply.content_type == "text" and final_bot_reply.text:
+            note = "Listo 😊 pausamos la encuesta un momento."
+            if "pausamos la encuesta" not in (final_bot_reply.text or "").lower():
+                final_bot_reply.text = f"{note}\n\n{final_bot_reply.text}"
         return final_bot_reply, survey_was_interrupted

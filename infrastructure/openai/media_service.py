@@ -72,7 +72,10 @@ class DefaultMediaService(MediaService):
                     image_mimetype = msg.media_mimetype or "image/jpeg"
                     # Si la imagen tiene caption, lo usamos como texto
                     if not text:
-                        text = "El usuario envió una imagen."
+                        text = (
+                            "El usuario envio una imagen para analisis nutricional. "
+                            "Describe lo relevante de la imagen y brinda orientacion practica."
+                        )
                 else:
                     text = text or "[Imagen no pudo ser descargada]"
             else:

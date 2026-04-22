@@ -18,7 +18,7 @@ class ProfileReadService:
     _PROFILE_PROJECTION_SQL = text(
         """
         WITH base_user AS (
-            SELECT :uid::bigint AS usuario_id
+            SELECT CAST(:uid AS bigint) AS usuario_id
         ),
         profile_base AS (
             SELECT *
