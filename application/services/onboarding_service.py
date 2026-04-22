@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER, ONBOARDING_PHASE_1, ONBOARDING_PHASE_2
 from domain.utils import get_now_peru
-from domain.parsers import parse_weight, parse_height, standardize_text_list
+from domain.parsers import parse_age, parse_weight, parse_height, standardize_text_list
 from application.services.profile_extraction_service import ProfileExtractionService
 from application.services.profile_read_service import ProfileReadService
 from application.services.nutrition_assessment_service import NutritionAssessmentService

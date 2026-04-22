@@ -26,6 +26,7 @@ CONSENT_STATE = "esperando_consentimiento_encuesta"
 
 FORM_STATES_ORDER = [
     "esperando_correo",
+    "esperando_asegurado_essalud",
     "esperando_p1",
     "esperando_p2",
     "esperando_p3",
@@ -47,25 +48,25 @@ FORM_STATES_ORDER = [
 
 FORM_QUESTIONS: dict[str, str] = {
     "esperando_correo": (
-        "Si te parece, comparte tu correo para avisarte de campañas de salud y nutrición "
-        "cerca de ti."
+        "Si te parece, comparte tu correo."
     ),
-    "esperando_p1": "Que tan realista y atractiva te parecio mi personalidad?",
-    "esperando_p2": "Que tan bien explique mi proposito y alcance?",
-    "esperando_p3": "Que tan facil te pareci de navegar?",
-    "esperando_p4": "Que tan bien sentiste que te entendi?",
-    "esperando_p5": "Que tan utiles e informativas te parecieron mis respuestas?",
-    "esperando_p6": "Que tan bien maneje errores o equivocaciones?",
-    "esperando_p7": "Que tan facil fui de usar?",
+    "esperando_asegurado_essalud": "¿Se encuentra asegurado en EsSalud?",
+    "esperando_p1": "¿Considera que mi personalidad como chatbot resulta realista y atractiva?",
+    "esperando_p2": "¿Diría que la explicación sobre mi propósito y alcance fue suficiente y comprensible?",
+    "esperando_p3": "¿Le resultó sencillo navegar y utilizar mis funciones?",
+    "esperando_p4": "¿Considera que comprendí adecuadamente sus consultas?",
+    "esperando_p5": "Desde su experiencia, ¿mis respuestas le fueron útiles, apropiadas e informativas?",
+    "esperando_p6": "¿Percibió que traté de forma adecuada cualquier error o equivocación?",
+    "esperando_p7": "¿Le resultó fácil y sencillo interactuar conmigo?",
     "esperando_audio_optin": "Por si acaso: tambien tengo modo audio 🎧.",
     "esperando_audio_prueba": "Por si acaso: tambien tengo modo audio 🎧.",
-    "esperando_p8": "Que tan clara te parecio mi experiencia con audio?",
+    "esperando_p8": "¿Considera que mis respuestas en audio fueron claras?",
     "esperando_imagen_optin": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
     "esperando_imagen_prueba": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
-    "esperando_p9": "Que tan bien reconoci el contexto de la imagen?",
-    "esperando_p10": "Que tan bien me enfoque solo en nutrición?",
-    "esperando_nps": "Del 1 al 10, que tan probable es que me recomiendes?",
-    "esperando_comentario": "(Opcional) Que te gusto o no te gusto?",
+    "esperando_p9": "¿Logré interpretar correctamente lo que muestra la imagen que me enviaste?",
+    "esperando_p10": "¿Me enfoqué únicamente en responderte preguntas sobre nutrición?",
+    "esperando_nps": "En una escala del 1 al 10, ¿qué tan probable es que me recomiendes a un amigo o familiar?",
+    "esperando_comentario": "En esta interacción, ¿qué te gustó o no te gustó de mí?",
     "esperando_autorizacion": "Autorizas el uso anonimo y agregado de tus respuestas para investigacion? (Si autorizo / No autorizo)",
 }
 
@@ -113,6 +114,7 @@ class SurveyResponseExtractor:
         "podrias", "podrías", "necesito",
     )
     _INTERRUPTIBLE_STATES = {
+        "esperando_asegurado_essalud",
         "esperando_p1",
         "esperando_p2",
         "esperando_p3",
@@ -250,7 +252,7 @@ class SurveyResponseExtractor:
                 return {"intent": "ANSWER", "value": "LISTO"}
             return None
 
-        if state_name in ("esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
+        if state_name in ("esperando_asegurado_essalud", "esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
             if self._NO_WORDS.search(vl):
                 return {"intent": "ANSWER", "value": "No"}
             if self._YES_WORDS.search(vl):
@@ -524,7 +526,7 @@ class SurveyService:
         elif state_name == "esperando_nps":
             if not has_prefix:
                 lines.append("Responde con un numero del 1 al 10.")
-        elif state_name in {"esperando_autorizacion"}:
+        elif state_name in {"esperando_asegurado_essalud", "esperando_autorizacion"}:
             if not has_prefix:
                 lines.append("Responde: Si o No.")
         elif state_name == "esperando_correo":
@@ -547,8 +549,7 @@ class SurveyService:
 
     def _build_consent_reply(self) -> BotReply:
         text_msg = (
-            "Gracias por tu tiempo. Quiero hacerte unas preguntas cortas "
-            "del formulario de satisfacción.\n\n"
+            "¿Me podrías ayudar a seguir mejorando contestando algunas preguntas?\n\n"
             "Si estás de acuerdo, empezamos."
         )
         return BotReply(text=text_msg, content_type="text")
@@ -637,6 +638,8 @@ class SurveyService:
         nps = self._parse_int(parciales.get("nps"), 1, 10)
         autorizo = self._normalize_auth(parciales.get("autorizacion"))
         comentario = parciales.get("comentario")
+        asegurado_essalud = self._normalize_auth(parciales.get("asegurado_essalud"))
+        asegurado_essalud_text = None if asegurado_essalud is None else ("Si" if asegurado_essalud else "No")
 
         audio_evaluado = self._parse_int(parciales.get("p8"), 1, 5) is not None
         audio_no_aplica = bool(parciales.get("p8_no_aplica"))
@@ -648,17 +651,18 @@ class SurveyService:
                 """
                 INSERT INTO respuestas_formulario (
                     formulario_id, usuario_id, correo, correo_proporcionado,
-                    comentario, autorizo_uso_investigacion, puntaje_nps,
+                    asegurado_essalud, comentario, autorizo_uso_investigacion, puntaje_nps,
                     audio_evaluado, audio_no_aplica, imagen_evaluada, imagen_no_aplica
                 )
                 VALUES (
                     :fid, :uid, :correo, :correo_proporcionado,
-                    :comentario, :autorizo, :nps,
+                    :asegurado_essalud, :comentario, :autorizo, :nps,
                     :audio_evaluado, :audio_no_aplica, :imagen_evaluada, :imagen_no_aplica
                 )
                 ON CONFLICT (formulario_id, usuario_id) DO UPDATE SET
                     correo = EXCLUDED.correo,
                     correo_proporcionado = EXCLUDED.correo_proporcionado,
+                    asegurado_essalud = EXCLUDED.asegurado_essalud,
                     comentario = EXCLUDED.comentario,
                     autorizo_uso_investigacion = EXCLUDED.autorizo_uso_investigacion,
                     puntaje_nps = EXCLUDED.puntaje_nps,
@@ -674,6 +678,7 @@ class SurveyService:
                 "uid": state.usuario_id,
                 "correo": correo,
                 "correo_proporcionado": correo_proporcionado,
+                "asegurado_essalud": asegurado_essalud_text,
                 "comentario": comentario,
                 "autorizo": autorizo,
                 "nps": nps,
@@ -1077,6 +1082,12 @@ class SurveyService:
                         hint = "La respuesta debe ser un numero del 1 al 10."
                     return self._build_question_reply(current_state, prefix=hint)
                 cleaned_value = str(parsed)
+
+            if current_state == "esperando_asegurado_essalud":
+                insured = self._normalize_auth(cleaned_value)
+                if insured is None:
+                    return self._build_question_reply(current_state)
+                cleaned_value = "Si" if insured else "No"
 
             if current_state == "esperando_autorizacion":
                 auth = self._normalize_auth(cleaned_value)

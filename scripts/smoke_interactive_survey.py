@@ -341,6 +341,11 @@ class SmokeInteractiveSurvey:
         # Email
         mid = self._next_mid(prefix)
         await self._send_and_wait(build_text(phone, mid, f"qa_{case_name}@example.com"), {"ok"})
+        await self._assert_state(uid, "collecting_usability", "esperando_asegurado_essalud")
+
+        # EsSalud insured
+        mid = self._next_mid(prefix)
+        await self._send_and_wait(build_text(phone, mid, "Si"), {"ok"})
         await self._assert_state(uid, "collecting_usability", "esperando_p1")
 
         # P1..P7
@@ -481,4 +486,3 @@ async def _amain() -> None:
 
 if __name__ == "__main__":
     asyncio.run(_amain())
-
