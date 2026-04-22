@@ -57,11 +57,11 @@ FORM_QUESTIONS: dict[str, str] = {
     "esperando_p5": "Que tan utiles e informativas te parecieron mis respuestas?",
     "esperando_p6": "Que tan bien maneje errores o equivocaciones?",
     "esperando_p7": "Que tan facil fui de usar?",
-    "esperando_audio_optin": "Te gustaria probar mi modo audio para luego evaluarlo?",
-    "esperando_audio_prueba": "Enviame un audio cortito para poder evaluar esa funcion.",
+    "esperando_audio_optin": "Por si acaso: tambien tengo modo audio 🎧.",
+    "esperando_audio_prueba": "Por si acaso: tambien tengo modo audio 🎧.",
     "esperando_p8": "Que tan clara te parecio mi experiencia con audio?",
-    "esperando_imagen_optin": "Te gustaria probar reconocimiento de imagenes para luego evaluarlo?",
-    "esperando_imagen_prueba": "Enviame una foto o imagen para poder evaluar esa funcion.",
+    "esperando_imagen_optin": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
+    "esperando_imagen_prueba": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
     "esperando_p9": "Que tan bien reconoci el contexto de la imagen?",
     "esperando_p10": "Que tan bien me enfoque solo en nutrición?",
     "esperando_nps": "Del 1 al 10, que tan probable es que me recomiendes?",
@@ -130,6 +130,19 @@ class SurveyResponseExtractor:
         "esperando_audio_prueba",
         "esperando_imagen_optin",
         "esperando_imagen_prueba",
+    }
+    _MEDIA_READY_WORDS = {
+        "listo",
+        "lista",
+        "ok",
+        "okay",
+        "dale",
+        "continuar",
+        "continua",
+        "continuemos",
+        "pasemos",
+        "ya",
+        "yap",
     }
 
     def __init__(self, openai_client: AsyncOpenAI, model: str):
@@ -227,6 +240,16 @@ class SurveyResponseExtractor:
         if state_name in self._INTERRUPTIBLE_STATES and self._looks_like_useful_chat_question(vl):
             return {"intent": "INTERRUPT", "value": None}
 
+        if state_name in {"esperando_audio_prueba", "esperando_imagen_prueba"}:
+            if self._NO_WORDS.search(vl):
+                return {"intent": "SKIP", "value": None}
+            token = SurveyService._normalize_token(vl)
+            if token in self._MEDIA_READY_WORDS:
+                return {"intent": "ANSWER", "value": "LISTO"}
+            if "listo" in vl or "continu" in vl or "pasemos" in vl:
+                return {"intent": "ANSWER", "value": "LISTO"}
+            return None
+
         if state_name in ("esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
             if self._NO_WORDS.search(vl):
                 return {"intent": "ANSWER", "value": "No"}
@@ -283,6 +306,12 @@ class SurveyResponseExtractor:
 
 
 class SurveyService:
+    _FEATURE_STATES = {
+        "esperando_audio_optin",
+        "esperando_audio_prueba",
+        "esperando_imagen_optin",
+        "esperando_imagen_prueba",
+    }
     _NUMBER_WORDS = {
         "cero": 0,
         "uno": 1,
@@ -380,6 +409,14 @@ class SurveyService:
         return None
 
     @staticmethod
+    def _wants_finish_media_test(value: Any, raw_text: str) -> bool:
+        token = SurveyService._normalize_token(value if value is not None else raw_text)
+        if token in {"listo", "lista", "ok", "okay", "dale", "continuar", "continua", "continuemos", "pasemos", "ya", "yap"}:
+            return True
+        low = str(raw_text or "").lower()
+        return ("listo" in low) or ("continu" in low) or ("pasemos" in low)
+
+    @staticmethod
     def _is_audio_message(normalized: NormalizedMessage) -> bool:
         return normalized.content_type in (MessageType.AUDIO, MessageType.PTT) or bool(normalized.used_audio)
 
@@ -394,6 +431,83 @@ class SurveyService:
             or bool(normalized.image_base64)
             or bool(normalized.used_audio)
         )
+
+    @staticmethod
+    def _merge_prefix(*parts: str) -> str:
+        clean_parts: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            txt = str(part or "").strip()
+            if not txt:
+                continue
+            key = SurveyService._normalize_token(txt)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean_parts.append(txt)
+        return "\n\n".join(clean_parts)
+
+    def _advance_feature_state_by_usage(
+        self,
+        *,
+        current_state: str,
+        parciales: dict,
+        uso_audio: bool,
+        uso_imagen: bool,
+    ) -> tuple[str, str]:
+        if current_state in {"esperando_audio_optin", "esperando_audio_prueba"}:
+            if uso_audio:
+                return (
+                    "esperando_p8",
+                    "Excelente 🙌 como ya usaste el modo audio, ahora si cuentame del 1 al 5 como te fue.",
+                )
+            parciales["p8_no_aplica"] = True
+            parciales.pop("p8", None)
+            return (
+                "esperando_imagen_optin",
+                "Tip NutriBot: tambien tengo modo audio 🎧. Cuando quieras probarlo, solo enviame una consulta por voz.",
+            )
+
+        if current_state in {"esperando_imagen_optin", "esperando_imagen_prueba"}:
+            if uso_imagen:
+                return (
+                    "esperando_p9",
+                    "Excelente 🙌 como ya usaste imagen, ahora si cuentame del 1 al 5 como te fue.",
+                )
+            parciales["p9_no_aplica"] = True
+            parciales.pop("p9", None)
+            return (
+                "esperando_p10",
+                "Tip NutriBot: tambien tengo reconocimiento de imagen 🖼️. Cuando quieras probarlo, enviame una foto de comida o etiqueta nutricional.",
+            )
+
+        return current_state, ""
+
+    def _auto_skip_feature_states(
+        self,
+        *,
+        next_state: Optional[str],
+        parciales: dict,
+        uso_audio: bool,
+        uso_imagen: bool,
+    ) -> tuple[Optional[str], str]:
+        info_parts: list[str] = []
+        state_cursor = next_state
+        guard = 0
+        while state_cursor in self._FEATURE_STATES and guard < 8:
+            guard += 1
+            advanced_state, info = self._advance_feature_state_by_usage(
+                current_state=state_cursor,
+                parciales=parciales,
+                uso_audio=uso_audio,
+                uso_imagen=uso_imagen,
+            )
+            if info:
+                info_parts.append(info)
+            if advanced_state == state_cursor:
+                break
+            state_cursor = advanced_state
+        return state_cursor, self._merge_prefix(*info_parts)
 
     def _build_question_reply(self, state_name: str, prefix: str = "") -> BotReply:
         question = FORM_QUESTIONS.get(state_name, "")
@@ -410,7 +524,7 @@ class SurveyService:
         elif state_name == "esperando_nps":
             if not has_prefix:
                 lines.append("Responde con un numero del 1 al 10.")
-        elif state_name in {"esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion"}:
+        elif state_name in {"esperando_autorizacion"}:
             if not has_prefix:
                 lines.append("Responde: Si o No.")
         elif state_name == "esperando_correo":
@@ -847,65 +961,60 @@ class SurveyService:
 
         transition_prefix = ""
 
-        if current_state == "esperando_audio_optin":
-            txt = str(value or "").lower()
-            if txt in {"si", "yes"}:
-                audio_test_requested = True
-                next_state = "esperando_audio_prueba"
-            elif txt in {"no"} or intent == "SKIP":
-                audio_test_declined = True
-                parciales["p8_no_aplica"] = True
-                parciales.pop("p8", None)
-                transition_prefix = "Como no probaste audio, esa pregunta no aplica."
-                next_state = "esperando_imagen_optin"
-            else:
-                return self._build_question_reply(current_state)
-        elif current_state == "esperando_audio_prueba":
-            if self._is_audio_message(normalized):
-                uso_audio = True
-                audio_test_completed = True
-                next_state = "esperando_p8"
-            elif intent == "SKIP" or str(value or "").lower() in {"no"}:
-                audio_test_declined = True
-                parciales["p8_no_aplica"] = True
-                parciales.pop("p8", None)
-                transition_prefix = "Como no probaste audio, esa pregunta no aplica."
-                next_state = "esperando_imagen_optin"
-            else:
-                return BotReply(
-                    text="Para evaluar audio, enviame una nota de voz real. Si prefieres omitirlo, escribe 'omitir'.",
-                    content_type="text",
+        if current_state in self._FEATURE_STATES:
+            next_state, transition_prefix = self._advance_feature_state_by_usage(
+                current_state=current_state,
+                parciales=parciales,
+                uso_audio=uso_audio,
+                uso_imagen=uso_imagen,
+            )
+            if not next_state:
+                await self._persist_progress(
+                    session=session,
+                    progress_id=progress.id,
+                    parciales=parciales,
+                    next_state="completado",
+                    audio_test_requested=audio_test_requested,
+                    audio_test_completed=audio_test_completed,
+                    audio_test_declined=audio_test_declined,
+                    image_test_requested=image_test_requested,
+                    image_test_completed=image_test_completed,
+                    image_test_declined=image_test_declined,
+                    uso_audio=uso_audio,
+                    uso_imagen=uso_imagen,
                 )
-        elif current_state == "esperando_imagen_optin":
-            txt = str(value or "").lower()
-            if txt in {"si", "yes"}:
-                image_test_requested = True
-                next_state = "esperando_imagen_prueba"
-            elif txt in {"no"} or intent == "SKIP":
-                image_test_declined = True
-                parciales["p9_no_aplica"] = True
-                parciales.pop("p9", None)
-                transition_prefix = "Como no probaste imagen, esa pregunta no aplica."
-                next_state = "esperando_p10"
-            else:
-                return self._build_question_reply(current_state)
-        elif current_state == "esperando_imagen_prueba":
-            if self._is_image_message(normalized):
-                uso_imagen = True
-                image_test_completed = True
-                next_state = "esperando_p9"
-            elif intent == "SKIP" or str(value or "").lower() in {"no"}:
-                image_test_declined = True
-                parciales["p9_no_aplica"] = True
-                parciales.pop("p9", None)
-                transition_prefix = "Como no probaste imagen, esa pregunta no aplica."
-                next_state = "esperando_p10"
-            else:
-                return BotReply(
-                    text="Para evaluar imagen, enviame una foto real. Si prefieres omitirlo, escribe 'omitir'.",
-                    content_type="text",
-                )
-        else:
+                await self._persist_final_results(session, progress, parciales, state)
+                state.usability_completion_pct = 100
+                state.mode = "active_chat"
+                state.awaiting_question_code = None
+                return BotReply(text="Muchas gracias por completar el formulario.", content_type="text")
+
+            next_state, auto_info = self._auto_skip_feature_states(
+                next_state=next_state,
+                parciales=parciales,
+                uso_audio=uso_audio,
+                uso_imagen=uso_imagen,
+            )
+            transition_prefix = self._merge_prefix(transition_prefix, auto_info)
+
+            await self._persist_progress(
+                session=session,
+                progress_id=progress.id,
+                parciales=parciales,
+                next_state=next_state,
+                audio_test_requested=audio_test_requested,
+                audio_test_completed=audio_test_completed,
+                audio_test_declined=audio_test_declined,
+                image_test_requested=image_test_requested,
+                image_test_completed=image_test_completed,
+                image_test_declined=image_test_declined,
+                uso_audio=uso_audio,
+                uso_imagen=uso_imagen,
+            )
+            state.awaiting_question_code = next_state
+            return self._build_question_reply(next_state, prefix=transition_prefix)
+
+        if current_state not in self._FEATURE_STATES:
             field_key = current_state.replace("esperando_", "")
             cleaned_value = value
             if current_state == "esperando_correo":
@@ -978,6 +1087,13 @@ class SurveyService:
             parciales[field_key] = cleaned_value
             idx = FORM_STATES_ORDER.index(current_state)
             next_state = FORM_STATES_ORDER[idx + 1] if idx + 1 < len(FORM_STATES_ORDER) else None
+            next_state, auto_info = self._auto_skip_feature_states(
+                next_state=next_state,
+                parciales=parciales,
+                uso_audio=uso_audio,
+                uso_imagen=uso_imagen,
+            )
+            transition_prefix = self._merge_prefix(transition_prefix, auto_info)
 
         if next_state is None:
             await self._persist_progress(
