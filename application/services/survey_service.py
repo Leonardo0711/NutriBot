@@ -48,7 +48,7 @@ FORM_STATES_ORDER = [
 FORM_QUESTIONS: dict[str, str] = {
     "esperando_correo": (
         "Si te parece, comparte tu correo para avisarte de campañas de salud y nutrición "
-        "cerca de ti (opcional)."
+        "cerca de ti."
     ),
     "esperando_p1": "Que tan realista y atractiva te parecio mi personalidad?",
     "esperando_p2": "Que tan bien explique mi proposito y alcance?",
@@ -70,8 +70,7 @@ FORM_QUESTIONS: dict[str, str] = {
 }
 
 EMAIL_REASK_COPY = (
-    "Tu correo es opcional, pero ayuda a enviarte avisos de campañas de salud y nutrición "
-    "cerca de ti.\n\n"
+    "Tu correo ayuda a enviarte avisos de campañas de salud y nutrición cerca de ti.\n\n"
     "Si deseas, compártelo ahora. Si no, escribe *no* y seguimos con la encuesta."
 )
 
@@ -95,13 +94,23 @@ class SurveyResponseExtractor:
 
     _SKIP_EXACT = {"paso", "saltar", "skip", "no quiero", "siguiente", "prefiero no", "omitir"}
     _CANCEL_PHRASES = {"cancelar todo", "detener bot", "salir de todo", "stop survey"}
-    _YES_WORDS = re.compile(r"(?:\b|^)(si|sí|sii|sip|yes|claro|dale|ok|de acuerdo|acepto|autorizo)(?:\b|$)", re.IGNORECASE)
+    _YES_WORDS = re.compile(r"(?:\b|^)(si|sí|sii|sip|yes|claro|dale|ok|de acuerdo|acepto|autorizo|ya|yap|yaa)(?:\b|$)", re.IGNORECASE)
     _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(para que|por que|que uso|que finalidad)", re.IGNORECASE)
     _NUTRITION_HINTS = (
         "menu", "receta", "dieta", "imc", "calorias", "desayuno", "almuerzo",
         "cena", "peso", "talla", "proteina", "carbohidratos", "grasa",
         "nutricion", "plan alimentario", "porciones", "macros",
+    )
+    _USEFUL_CHAT_HINTS = (
+        "quiero", "necesito", "ayudame", "ayudame con", "me ayudas", "me recomiendas",
+        "recomendacion", "recomendaciones", "como bajo", "como subir", "como mejorar",
+        "que puedo comer", "que debo comer", "puedo comer", "entrenamiento", "ejercicio",
+        "sobrepeso", "obesidad", "azucar", "glucosa", "presion", "hipertension",
+    )
+    _QUESTION_STARTS = (
+        "como", "que", "cual", "cuanto", "puedo", "debo", "quiero", "me ayudas",
+        "podrias", "podrías", "necesito",
     )
     _INTERRUPTIBLE_STATES = {
         "esperando_p1",
@@ -136,6 +145,21 @@ class SurveyResponseExtractor:
             if " " not in hint and re.search(rf"\b{re.escape(hint)}\b", low):
                 return True
         return False
+
+    @classmethod
+    def _looks_like_useful_chat_question(cls, text: str) -> bool:
+        low = (text or "").strip().lower()
+        if not low:
+            return False
+
+        if cls._contains_nutrition_hint(low):
+            return True
+
+        has_question_shape = ("?" in low) or any(low.startswith(prefix + " ") for prefix in cls._QUESTION_STARTS)
+        if not has_question_shape:
+            return False
+
+        return any(hint in low for hint in cls._USEFUL_CHAT_HINTS)
 
     def extract_structured(
         self,
@@ -193,18 +217,21 @@ class SurveyResponseExtractor:
             match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", v)
             if match:
                 return {"intent": "ANSWER", "value": match.group(0)}
-            if self._contains_nutrition_hint(vl):
+            if self._looks_like_useful_chat_question(vl):
                 return {"intent": "INTERRUPT", "value": None}
             return None
 
-        if state_name in self._INTERRUPTIBLE_STATES and self._contains_nutrition_hint(vl):
+        if state_name == CONSENT_STATE and self._looks_like_useful_chat_question(vl):
+            return {"intent": "INTERRUPT", "value": None}
+
+        if state_name in self._INTERRUPTIBLE_STATES and self._looks_like_useful_chat_question(vl):
             return {"intent": "INTERRUPT", "value": None}
 
         if state_name in ("esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
-            if self._YES_WORDS.search(vl):
-                return {"intent": "ANSWER", "value": "Si"}
             if self._NO_WORDS.search(vl):
                 return {"intent": "ANSWER", "value": "No"}
+            if self._YES_WORDS.search(vl):
+                return {"intent": "ANSWER", "value": "Si"}
             return None
 
         if state_name.startswith("esperando_p") or state_name == "esperando_nps":
@@ -214,7 +241,7 @@ class SurveyResponseExtractor:
             return {"intent": "ANSWER", "value": v}
 
         if state_name == "esperando_comentario":
-            if self._contains_nutrition_hint(vl):
+            if self._looks_like_useful_chat_question(vl):
                 return {"intent": "INTERRUPT", "value": None}
             if vl in {"no", "nada", "ninguno"}:
                 return {"intent": "ANSWER", "value": None}
@@ -774,30 +801,6 @@ class SurveyService:
         result = await self.extractor.extract(current_state, normalized.text, normalized.interactive_id)
         intent = str(result.get("intent", "ANSWER")).upper()
         value = result.get("value")
-
-        if intent == "CANCEL":
-            state.mode = "active_chat"
-            state.awaiting_question_code = None
-            return BotReply(text="Entendido, dejamos el formulario por ahora.", content_type="text")
-        if intent == "INTERRUPT":
-            await self._persist_progress(
-                session=session,
-                progress_id=progress.id,
-                parciales=parciales,
-                next_state=current_state,
-                audio_test_requested=bool(getattr(progress, "audio_test_requested", False)),
-                audio_test_completed=bool(getattr(progress, "audio_test_completed", False)),
-                audio_test_declined=bool(getattr(progress, "audio_test_declined", False)),
-                image_test_requested=bool(getattr(progress, "image_test_requested", False)),
-                image_test_completed=bool(getattr(progress, "image_test_completed", False)),
-                image_test_declined=bool(getattr(progress, "image_test_declined", False)),
-                uso_audio=bool(getattr(progress, "uso_audio", False)),
-                uso_imagen=bool(getattr(progress, "uso_imagen", False)),
-            )
-            state.mode = "active_chat"
-            state.awaiting_question_code = None
-            return None
-
         audio_test_requested = bool(getattr(progress, "audio_test_requested", False))
         audio_test_completed = bool(getattr(progress, "audio_test_completed", False))
         audio_test_declined = bool(getattr(progress, "audio_test_declined", False))
@@ -806,6 +809,42 @@ class SurveyService:
         image_test_declined = bool(getattr(progress, "image_test_declined", False))
         uso_audio = bool(getattr(progress, "uso_audio", False))
         uso_imagen = bool(getattr(progress, "uso_imagen", False))
+
+        if intent == "CANCEL":
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return BotReply(text="Entendido, dejamos el formulario por ahora.", content_type="text")
+        if intent == "INTERRUPT":
+            interrupt_next_state = current_state
+            if current_state == "esperando_audio_prueba" and not self._is_audio_message(normalized):
+                audio_test_declined = True
+                parciales["p8_no_aplica"] = True
+                parciales.pop("p8", None)
+                interrupt_next_state = "esperando_imagen_optin"
+            elif current_state == "esperando_imagen_prueba" and not self._is_image_message(normalized):
+                image_test_declined = True
+                parciales["p9_no_aplica"] = True
+                parciales.pop("p9", None)
+                interrupt_next_state = "esperando_p10"
+
+            await self._persist_progress(
+                session=session,
+                progress_id=progress.id,
+                parciales=parciales,
+                next_state=interrupt_next_state,
+                audio_test_requested=bool(getattr(progress, "audio_test_requested", False)),
+                audio_test_completed=bool(getattr(progress, "audio_test_completed", False)),
+                audio_test_declined=audio_test_declined,
+                image_test_requested=bool(getattr(progress, "image_test_requested", False)),
+                image_test_completed=bool(getattr(progress, "image_test_completed", False)),
+                image_test_declined=image_test_declined,
+                uso_audio=bool(getattr(progress, "uso_audio", False)),
+                uso_imagen=bool(getattr(progress, "uso_imagen", False)),
+            )
+            state.mode = "active_chat"
+            state.awaiting_question_code = None
+            return None
+
         transition_prefix = ""
 
         if current_state == "esperando_audio_optin":
@@ -873,8 +912,8 @@ class SurveyService:
                 if intent == "WHY":
                     return BotReply(
                         text=(
-                            "Te lo pido solo para avisarte campañas de salud y nutrición cerca de ti. "
-                            "Es opcional.\n\nPuedes compartir tu correo o escribir *no* para continuar."
+                            "Te lo pido para avisarte campañas de salud y nutrición cerca de ti.\n\n"
+                            "Puedes compartir tu correo o escribir *no* para continuar."
                         ),
                         content_type="text",
                     )

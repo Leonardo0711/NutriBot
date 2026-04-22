@@ -4,8 +4,11 @@ Servicio de Aplicación Orientado a Objetos para extraer perfil.
 """
 import json
 import logging
+import math
 import re
 import unicodedata
+from datetime import timedelta
+from difflib import SequenceMatcher
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
@@ -28,6 +31,17 @@ class ProfileExtractionService:
     OP_REPLACE = "REPLACE"
     OP_ADD = "ADD"
     OP_REMOVE = "REMOVE"
+    MEASUREMENT_CORRECTION = "CORRECTION"
+    MEASUREMENT_HISTORICAL_UPDATE = "HISTORICAL_UPDATE"
+    SEMANTIC_SCOPE_PROFILE_FIELD = "PROFILE_FIELD"
+    SEMANTIC_EMBED_MODEL = "text-embedding-3-small"
+    SEMANTIC_ENTITY_TYPE_BY_TABLE = {
+        "mae_enfermedad_cie10": "ENFERMEDAD_CIE10",
+        "mae_restriccion_alimentaria": "RESTRICCION_ALIMENTARIA",
+        "mae_patron_alimentario": "PATRON_ALIMENTARIO",
+        "mae_objetivo_nutricional": "OBJETIVO_NUTRICIONAL",
+        "mae_distrito": "DISTRITO",
+    }
 
     ABSURD_TERMS = {
         "sayayin",
@@ -247,7 +261,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         valid = aliases.get(field, {field})
         return step in valid
 
-    def _infer_measurement_correction_mode(
+    def _classify_measurement_update(
         self,
         *,
         source_text: str,
@@ -255,7 +269,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         current_step: Optional[str],
         current_measurement_row: Optional[dict[str, Any]],
         now_peru,
-    ) -> bool:
+    ) -> str:
         has_correction_marker = self._contains_any_marker(source_text, self.CORRECTION_MARKERS)
         has_time_change_marker = self._contains_any_marker(source_text, self.CHANGE_OVER_TIME_MARKERS)
         matches_step = self._step_matches_field(current_step, field_code)
@@ -268,13 +282,20 @@ REGLAS CRITICAS DE ROBUSTEZ:
             except Exception:
                 recent_current = False
 
+        # Regla 1: si menciona explicitamente correccion, tratamos como correction.
         if has_correction_marker and not has_time_change_marker:
-            return True
-        if matches_step:
-            return True
-        if recent_current and has_correction_marker:
-            return True
-        return False
+            return self.MEASUREMENT_CORRECTION
+
+        # Regla 2: si menciona cambio temporal ("ahora peso", "he bajado"), tratamos como historico.
+        if has_time_change_marker and not has_correction_marker:
+            return self.MEASUREMENT_HISTORICAL_UPDATE
+
+        # Regla 3: respuesta al mismo paso en onboarding o dato recien registrado: correccion.
+        if matches_step or recent_current:
+            return self.MEASUREMENT_CORRECTION
+
+        # Regla 4: por defecto fuera de onboarding, consideramos actualizacion historica.
+        return self.MEASUREMENT_HISTORICAL_UPDATE
 
     def _infer_list_operation(
         self,
@@ -343,6 +364,305 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 return 0.9
         return 0.0
 
+    @staticmethod
+    def _build_embedding_literal(values: list[float]) -> Optional[str]:
+        if not values:
+            return None
+        cleaned: list[str] = []
+        for val in values:
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(num):
+                return None
+            cleaned.append(f"{num:.12g}")
+        return "[" + ",".join(cleaned) + "]"
+
+    async def _semantic_cache_get(
+        self,
+        session: AsyncSession,
+        *,
+        field_code: str,
+        query_normalized: str,
+    ) -> Optional[dict[str, Any]]:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, entidad_tipo_resuelta, entidad_codigo_resuelto, estrategia_usada, confidence, expires_at
+                    FROM semantic_resolution_cache
+                    WHERE scope = :scope
+                      AND field_code = :field
+                      AND query_normalizada = :qnorm
+                      AND (expires_at IS NULL OR expires_at > :now)
+                    ORDER BY actualizado_en DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                    "field": field_code,
+                    "qnorm": query_normalized,
+                    "now": get_now_peru(),
+                },
+            )
+        ).mappings().first()
+        if not row:
+            return None
+        try:
+            await session.execute(
+                text(
+                    """
+                    UPDATE semantic_resolution_cache
+                    SET hit_count = COALESCE(hit_count, 0) + 1,
+                        actualizado_en = :now
+                    WHERE id = :id
+                    """
+                ),
+                {"id": row.get("id"), "now": get_now_peru()},
+            )
+        except Exception:
+            logger.debug("No se pudo incrementar hit_count de semantic_resolution_cache id=%s", row.get("id"))
+        return dict(row)
+
+    async def _semantic_cache_put(
+        self,
+        session: AsyncSession,
+        *,
+        field_code: str,
+        raw_query: str,
+        query_normalized: str,
+        entity_type: Optional[str],
+        entity_code: Optional[str],
+        strategy: str,
+        confidence: float,
+        top_candidates: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        now_peru = get_now_peru()
+        expires_at = now_peru + timedelta(days=180)
+        await session.execute(
+            text(
+                """
+                INSERT INTO semantic_resolution_cache (
+                    scope, field_code, query_texto, query_normalizada,
+                    entidad_tipo_resuelta, entidad_codigo_resuelto,
+                    estrategia_usada, confidence, compatible_con_reglas,
+                    top_candidates_json, hit_count, expires_at, creado_en, actualizado_en
+                )
+                VALUES (
+                    :scope, :field, :qtext, :qnorm,
+                    :etype, :ecode,
+                    :strategy, :confidence, TRUE,
+                    CAST(:candidates AS jsonb), 1, :expires_at, :now, :now
+                )
+                ON CONFLICT (scope, field_code, query_normalizada) DO UPDATE SET
+                    entidad_tipo_resuelta = EXCLUDED.entidad_tipo_resuelta,
+                    entidad_codigo_resuelto = EXCLUDED.entidad_codigo_resuelto,
+                    estrategia_usada = EXCLUDED.estrategia_usada,
+                    confidence = EXCLUDED.confidence,
+                    top_candidates_json = EXCLUDED.top_candidates_json,
+                    expires_at = EXCLUDED.expires_at,
+                    actualizado_en = EXCLUDED.actualizado_en
+                """
+            ),
+            {
+                "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                "field": field_code,
+                "qtext": raw_query,
+                "qnorm": query_normalized,
+                "etype": entity_type,
+                "ecode": entity_code,
+                "strategy": strategy,
+                "confidence": float(max(0.0, min(confidence, 1.0))),
+                "candidates": json.dumps(top_candidates or [], ensure_ascii=False),
+                "expires_at": expires_at,
+                "now": now_peru,
+            },
+        )
+
+    @classmethod
+    def _find_row_by_code(
+        cls,
+        rows: list[dict[str, Any]],
+        code: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        target = cls._normalize_text(code)
+        if not target:
+            return None
+        for row in rows:
+            if cls._normalize_text(row.get("codigo")) == target:
+                return row
+        return None
+
+    async def _resolve_alias_match(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        query_normalized: str,
+        rows: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if not entity_type or not query_normalized:
+            return None
+        alias_row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT entidad_codigo
+                    FROM mae_alias_semantico
+                    WHERE entidad_tipo = :etype
+                      AND alias_normalizado = :alias
+                      AND activo = TRUE
+                    ORDER BY prioridad DESC, es_canonico DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"etype": entity_type, "alias": query_normalized},
+            )
+        ).mappings().first()
+        if not alias_row:
+            return None
+        return self._find_row_by_code(rows, alias_row.get("entidad_codigo"))
+
+    async def _resolve_trgm_match(
+        self,
+        session: AsyncSession,
+        *,
+        table_name: str,
+        code_column: str,
+        name_column: str,
+        extra_where: str,
+        query_normalized: str,
+    ) -> Optional[dict[str, Any]]:
+        if not query_normalized:
+            return None
+        try:
+            # Aisla fallos de extensiones opcionales (pg_trgm) sin abortar
+            # la transaccion principal del turno.
+            async with session.begin_nested():
+                row = (
+                    await session.execute(
+                        text(
+                            f"""
+                            SELECT
+                                id,
+                                {code_column} AS codigo,
+                                {name_column} AS nombre,
+                                GREATEST(
+                                    COALESCE(similarity(lower(CAST({code_column} AS text)), CAST(:qnorm AS text)), 0),
+                                    COALESCE(similarity(lower(CAST({name_column} AS text)), CAST(:qnorm AS text)), 0)
+                                ) AS score
+                            FROM {table_name}
+                            WHERE activo = TRUE
+                              AND {extra_where}
+                              AND (
+                                lower(CAST({code_column} AS text)) %% CAST(:qnorm AS text)
+                                OR lower(CAST({name_column} AS text)) %% CAST(:qnorm AS text)
+                              )
+                            ORDER BY score DESC, id ASC
+                            LIMIT 1
+                            """
+                        ),
+                        {"qnorm": query_normalized},
+                    )
+                ).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            logger.debug("TRGM no disponible para %s", table_name, exc_info=True)
+            return None
+
+    async def _resolve_vector_match(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        query_text: str,
+        rows: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if not self._openai_client or not entity_type or not query_text:
+            return None
+        try:
+            emb_resp = await self._openai_client.embeddings.create(
+                input=[query_text],
+                model=self.SEMANTIC_EMBED_MODEL,
+            )
+            embedding = emb_resp.data[0].embedding
+            literal = self._build_embedding_literal(embedding)
+            if not literal:
+                return None
+
+            # Aisla fallos de pgvector/tablas opcionales sin abortar el turno.
+            async with session.begin_nested():
+                cat_row = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT entidad_codigo, (embedding <=> CAST(:emb AS vector)) AS distance
+                            FROM semantic_catalog
+                            WHERE entidad_tipo = :etype
+                              AND activo = TRUE
+                              AND embedding IS NOT NULL
+                            ORDER BY embedding <=> CAST(:emb AS vector)
+                            LIMIT 1
+                            """
+                        ),
+                        {"etype": entity_type, "emb": literal},
+                    )
+                ).mappings().first()
+            if not cat_row:
+                return None
+            master_row = self._find_row_by_code(rows, cat_row.get("entidad_codigo"))
+            if not master_row:
+                return None
+            score = 1.0 - float(cat_row.get("distance") or 1.0)
+            return {
+                "id": master_row.get("id"),
+                "codigo": master_row.get("codigo"),
+                "nombre": master_row.get("nombre"),
+                "score": max(0.0, min(score, 1.0)),
+            }
+        except Exception:
+            logger.debug("Vector fallback no disponible para entidad_tipo=%s", entity_type, exc_info=True)
+            return None
+
+    async def _resolve_llm_fallback(
+        self,
+        *,
+        query_text: str,
+        candidates: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if not self._openai_client or not candidates:
+            return None
+        shortlist = candidates[:8]
+        prompt = (
+            "Usuario dijo: "
+            f"'{query_text}'.\n"
+            "Elige el codigo mas probable de la lista o null si ninguno aplica.\n"
+            f"Candidatos: {json.dumps(shortlist, ensure_ascii=False)}\n"
+            "Responde JSON con {'codigo': <string|null>, 'confidence': <0-1>}."
+        )
+        try:
+            resp = await self._openai_client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": "Resuelve entidades de catalogo con criterio conservador."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=120,
+            )
+            data = json.loads(resp.choices[0].message.content or "{}")
+            code = data.get("codigo")
+            conf = float(data.get("confidence") or 0.0)
+            if not code or conf < 0.7:
+                return None
+            return {"codigo": str(code), "score": max(0.0, min(conf, 1.0))}
+        except Exception:
+            logger.debug("LLM fallback de resolucion semantica no disponible", exc_info=True)
+            return None
+
     async def _resolve_master_id(
         self,
         session: AsyncSession,
@@ -360,6 +680,12 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if not target_norm or self._is_negative_value(raw_value):
             return None
 
+        cache = await self._semantic_cache_get(
+            session,
+            field_code=table_name,
+            query_normalized=target_norm,
+        )
+
         query = text(
             f"""
             SELECT id, {code_column} AS codigo, {name_column} AS nombre
@@ -368,16 +694,157 @@ REGLAS CRITICAS DE ROBUSTEZ:
               AND {extra_where}
             """
         )
-        rows = (await session.execute(query)).mappings().all()
-        best_id: Optional[int] = None
+        rows = [dict(r) for r in (await session.execute(query)).mappings().all()]
+        if not rows:
+            return None
+
+        if cache and cache.get("entidad_codigo_resuelto"):
+            cached_row = self._find_row_by_code(rows, cache.get("entidad_codigo_resuelto"))
+            if cached_row:
+                return int(cached_row.get("id"))
+
+        best_row: Optional[dict[str, Any]] = None
         best_score = 0.0
         for row in rows:
             score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
             if score > best_score:
                 best_score = score
-                best_id = row.get("id")
+                best_row = row
         if best_score >= minimum_score:
-            return best_id
+            await self._semantic_cache_put(
+                session,
+                field_code=table_name,
+                raw_query=str(raw_value),
+                query_normalized=target_norm,
+                entity_type=self.SEMANTIC_ENTITY_TYPE_BY_TABLE.get(table_name),
+                entity_code=str(best_row.get("codigo")) if best_row else None,
+                strategy="EXACT",
+                confidence=best_score,
+                top_candidates=[{"codigo": best_row.get("codigo"), "nombre": best_row.get("nombre"), "score": round(best_score, 4)}] if best_row else [],
+            )
+            return int(best_row.get("id"))
+
+        entity_type = self.SEMANTIC_ENTITY_TYPE_BY_TABLE.get(table_name)
+        alias_row = await self._resolve_alias_match(
+            session,
+            entity_type=entity_type,
+            query_normalized=target_norm,
+            rows=rows,
+        )
+        if alias_row:
+            await self._semantic_cache_put(
+                session,
+                field_code=table_name,
+                raw_query=str(raw_value),
+                query_normalized=target_norm,
+                entity_type=entity_type,
+                entity_code=str(alias_row.get("codigo")),
+                strategy="ALIAS",
+                confidence=0.96,
+                top_candidates=[{"codigo": alias_row.get("codigo"), "nombre": alias_row.get("nombre"), "score": 0.96}],
+            )
+            return int(alias_row.get("id"))
+
+        trgm_row = await self._resolve_trgm_match(
+            session,
+            table_name=table_name,
+            code_column=code_column,
+            name_column=name_column,
+            extra_where=extra_where,
+            query_normalized=target_norm,
+        )
+        if trgm_row and float(trgm_row.get("score") or 0.0) >= max(0.78, minimum_score - 0.12):
+            await self._semantic_cache_put(
+                session,
+                field_code=table_name,
+                raw_query=str(raw_value),
+                query_normalized=target_norm,
+                entity_type=entity_type,
+                entity_code=str(trgm_row.get("codigo")),
+                strategy="TRGM",
+                confidence=float(trgm_row.get("score") or 0.0),
+                top_candidates=[{"codigo": trgm_row.get("codigo"), "nombre": trgm_row.get("nombre"), "score": round(float(trgm_row.get("score") or 0.0), 4)}],
+            )
+            return int(trgm_row.get("id"))
+
+        fuzzy_row: Optional[dict[str, Any]] = None
+        fuzzy_score = 0.0
+        for row in rows:
+            code_norm = self._normalize_text(row.get("codigo"))
+            name_norm = self._normalize_text(row.get("nombre"))
+            ratio = max(
+                SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
+                SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
+            )
+            if ratio > fuzzy_score:
+                fuzzy_score = ratio
+                fuzzy_row = row
+        if fuzzy_row and fuzzy_score >= max(0.8, minimum_score - 0.1):
+            await self._semantic_cache_put(
+                session,
+                field_code=table_name,
+                raw_query=str(raw_value),
+                query_normalized=target_norm,
+                entity_type=entity_type,
+                entity_code=str(fuzzy_row.get("codigo")),
+                strategy="FUZZY",
+                confidence=fuzzy_score,
+                top_candidates=[{"codigo": fuzzy_row.get("codigo"), "nombre": fuzzy_row.get("nombre"), "score": round(fuzzy_score, 4)}],
+            )
+            return int(fuzzy_row.get("id"))
+
+        vector_row = await self._resolve_vector_match(
+            session,
+            entity_type=entity_type,
+            query_text=str(raw_value),
+            rows=rows,
+        )
+        if vector_row and float(vector_row.get("score") or 0.0) >= max(0.78, minimum_score - 0.12):
+            await self._semantic_cache_put(
+                session,
+                field_code=table_name,
+                raw_query=str(raw_value),
+                query_normalized=target_norm,
+                entity_type=entity_type,
+                entity_code=str(vector_row.get("codigo")),
+                strategy="VECTOR",
+                confidence=float(vector_row.get("score") or 0.0),
+                top_candidates=[{"codigo": vector_row.get("codigo"), "nombre": vector_row.get("nombre"), "score": round(float(vector_row.get("score") or 0.0), 4)}],
+            )
+            return int(vector_row.get("id"))
+
+        ranked_candidates: list[dict[str, Any]] = []
+        for row in rows:
+            score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
+            if score <= 0:
+                continue
+            ranked_candidates.append(
+                {
+                    "codigo": row.get("codigo"),
+                    "nombre": row.get("nombre"),
+                    "score": round(score, 4),
+                }
+            )
+        ranked_candidates.sort(key=lambda x: x["score"], reverse=True)
+        llm_pick = await self._resolve_llm_fallback(
+            query_text=str(raw_value),
+            candidates=ranked_candidates,
+        )
+        if llm_pick and llm_pick.get("codigo"):
+            llm_row = self._find_row_by_code(rows, llm_pick.get("codigo"))
+            if llm_row:
+                await self._semantic_cache_put(
+                    session,
+                    field_code=table_name,
+                    raw_query=str(raw_value),
+                    query_normalized=target_norm,
+                    entity_type=entity_type,
+                    entity_code=str(llm_row.get("codigo")),
+                    strategy="LLM",
+                    confidence=float(llm_pick.get("score") or 0.0),
+                    top_candidates=ranked_candidates[:5],
+                )
+                return int(llm_row.get("id"))
         return None
 
     async def _log_profile_extraction(
@@ -981,13 +1448,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if field_code == "peso_kg":
                 try:
                     current_row = await self._get_current_measurement(session, perfil_id, "PESO_KG")
-                    correction_mode = self._infer_measurement_correction_mode(
+                    measurement_intent = self._classify_measurement_update(
                         source_text=source_text,
                         field_code=field_code,
                         current_step=current_step,
                         current_measurement_row=current_row,
                         now_peru=now_peru,
                     )
+                    correction_mode = measurement_intent == self.MEASUREMENT_CORRECTION
                     await self._upsert_measurement_with_semantics(
                         session,
                         perfil_id,
@@ -1004,13 +1472,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if field_code == "altura_cm":
                 try:
                     current_row = await self._get_current_measurement(session, perfil_id, "ALTURA_CM")
-                    correction_mode = self._infer_measurement_correction_mode(
+                    measurement_intent = self._classify_measurement_update(
                         source_text=source_text,
                         field_code=field_code,
                         current_step=current_step,
                         current_measurement_row=current_row,
                         now_peru=now_peru,
                     )
+                    correction_mode = measurement_intent == self.MEASUREMENT_CORRECTION
                     await self._upsert_measurement_with_semantics(
                         session,
                         perfil_id,

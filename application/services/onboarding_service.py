@@ -24,19 +24,29 @@ from application.services.conversation_state_service import ConversationStateSer
 logger = logging.getLogger(__name__)
 
 ONBOARDING_QUESTIONS: dict[str, str] = {
-    OnboardingStep.EDAD.value: "Para empezar, ¿cuántos años tienes? 🎂",
-    OnboardingStep.PESO.value: "¿Y cuál es tu peso aproximado en kilos? ⚖️",
-    OnboardingStep.ALTURA.value: "¿Y cuál es tu estatura aproximada? Puedes usar centímetros o metros (Ej. 1.70m, 170cm) 📐",
-    OnboardingStep.TIPO_DIETA.value: "¿Sigues algun tipo de dieta especial? 🥗 (Ej: omnivora, vegetariana, vegana, keto, sin gluten o ninguna en particular)",
-    OnboardingStep.ALERGIAS.value: "¿Tienes alguna alergia o intolerancia alimentaria? (Ej. mani, mariscos, lactosa...) 🍎",
-    OnboardingStep.ENFERMEDADES.value: "¿Padeces alguna condicion de salud relevante? 🏥 (Ej: diabetes, hipertension, hipotiroidismo o ninguna)",
-    OnboardingStep.RESTRICCIONES.value: "¿Tienes alguna restriccion alimentaria por religion, etica o gusto personal? 🚫 (Ej: no como cerdo, no como carnes rojas, no me gusta el brocoli...)",
-    OnboardingStep.OBJETIVO.value: "¿Cual es tu objetivo principal al usar Nutribot? 🎯 (Ej. bajar de peso, ganar masa muscular, controlar mi glucemia, o simplemente comer mas sano)",
-    OnboardingStep.PROVINCIA.value: "¿En que provincia de Peru te encuentras actualmente? 😊",
-    OnboardingStep.DISTRITO.value: "¿Y en que distrito vives especificamente? 🏠 (Para darte recomendaciones locales)"
+    OnboardingStep.EDAD.value: "Primero, ¿cuántos años tienes? 🎂",
+    OnboardingStep.PESO.value: "¿Cuál es tu peso aproximado en kilos? (ej. 68) ⚖️",
+    OnboardingStep.ALTURA.value: "¿Cuál es tu talla? (ej. 1.70 m o 170 cm) 📐",
+    OnboardingStep.TIPO_DIETA.value: "¿Sigues algun tipo de dieta? (ej. omnivora, vegetariana o ninguna) 🥗",
+    OnboardingStep.ALERGIAS.value: "¿Tienes alergias o intolerancias alimentarias? (ej. mani, mariscos, lactosa o ninguna) 🍎",
+    OnboardingStep.ENFERMEDADES.value: "¿Tienes alguna condicion de salud relevante? (ej. diabetes, hipertension o ninguna) 🏥",
+    OnboardingStep.RESTRICCIONES.value: "¿Tienes restricciones alimentarias? (ej. no como cerdo / ninguna) 🚫",
+    OnboardingStep.OBJETIVO.value: "¿Cual es tu objetivo principal? (ej. bajar peso, ganar masa muscular o mejorar habitos) 🎯",
+    OnboardingStep.PROVINCIA.value: "¿En que provincia de Peru te encuentras? 😊",
+    OnboardingStep.DISTRITO.value: "¿En que distrito te encuentras? 🏠"
 }
 
 class OnboardingService:
+    HEALTH_STEPS = {
+        OnboardingStep.ALERGIAS.value,
+        OnboardingStep.ENFERMEDADES.value,
+        OnboardingStep.RESTRICCIONES.value,
+    }
+    HEALTH_FIELD_BY_STEP = {
+        OnboardingStep.ALERGIAS.value: "alergias",
+        OnboardingStep.ENFERMEDADES.value: "enfermedades",
+        OnboardingStep.RESTRICCIONES.value: "restricciones_alimentarias",
+    }
     HEALTH_FALLBACK_SKIP_MARKERS = (
         "saltar",
         "paso",
@@ -78,6 +88,42 @@ class OnboardingService:
         OnboardingStep.PROVINCIA.value: "la provincia donde te encuentras",
         OnboardingStep.DISTRITO.value: "tu distrito",
     }
+    STEP_PURPOSES = {
+        OnboardingStep.EDAD.value: "ajustar recomendaciones segun tu etapa de vida",
+        OnboardingStep.PESO.value: "estimar porciones y energia diaria de forma mas precisa",
+        OnboardingStep.ALTURA.value: "calcular tu IMC referencial",
+        OnboardingStep.TIPO_DIETA.value: "sugerirte opciones que se adapten a tu estilo de alimentacion",
+        OnboardingStep.ALERGIAS.value: "evitar alimentos que te puedan hacer dano",
+        OnboardingStep.ENFERMEDADES.value: "adaptar recomendaciones con mayor seguridad",
+        OnboardingStep.RESTRICCIONES.value: "respetar lo que prefieres evitar al comer",
+        OnboardingStep.OBJETIVO.value: "enfocar la orientacion en tu meta principal",
+        OnboardingStep.PROVINCIA.value: "compartirte orientacion y campanas de salud mas cercanas",
+        OnboardingStep.DISTRITO.value: "compartirte orientacion y campanas de salud mas cercanas",
+    }
+    SOFT_REFUSAL_MARKERS = (
+        "para que",
+        "para qué",
+        "para qu",
+        "para q",
+        "por que",
+        "por qué",
+        "porque",
+        "xq",
+        "pq",
+        "no se para que",
+        "no sé para qué",
+    )
+    HARD_REFUSAL_MARKERS = (
+        "no quiero",
+        "prefiero no",
+        "no deseo",
+        "no te dire",
+        "no te diré",
+        "no voy a",
+        "no pienso",
+        "no dare",
+        "no daré",
+    )
 
     @staticmethod
     def _clean_health_fallback_text(user_text: str) -> str:
@@ -89,13 +135,195 @@ class OnboardingService:
             r"^te\s+dije\s+que\s+",
             r"^que\s+no\s+entiendes\s+(de\s+)?",
             r"^(yo\s+)?(tengo|padezco|sufro\s+de|presento|me\s+diagnosticaron)\s+",
+            r"^(yo\s+)?(soy\s+)?(intolerante|alergic[oa])\s+a\s+",
+            r"^(mi\s+)?(intolerancia|alergia)\s+(es|son)?\s*(a\s+)?",
             r"^mi\s+enfermedad\s+(es|son)\s+",
+            r"^(a\s*la|a\s*las|a\s*los|al|ala)\s+",
             r"^(es|son)\s+",
         ]
         cleaned = text
         for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned).strip()
         return cleaned.strip(" .,!?:;")
+
+    @classmethod
+    def _is_health_step(cls, current_step: Optional[str]) -> bool:
+        return bool(current_step and current_step in cls.HEALTH_STEPS)
+
+    def _purpose_for_step(self, step: Optional[str]) -> str:
+        if not step:
+            return "personalizar mejor tus orientaciones"
+        return self.STEP_PURPOSES.get(step, "personalizar mejor tus orientaciones")
+
+    def _extract_numeric_step_fallback(self, current_step: Optional[str], user_text: str) -> dict:
+        """Rescate deterministico para respuestas numericas cortas durante onboarding."""
+        if not current_step:
+            return {}
+        raw = (user_text or "").strip()
+        if not raw or "?" in raw:
+            return {}
+
+        if current_step == OnboardingStep.EDAD.value:
+            age = parse_age(raw)
+            if age is not None:
+                return {"edad": str(age)}
+            return {}
+
+        if current_step == OnboardingStep.PESO.value:
+            weight = parse_weight(raw)
+            if weight is not None:
+                return {"peso_kg": str(weight)}
+            return {}
+
+        if current_step == OnboardingStep.ALTURA.value:
+            height = parse_height(raw)
+            if height is not None:
+                return {"altura_cm": str(height)}
+            return {}
+
+        return {}
+
+    def _looks_like_valid_health_negative(self, step: Optional[str], user_text: str) -> bool:
+        if not self._is_health_step(step):
+            return False
+        txt = (user_text or "").strip().lower()
+        valid_markers = (
+            "ninguna",
+            "ninguno",
+            "ninguna alerg",
+            "ninguna intoler",
+            "no tengo",
+            "sin alerg",
+            "sin intoler",
+            "nada",
+        )
+        return any(marker in txt for marker in valid_markers)
+
+    def _classify_data_refusal(
+        self,
+        *,
+        current_step: Optional[str],
+        user_text: str,
+        is_food_request: bool,
+        history: Optional[list[dict]] = None,
+    ) -> str:
+        if not current_step or is_food_request:
+            return "NONE"
+        txt = (user_text or "").strip().lower()
+        if not txt or self._looks_like_valid_health_negative(current_step, txt):
+            return "NONE"
+        if txt in {"no", "nop", "nah"}:
+            return "SOFT_EXPLAIN"
+
+        has_soft = any(marker in txt for marker in self.SOFT_REFUSAL_MARKERS)
+        has_hard = any(marker in txt for marker in self.HARD_REFUSAL_MARKERS)
+        if not has_soft and "?" in txt and ("porque" in txt or "para q" in txt or "para qu" in txt):
+            has_soft = True
+        if has_hard and has_soft:
+            return "SOFT_EXPLAIN"
+        if has_hard:
+            if history and self._check_frustration(history, current_step):
+                return "HARD_SKIP"
+            return "SOFT_EXPLAIN"
+        if has_soft:
+            return "SOFT_EXPLAIN"
+        return "NONE"
+
+    async def _skip_current_step_and_advance(
+        self,
+        *,
+        session: AsyncSession,
+        state: ConversationState,
+        current_step: str,
+    ) -> str:
+        await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+        next_step = await self._find_next_missing_step(
+            session,
+            state.usuario_id,
+            phase=ONBOARDING_PHASE_1,
+        )
+        if next_step:
+            self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+            return (
+                "No hay problema 😊 lo dejamos como opcional.\n\n"
+                f"{ONBOARDING_QUESTIONS[next_step]}"
+            )
+        self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+        return await self._build_phase1_completion_message(session, state.usuario_id)
+
+    async def _build_phase1_completion_message(self, session: AsyncSession, usuario_id: int) -> str:
+        completion_msg = "Listo 😊 ya tengo lo básico de tu perfil."
+        try:
+            p_final_data = await self._get_profile_flat(session, usuario_id)
+            bmi_msg = self._nutrition_assessment.build_referential_message_from_flat(p_final_data)
+            if bmi_msg:
+                completion_msg += f"\n\n{bmi_msg}"
+        except Exception as e:
+            logger.warning("No se pudo calcular IMC al completar Phase 1: %s", e)
+        completion_msg += (
+            "\n\nSi quieres, luego completamos más datos poquito a poco para personalizar aún más tus orientaciones 🍏."
+        )
+        return completion_msg
+
+    def _can_try_health_rescue(self, current_step: Optional[str], user_text: str, is_food_request: bool) -> bool:
+        if not self._is_health_step(current_step):
+            return False
+        text = (user_text or "").strip().lower()
+        if not text or "?" in text or is_food_request:
+            return False
+        if any(marker in text for marker in self.HEALTH_FALLBACK_SKIP_MARKERS):
+            return False
+        question_like_markers = (
+            "que es",
+            "qué es",
+            "por que",
+            "por qué",
+            "como hago",
+            "cómo hago",
+            "explic",
+        )
+        return not any(marker in text for marker in question_like_markers)
+
+    async def _extract_health_fallback(
+        self,
+        current_step: str,
+        user_text: str,
+        session: AsyncSession,
+        usuario_id: int,
+        is_food_request: bool,
+    ) -> dict:
+        if not self._can_try_health_rescue(current_step, user_text, is_food_request):
+            return {}
+
+        candidate_text = self._clean_health_fallback_text(user_text)
+        candidate = standardize_text_list(candidate_text)
+        candidate_upper = candidate.strip().upper() if candidate else ""
+        if (
+            not candidate
+            or candidate_upper in self.HEALTH_FALLBACK_INVALID_VALUES
+            or self._profile_extractor.contains_absurd_claim(candidate)
+        ):
+            return {}
+
+        field_code = self.HEALTH_FIELD_BY_STEP.get(current_step)
+        if not field_code:
+            return {}
+
+        extracted = {field_code: candidate}
+        await self._profile_extractor.save_clean_data(
+            usuario_id,
+            extracted,
+            session,
+            source_text=user_text,
+            current_step=current_step,
+        )
+        logger.info(
+            "Onboarding fallback: user=%s, step=%s, value=%s",
+            usuario_id,
+            current_step,
+            candidate,
+        )
+        return extracted
 
     SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
 
@@ -233,7 +461,11 @@ FORMATO DE SALIDA (JSON):
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
         intent = analysis["intent"]
-        
+        numeric_fallback = self._extract_numeric_step_fallback(current_step, user_text)
+        if numeric_fallback and (intent != "ANSWER" or not analysis.get("data")):
+            intent = "ANSWER"
+            analysis["data"] = numeric_fallback
+
         if intent == "RESET" or user_text.strip() == "/reset":
             await self._handle_system_reset(state.usuario_id, session)
             self._set_onboarding_state(state, OnboardingStatus.INVITED, OnboardingStep.INVITACION.value)
@@ -243,6 +475,24 @@ FORMATO DE SALIDA (JSON):
             # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
             PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
+            refusal_kind = self._classify_data_refusal(
+                current_step=current_step,
+                user_text=user_text,
+                is_food_request=is_food_request,
+                history=history,
+            )
+            if refusal_kind == "HARD_SKIP":
+                return await self._skip_current_step_and_advance(
+                    session=session,
+                    state=state,
+                    current_step=current_step,
+                )
+            if refusal_kind == "SOFT_EXPLAIN":
+                purpose = self._purpose_for_step(current_step)
+                return (
+                    f"Buena pregunta 😊 te lo pido para {purpose}.\n\n"
+                    f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                )
             
             # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito):
             # Si en esta etapa cambia de tema o no desea compartir ubicación, NO bloquear el chat.
@@ -262,14 +512,15 @@ FORMATO DE SALIDA (JSON):
             
             # REGLA DE OBSTINACIÓN (Nutrición requiere Perfil):
             if intent == "DOUBT" and current_step in PRIORITARY_STEPS:
-                missing_label = self.FIELD_LABELS.get(current_step, current_step)
-                return (
-                    f"Entiendo perfectamente tu duda y me encantaría ayudarte con eso ahora mismo. 🍏 "
-                    f"Para poder darte una recomendacion segura y a tu medida, "
-                    f"todavia necesito completar {missing_label}.\n\n"
-                    f"¿Me lo podrías confirmar para seguir? 🙏\n\n"
-                    f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
-                )
+                if not self._can_try_health_rescue(current_step, user_text, is_food_request):
+                    missing_label = self.FIELD_LABELS.get(current_step, current_step)
+                    purpose = self._purpose_for_step(current_step)
+                    return (
+                        "Te ayudo con eso 🍏\n\n"
+                        f"Para afinar la recomendacion, me ayuda confirmar {missing_label} para {purpose}.\n\n"
+                        f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                    )
+                intent = "ANSWER"
 
             if intent == "DOUBT":
                 explanation = analysis.get("explanation")
@@ -285,31 +536,16 @@ FORMATO DE SALIDA (JSON):
                         self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                         if is_food_request or "dame" in vl:
                              return None
-                        return f"No hay problema, podemos saltarlo. 😊 Sigamos con otro detalle: {ONBOARDING_QUESTIONS[next_step]}"
+                        return f"No hay problema 😊\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
                 if explanation:
-                    return f"{explanation}\n\n¿Seguimos con tu perfil? {ONBOARDING_QUESTIONS.get(current_step, '')}"
+                    return f"{explanation}\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
 
                 if is_food_request:
-                    p = await self._get_profile_flat(session, state.usuario_id)
-                    known_parts = []
-                    if p.get("edad"):
-                        known_parts.append(f"Edad: {p['edad']} anos")
-                    if p.get("peso_kg"):
-                        known_parts.append(f"Peso: {p['peso_kg']}kg")
-                    if p.get("altura_cm"):
-                        h = float(p["altura_cm"])
-                        h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
-                        known_parts.append(f"Talla: {h_str}")
-                    if p.get("alergias"):
-                        known_parts.append(f"Alergias: {p['alergias']}")
-
-                    known_line = f"Tengo registrado: {', '.join(known_parts)}. " if known_parts else ""
                     campo_lindo = self.FIELD_LABELS.get(current_step, f"tu {current_step}")
-                    question = ONBOARDING_QUESTIONS.get(current_step, "")
                     return (
-                        f"Vamos bien. {known_line}Para darte una recomendacion 100% personalizada, "
-                        f"solo me falta confirmar {campo_lindo}. {question}"
+                        f"Para darte una recomendacion mas precisa, primero confirmame {campo_lindo}.\n\n"
+                        f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
                     ).strip()
 
                 return None
@@ -356,26 +592,10 @@ FORMATO DE SALIDA (JSON):
                     return "¡Veo que ya tengo tu perfil nutricional completo! 😊 ¿En qué puedo ayudarte hoy?"
 
                 self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
-                intro_profile = (
-                    "¡Genial! 😊 Solo necesito 5 datos rapidos "
-                    "(edad, peso, talla, alergias y objetivo) para darte orientacion personalizada. ¡Es un ratito! 🚀"
+                return (
+                    "¡Genial! 😊 Lo haremos paso a paso, una pregunta por mensaje.\n\n"
+                    f"{ONBOARDING_QUESTIONS[next_step]}"
                 )
-                p = await self._get_profile_flat(session, state.usuario_id)
-                known_parts = []
-                if p.get("edad"): known_parts.append(f"Edad: {p['edad']} años")
-                if p.get("peso_kg"): known_parts.append(f"Peso: {p['peso_kg']}kg")
-                if p.get("altura_cm"):
-                    h = float(p["altura_cm"])
-                    h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
-                    known_parts.append(f"Talla: {h_str}")
-                
-                if known_parts:
-                    return (
-                        f"{intro_profile}\n\n"
-                        f"Ya tengo registrado: {', '.join(known_parts)}. "
-                        f"Ahora necesito completar unos datos mas.\n\n{ONBOARDING_QUESTIONS[next_step]}"
-                    )
-                return f"{intro_profile}\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
         # --- PROCESAMIENTO DE RESPUESTA ---
         current_step = state.onboarding_step
@@ -398,39 +618,32 @@ FORMATO DE SALIDA (JSON):
         else:
             extracted = {}
 
-        # Fallback inteligente para enfermedades
+        # Fallback inteligente para campos de salud (alergias/enfermedades/restricciones)
         if (
             intent == "ANSWER"
             and not extracted
-            and current_step == OnboardingStep.ENFERMEDADES.value
+            and self._is_health_step(current_step)
         ):
-            has_question_shape = "?" in vl
-            looks_like_skip = any(marker in vl for marker in self.HEALTH_FALLBACK_SKIP_MARKERS)
-            if not has_question_shape and not looks_like_skip:
-                candidate_text = self._clean_health_fallback_text(user_text)
-                candidate = standardize_text_list(candidate_text)
-                candidate_upper = candidate.strip().upper() if candidate else ""
-                if (
-                    candidate_upper not in self.HEALTH_FALLBACK_INVALID_VALUES
-                    and not self._profile_extractor.contains_absurd_claim(candidate)
-                ):
-                    extracted = {"enfermedades": candidate}
-                    await self._profile_extractor.save_clean_data(
-                        state.usuario_id,
-                        extracted,
-                        session,
-                        source_text=user_text,
-                        current_step=current_step,
-                    )
-                    logger.info("Onboarding fallback: user=%s, enfermedades=%s", state.usuario_id, candidate)
+            extracted = await self._extract_health_fallback(
+                current_step=current_step,
+                user_text=user_text,
+                session=session,
+                usuario_id=state.usuario_id,
+                is_food_request=is_food_request if "is_food_request" in locals() else False,
+            )
 
         if not extracted:
             if intent == "ANSWER":
                 if self._check_frustration(history, current_step):
-                    campo_lindo = self.FIELD_LABELS.get(current_step, current_step)
-                    return f"Veo que este punto es algo confuso. 😅 Si prefieres, podemos saltarlo por ahora y seguir con lo demas para no estancarnos. ¿Te parece?\n\nO si gustas, dime {campo_lindo} para continuar."
+                    return (
+                        "Tranqui, lo hacemos simple 😊\n\n"
+                        f"Si quieres, responde solo esto:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                    )
 
-                return f"No logre captar ese detalle para tu perfil. 😅 ¿Podrias decirmelo de forma mas simple?\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                return (
+                    "No logre captar ese dato 😅\n\n"
+                    f"Me lo repites asi de simple:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                )
             elif intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
             else:
@@ -452,7 +665,10 @@ FORMATO DE SALIDA (JSON):
                 break
 
         was_current_answered = any(col in updated_cols for col in [current_step, "peso_kg" if current_step=="peso" else current_step])
-        was_current_skipped = not extracted and any(w in vl.split() or vl.startswith(w) for w in ["saltar", "paso", "omitir", "luego", "siguiente"])
+        was_current_skipped = intent == "SKIP" or (
+            not extracted
+            and any(w in vl.split() or vl.startswith(w) for w in ["saltar", "paso", "omitir", "luego", "siguiente"])
+        )
         
         search_start_idx = current_idx + 1 if (was_current_answered or was_current_skipped) else current_idx
 
@@ -471,27 +687,16 @@ FORMATO DE SALIDA (JSON):
                 transition = "¡Perfecto! Ya anoté esos detalles. ✍️"
                 if len(updated_cols) == 1 and updated_cols[0] == "region":
                     transition = "¡Qué bueno! Me encanta esa zona. 📍"
-                return f"{transition} Ahora, para seguir personalizando tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
+                return f"{transition}\n\n{ONBOARDING_QUESTIONS[next_step]}"
             
             if next_step == current_step:
-                return f"Para poder ayudarte mejor, necesito este dato: {ONBOARDING_QUESTIONS[current_step]}"
+                return f"{ONBOARDING_QUESTIONS[current_step]}"
 
-            return f"Siguiendo con tu perfil, {ONBOARDING_QUESTIONS[next_step][0].lower() + ONBOARDING_QUESTIONS[next_step][1:]}"
+            return f"{ONBOARDING_QUESTIONS[next_step]}"
         else:
             # Phase 1 completada → dar valor inmediato y pasar a active_chat
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-            completion_msg = "Listo 😊 ya tengo lo básico de tu perfil."
-            try:
-                p_final_data = await self._get_profile_flat(session, state.usuario_id)
-                bmi_msg = self._nutrition_assessment.build_referential_message_from_flat(p_final_data)
-                if bmi_msg:
-                    completion_msg += f"\n\n{bmi_msg}"
-            except Exception as e:
-                logger.warning("No se pudo calcular IMC al completar Phase 1: %s", e)
-            completion_msg += (
-                "\n\nSi quieres, luego completamos más datos poquito a poco para personalizar aún más tus orientaciones 🍏."
-            )
-            return completion_msg
+            return await self._build_phase1_completion_message(session, state.usuario_id)
 
     async def _find_next_missing_step(
         self,

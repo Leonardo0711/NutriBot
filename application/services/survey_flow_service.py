@@ -65,8 +65,7 @@ class SurveyFlowService:
             if re_anchor:
                 anchor_text = (
                     f"{reply}\n\n"
-                    "Listo. Para no perder el hilo, podemos seguir con la encuesta. "
-                    "Nos quedamos en:\n\n"
+                    "Si quieres, retomamos la encuesta donde quedamos:\n\n"
                     f"{re_anchor.text}"
                 )
                 final_bot_reply = BotReply(text=anchor_text, content_type="text")
@@ -89,7 +88,8 @@ class SurveyFlowService:
             and addon is None
         )
         if survey_was_interrupted and final_bot_reply.content_type == "text" and final_bot_reply.text:
-            note = "Listo 😊 pausamos la encuesta un momento."
-            if "pausamos la encuesta" not in (final_bot_reply.text or "").lower():
-                final_bot_reply.text = f"{note}\n\n{final_bot_reply.text}"
+            reminder = "Si quieres, luego retomamos la encuesta donde quedamos."
+            low = (final_bot_reply.text or "").lower()
+            if "retomamos la encuesta" not in low and "encuesta donde quedamos" not in low:
+                final_bot_reply.text = f"{final_bot_reply.text}\n\n{reminder}"
         return final_bot_reply, survey_was_interrupted

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Nutribot Backend - Profile Interception Service
 """
 from __future__ import annotations
@@ -24,6 +24,11 @@ class ProfileInterceptionService:
         self._profile_context = profile_context
         self._state_service = state_service
 
+    @staticmethod
+    def _ask_single_field(step_name: str) -> str:
+        clean = (step_name or "un dato de tu perfil").strip()
+        return f"Perfecto. Vamos paso a paso 😊\n\nPrimero, me compartes {clean}?"
+
     async def maybe_start_personalization_flow(
         self,
         *,
@@ -48,15 +53,8 @@ class ProfileInterceptionService:
             phase=[s for s in ONBOARDING_PHASE_2] if state.onboarding_status == OnboardingStatus.COMPLETED.value else None,
         )
         if next_step:
-            pending_fields = self._profile_context.pending_fields(snapshot)
-            pending_line = ", ".join(pending_fields) if pending_fields else "ninguno"
             step_label = self._profile_context.human_step_label(next_step)
-            reply = (
-                "Claro 😊 personalicemos tus recomendaciones.\n\n"
-                f"Tengo registrado:\n{summary}\n\n"
-                f"Nos falta: {pending_line}.\n\n"
-                f"Empezamos por confirmar tu {step_label}?"
-            )
+            reply = self._ask_single_field(step_label)
             self._state_service.set_onboarding_in_progress(state, next_step)
             return reply, True
 
@@ -64,7 +62,7 @@ class ProfileInterceptionService:
             reply = (
                 "Ya tengo tu perfil completo 😊\n\n"
                 f"{summary}\n\n"
-                "Si luego quieres corregir algun dato, como tu peso, talla o alergias, solo dimelo directo y lo actualizo 😊."
+                "Si luego quieres corregir algun dato, dimelo directo y lo actualizo."
             )
         return reply, onboarding_interception_happened
 
@@ -93,55 +91,30 @@ class ProfileInterceptionService:
             if not missing_essential:
                 return reply, onboarding_interception_happened
 
-            intro = "Claro, me encantaria darte una recomendacion a tu medida."
-            known_parts = []
-            if snapshot.measurements.age_years is not None:
-                known_parts.append(f"Edad: {snapshot.measurements.age_years} anos")
-            if snapshot.measurements.weight_kg is not None:
-                known_parts.append(f"Peso: {snapshot.measurements.weight_kg}kg")
-            if snapshot.measurements.height_cm is not None:
-                h = snapshot.measurements.height_cm
-                h_str = f"{h/100:.2f}m" if h > 10 else f"{h:.2f}m"
-                known_parts.append(f"Talla: {h_str}")
-            if snapshot.health.allergies:
-                known_parts.append(f"Alergias: {', '.join(snapshot.health.allergies)}")
-            if known_parts:
-                intro += f" Ya tengo algunos datos: {', '.join(known_parts)}."
-
             missing_step = await self._onboarding_service._find_next_missing_step(session, user_id, phase=None)
             if not missing_step:
                 return reply, onboarding_interception_happened
 
-            step_name = "talla (estatura)" if missing_step == "altura_cm" else ("peso" if missing_step == "peso_kg" else missing_step)
-            if "peso_kg" in missing_essential or "altura_cm" in missing_essential:
-                reply = (
-                    f"{intro}\n\n"
-                    "Pero para que mi sugerencia sea 100% precisa y calcular tu IMC, "
-                    f"solo me faltaria completar un par de datos mas. Te parece si empezamos por tu {step_name}?"
-                )
-            else:
-                reply = (
-                    f"{intro}\n\n"
-                    "Solo me faltaria completar un pequeno detalle para ser mas preciso. "
-                    f"Te parece si confirmamos tu {step_name}?"
-                )
-
+            step_name = self._profile_context.human_step_label(missing_step)
+            reply = (
+                "Claro, te ayudo con eso 😊\n\n"
+                f"Para afinar la recomendacion, primero me compartes {step_name}?"
+            )
             self._state_service.set_onboarding_in_progress(state, missing_step)
             return reply, True
 
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud 🍏.\n\n"
-                    "Puedo ayudarte con tips y recomendaciones segun tu perfil.\n\n"
-                    "Si quieres, armamos tu perfil basico con 5 datos rapidos "
-                    "(edad, peso, talla, alergias y objetivo). ¿Empezamos?"
+                    "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud.\n\n"
+                    "Si te parece, armamos tu perfil paso a paso para personalizar mejor tus recomendaciones.\n\n"
+                    "Empezamos con tu edad?"
                 )
             else:
                 reply = (
                     "Hola de nuevo 😊\n\n"
-                    "Si te parece, completamos los datos que faltan para personalizar mejor tus recomendaciones.\n\n"
-                    "¿Te animas? Es rapidito 🍏"
+                    "Si quieres, retomamos tu perfil con una sola pregunta por mensaje.\n\n"
+                    "Continuamos?"
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True
@@ -186,4 +159,3 @@ class ProfileInterceptionService:
             "*quiero actualizar mi perfil nutricional*."
         )
         return reply + suggestion
-
