@@ -666,13 +666,23 @@ class OnboardingService:
             return {}
 
         extracted = {field_code: candidate}
-        await self._profile_extractor.save_clean_data(
-            usuario_id,
-            extracted,
-            session,
-            source_text=user_text,
-            current_step=current_step,
-        )
+        try:
+            await self._profile_extractor.save_clean_data(
+                usuario_id,
+                extracted,
+                session,
+                source_text=user_text,
+                current_step=current_step,
+            )
+        except Exception:
+            # Nunca bloquear el turno por una persistencia no critica.
+            logger.exception(
+                "Onboarding fallback persist failed user=%s step=%s value=%s",
+                usuario_id,
+                current_step,
+                candidate,
+            )
+            return {}
         logger.info(
             "Onboarding fallback: user=%s, step=%s, value=%s",
             usuario_id,

@@ -546,46 +546,48 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if not query_text or not query_normalized:
             return
         try:
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO semantic_match_log (
-                        usuario_id, incoming_message_id, scope, field_code,
-                        query_texto, query_normalizada, estrategia_usada,
-                        exact_match, trigram_score, vector_score, confidence_final,
-                        entidad_tipo_resuelta, entidad_codigo_resuelto,
-                        escalado_a_ia, decidido_por_regla, latency_ms, error_detail, creado_en
-                    )
-                    VALUES (
-                        :uid, :imid, :scope, :field,
-                        :qtext, :qnorm, :strategy,
-                        :exact_match, :trgm, :vec, :confidence,
-                        :etype, :ecode,
-                        :escalado, :regla, :latency, :error, :now
-                    )
-                    """
-                ),
-                {
-                    "uid": usuario_id,
-                    "imid": incoming_message_id,
-                    "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
-                    "field": field_code,
-                    "qtext": query_text,
-                    "qnorm": query_normalized,
-                    "strategy": strategy[:20],
-                    "exact_match": bool(exact_match),
-                    "trgm": None if trigram_score is None else round(float(trigram_score), 4),
-                    "vec": None if vector_score is None else round(float(vector_score), 4),
-                    "confidence": None if confidence is None else round(max(0.0, min(float(confidence), 1.0)), 2),
-                    "etype": entity_type,
-                    "ecode": entity_code,
-                    "escalado": bool(escalated_to_ai),
-                    "regla": bool(decided_by_rule),
-                    "latency": int(max(0, latency_ms)),
-                    "error": (error_detail or None),
-                    "now": get_now_peru(),
-                },
-            )
+            # Logging semantico no debe abortar el turno si falla.
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO semantic_match_log (
+                            usuario_id, incoming_message_id, scope, field_code,
+                            query_texto, query_normalizada, estrategia_usada,
+                            exact_match, trigram_score, vector_score, confidence_final,
+                            entidad_tipo_resuelta, entidad_codigo_resuelto,
+                            escalado_a_ia, decidido_por_regla, latency_ms, error_detail, creado_en
+                        )
+                        VALUES (
+                            :uid, :imid, :scope, :field,
+                            :qtext, :qnorm, :strategy,
+                            :exact_match, :trgm, :vec, :confidence,
+                            :etype, :ecode,
+                            :escalado, :regla, :latency, :error, :now
+                        )
+                        """
+                    ),
+                    {
+                        "uid": usuario_id,
+                        "imid": incoming_message_id,
+                        "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                        "field": field_code,
+                        "qtext": query_text,
+                        "qnorm": query_normalized,
+                        "strategy": strategy[:20],
+                        "exact_match": bool(exact_match),
+                        "trgm": None if trigram_score is None else round(float(trigram_score), 4),
+                        "vec": None if vector_score is None else round(float(vector_score), 4),
+                        "confidence": None if confidence is None else round(max(0.0, min(float(confidence), 1.0)), 2),
+                        "etype": entity_type,
+                        "ecode": entity_code,
+                        "escalado": bool(escalated_to_ai),
+                        "regla": bool(decided_by_rule),
+                        "latency": int(max(0, latency_ms)),
+                        "error": (error_detail or None),
+                        "now": get_now_peru(),
+                    },
+                )
         except Exception:
             logger.debug("No se pudo insertar semantic_match_log", exc_info=True)
 
@@ -606,41 +608,43 @@ REGLAS CRITICAS DE ROBUSTEZ:
             return
         payload = json.dumps(top_candidates or [], ensure_ascii=False)
         try:
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO semantic_review_queue (
-                        usuario_id, incoming_message_id, scope, field_code,
-                        query_texto, query_normalizada, top_candidates_json,
-                        razon, estado, observacion, creado_en
-                    )
-                    SELECT
-                        :uid, :imid, :scope, :field,
-                        :qtext, :qnorm, CAST(:candidates AS jsonb),
-                        :reason, 'PENDING', :obs, :now
-                    WHERE NOT EXISTS (
-                        SELECT 1
-                        FROM semantic_review_queue q
-                        WHERE q.scope = :scope
-                          AND q.field_code = :field
-                          AND q.query_normalizada = :qnorm
-                          AND q.estado = 'PENDING'
-                    )
-                    """
-                ),
-                {
-                    "uid": usuario_id,
-                    "imid": incoming_message_id,
-                    "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
-                    "field": field_code,
-                    "qtext": query_text,
-                    "qnorm": query_normalized,
-                    "candidates": payload,
-                    "reason": (reason or "NO_MATCH")[:50],
-                    "obs": observation,
-                    "now": get_now_peru(),
-                },
-            )
+            # Cola de revision semantica no debe abortar la transaccion principal.
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO semantic_review_queue (
+                            usuario_id, incoming_message_id, scope, field_code,
+                            query_texto, query_normalizada, top_candidates_json,
+                            razon, estado, observacion, creado_en
+                        )
+                        SELECT
+                            :uid, :imid, :scope, :field,
+                            :qtext, :qnorm, CAST(:candidates AS jsonb),
+                            :reason, 'PENDING', :obs, :now
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM semantic_review_queue q
+                            WHERE q.scope = :scope
+                              AND q.field_code = :field
+                              AND q.query_normalizada = :qnorm
+                              AND q.estado = 'PENDING'
+                        )
+                        """
+                    ),
+                    {
+                        "uid": usuario_id,
+                        "imid": incoming_message_id,
+                        "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                        "field": field_code,
+                        "qtext": query_text,
+                        "qnorm": query_normalized,
+                        "candidates": payload,
+                        "reason": (reason or "NO_MATCH")[:50],
+                        "obs": observation,
+                        "now": get_now_peru(),
+                    },
+                )
         except Exception:
             logger.debug("No se pudo insertar semantic_review_queue", exc_info=True)
 
@@ -1545,40 +1549,45 @@ REGLAS CRITICAS DE ROBUSTEZ:
         raw_text = str(raw_value).strip()
         if not raw_text:
             return
-        await session.execute(
-            text(
-                """
-                INSERT INTO profile_extractions
-                    (
-                        usuario_id, field_code, raw_value, normalized_value,
-                        confidence, evidence_text, status,
-                        resolved_entity_type, resolved_entity_code, resolution_strategy, semantic_cache_hit,
-                        extracted_at
-                    )
-                VALUES
-                    (
-                        :uid, :field, :raw, :normalized,
-                        :confidence, :evidence, :status,
-                        :etype, :ecode, :strategy, :cache_hit,
-                        :now
-                    )
-                """
-            ),
-            {
-                "uid": usuario_id,
-                "field": field_code,
-                "raw": raw_text,
-                "normalized": self._normalize_text(raw_text)[:500],
-                "confidence": float(max(0.0, min(confidence, 1.0))),
-                "evidence": evidence_text[:2000],
-                "status": status[:20],
-                "etype": resolved_entity_type[:30] if resolved_entity_type else None,
-                "ecode": resolved_entity_code[:60] if resolved_entity_code else None,
-                "strategy": resolution_strategy[:20] if resolution_strategy else None,
-                "cache_hit": bool(semantic_cache_hit),
-                "now": now_peru,
-            },
-        )
+        try:
+            # Bitacora no critica: si falla, no rompe el turno.
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO profile_extractions
+                            (
+                                usuario_id, field_code, raw_value, normalized_value,
+                                confidence, evidence_text, status,
+                                resolved_entity_type, resolved_entity_code, resolution_strategy, semantic_cache_hit,
+                                extracted_at
+                            )
+                        VALUES
+                            (
+                                :uid, :field, :raw, :normalized,
+                                :confidence, :evidence, :status,
+                                :etype, :ecode, :strategy, :cache_hit,
+                                :now
+                            )
+                        """
+                    ),
+                    {
+                        "uid": usuario_id,
+                        "field": field_code,
+                        "raw": raw_text,
+                        "normalized": self._normalize_text(raw_text)[:500],
+                        "confidence": float(max(0.0, min(confidence, 1.0))),
+                        "evidence": evidence_text[:2000],
+                        "status": status[:20],
+                        "etype": resolved_entity_type[:30] if resolved_entity_type else None,
+                        "ecode": resolved_entity_code[:60] if resolved_entity_code else None,
+                        "strategy": resolution_strategy[:20] if resolution_strategy else None,
+                        "cache_hit": bool(semantic_cache_hit),
+                        "now": now_peru,
+                    },
+                )
+        except Exception:
+            logger.debug("No se pudo insertar profile_extractions", exc_info=True)
 
     async def _validate_semantic(
         self, 
