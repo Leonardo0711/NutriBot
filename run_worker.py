@@ -40,12 +40,19 @@ async def _periodic_task(coro, interval: float, name: str) -> None:
     """Ejecuta una coroutine periódicamente hasta que se reciba shutdown."""
     while not _shutdown.is_set():
         try:
-            await coro()
+            processed = await coro()
         except asyncio.CancelledError:
             logger.info("Worker %s detenido.", name)
             return
         except Exception:
             logger.exception("Error en worker %s", name)
+            processed = 0
+
+        # Si hubo trabajo efectivo, iteramos de inmediato para drenar la cola
+        # y reducir latencia sin cambiar la logica de negocio.
+        if isinstance(processed, int) and processed > 0:
+            continue
+
         try:
             await asyncio.wait_for(_shutdown.wait(), timeout=interval)
             break  # shutdown señalado

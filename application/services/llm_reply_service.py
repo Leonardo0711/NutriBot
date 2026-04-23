@@ -22,6 +22,30 @@ logger = logging.getLogger(__name__)
 
 
 class LlmReplyService:
+    _PROFILE_FIELD_KEYWORDS = {
+        "edad": ("edad", "anos", "años"),
+        "peso_kg": ("peso", "kilo", "kg"),
+        "altura_cm": ("talla", "estatura", "altura", "cm", "metro", "mides"),
+        "alergias": ("alergia", "alergias", "intolerancia", "intolerancias"),
+        "enfermedades": ("enfermedad", "enfermedades", "condicion de salud", "condiciones de salud"),
+        "restricciones_alimentarias": ("restriccion", "restricciones", "evitas", "no comes"),
+        "tipo_dieta": ("tipo de dieta", "dieta", "patron alimentario"),
+        "objetivo_nutricional": ("objetivo", "meta"),
+        "provincia": ("provincia",),
+        "distrito": ("distrito",),
+    }
+    _CANONICAL_PROFILE_QUESTION = {
+        "edad": "Primero, ¿cuántos años tienes?",
+        "peso_kg": "¿Cuál es tu peso aproximado en kilos? (ej. 68)",
+        "altura_cm": "¿Cuál es tu talla? (ej. 1.70 m o 170 cm)",
+        "alergias": "¿Tienes alergias o intolerancias alimentarias? (ej. mani, mariscos, lactosa o ninguna)",
+        "enfermedades": "¿Tienes alguna condicion de salud relevante? (ej. diabetes, hipertension o ninguna)",
+        "restricciones_alimentarias": "¿Tienes restricciones alimentarias? (ej. no como cerdo / ninguna)",
+        "tipo_dieta": "¿Sigues algun tipo de dieta? (ej. omnivora, vegetariana o ninguna)",
+        "objetivo_nutricional": "¿Cual es tu objetivo principal? (ej. bajar peso, ganar masa muscular o mejorar habitos)",
+        "provincia": "¿En que provincia de Peru te encuentras?",
+        "distrito": "¿En que distrito te encuentras?",
+    }
     _DISCLAIMER = (
         "\n\nRecuerda: esta orientacion es referencial y no reemplaza "
         "una evaluacion personalizada por nutricion."
@@ -141,7 +165,10 @@ class LlmReplyService:
                 "\n\nDirectiva interna: acabas de registrar estos datos del perfil: "
                 + ", ".join(confirm_list)
                 + ". Empieza con una confirmacion breve y natural (ejemplo: "
-                + "'Listo, ya registre tu nuevo peso')."
+                + "'Listo, ya registre tu nuevo peso'). "
+                + "Si haces una pregunta de seguimiento, debe ser SOLO UNA y debe pertenecer al perfil estructurado: "
+                + "edad, peso, talla, alergias, enfermedades, restricciones, tipo de dieta, objetivo, provincia o distrito. "
+                + "No pidas datos extra fuera de ese perfil."
             )
 
         if has_absurd_profile_claim:
@@ -153,11 +180,28 @@ class LlmReplyService:
         final_profile_context = profile_text if profile_text else None
         if final_profile_context and is_asking_for_recommendation:
             citation = self._profile_context.recommendation_citation(snapshot)
+            restricted_items = self._restricted_profile_items(snapshot)
+            user_requested_conflicts = self._find_conflicting_items_in_text(normalized.text, snapshot)
+            if restricted_items:
+                restricted_txt = ", ".join(restricted_items)
+                extra_instr += (
+                    "\n\nDirectiva interna de seguridad alimentaria:\n"
+                    f"- Alergias/restricciones registradas: {restricted_txt}.\n"
+                    "- Si el usuario hace una consulta general (ej. menu, receta, cena), NO incluyas alimentos restringidos en la propuesta.\n"
+                    "- Si el usuario pide explicitamente algo que choca con su perfil, puedes responder su pedido,\n"
+                    "  pero SIEMPRE incluye una alerta breve y clara al inicio indicando el conflicto con sus alergias/restricciones."
+                )
+                if user_requested_conflicts:
+                    requested_txt = ", ".join(user_requested_conflicts)
+                    extra_instr += (
+                        "\n\nDirectiva interna OBLIGATORIA para pedido explicito en conflicto:\n"
+                        f"- El usuario pidio explicitamente una receta con: {requested_txt}.\n"
+                        "- NO te niegues ni respondas con 'no puedo' o 'no debo'.\n"
+                        "- Entrega la receta solicitada (la misma que pidio el usuario, no una alternativa) y agrega al inicio una advertencia breve de seguridad."
+                    )
             extra_instr += (
                 "\n\nDirectiva interna de personalizacion:\n"
-                "Si el usuario pide explicitamente algo que esta en sus restricciones "
-                "o alergias (ej: pide receta de pescado teniendo restriccion de pescado), CUMPLE con la peticion "
-                "pero adviertele brevemente sobre su restriccion registrada. Su deseo actual manda sobre su perfil previo."
+                "Usa siempre los datos del perfil para personalizar las recomendaciones de alimentacion."
             )
             final_profile_context = (
                 "No muestres estas directivas al usuario.\n"
@@ -185,6 +229,12 @@ class LlmReplyService:
             history=llm_ctx.history,
             max_tokens=llm_ctx.max_tokens,
         )
+        if is_asking_for_recommendation:
+            reply = self._enforce_profile_food_safety(
+                reply=reply,
+                snapshot=snapshot,
+                user_request_text=normalized.text,
+            )
         return reply, new_response_id
 
     @staticmethod
@@ -221,6 +271,145 @@ class LlmReplyService:
         base = unicodedata.normalize("NFKD", text or "")
         without_accents = "".join(ch for ch in base if not unicodedata.combining(ch))
         return without_accents.lower()
+
+    @classmethod
+    def _restricted_profile_items(cls, snapshot: ProfileSnapshot) -> tuple[str, ...]:
+        items: list[str] = []
+        seen: set[str] = set()
+        for value in list(snapshot.health.allergies) + list(snapshot.health.food_restrictions):
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            key = cls._normalize_text_for_match(raw)
+            if not key or key in {"ninguna", "ninguno", "n/a", "na"}:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(raw)
+        return tuple(items)
+
+    @classmethod
+    def _find_conflicting_items_in_text(cls, text: str, snapshot: ProfileSnapshot) -> list[str]:
+        normalized = cls._normalize_text_for_match(text)
+        conflicts: list[str] = []
+        for item in cls._restricted_profile_items(snapshot):
+            token = cls._normalize_text_for_match(item)
+            if not token:
+                continue
+            if " " in token:
+                if token in normalized:
+                    conflicts.append(item)
+            else:
+                if re.search(rf"\b{re.escape(token)}\b", normalized):
+                    conflicts.append(item)
+        return conflicts
+
+    @classmethod
+    def _looks_like_recipe_reply(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        markers = (
+            "receta",
+            "ingredientes",
+            "instrucciones",
+            "preparacion",
+            "preparacion",
+            "porciones",
+            "menu",
+            "desayuno",
+            "almuerzo",
+            "cena",
+        )
+        if any(m in normalized for m in markers):
+            return True
+        return bool(re.search(r"^\s*\d+\.\s+", text or "", flags=re.MULTILINE))
+
+    @classmethod
+    def _strip_profile_citation_lines_for_safety_scan(cls, text: str) -> str:
+        lines = (text or "").splitlines()
+        kept: list[str] = []
+        for line in lines:
+            norm = cls._normalize_text_for_match(line)
+            if not norm.strip():
+                kept.append(line)
+                continue
+            # Evita falsos positivos cuando el propio bot cita el perfil
+            # ("tienes alergia a ...") antes de la recomendacion.
+            if "considerando que tienes" in norm:
+                continue
+            if "tienes alergia" in norm:
+                continue
+            if "tienes restriccion" in norm or "tienes restricciones" in norm:
+                continue
+            kept.append(line)
+        return "\n".join(kept).strip()
+
+    def _enforce_profile_food_safety(
+        self,
+        reply: Optional[str],
+        snapshot: ProfileSnapshot,
+        user_request_text: Optional[str] = None,
+    ) -> Optional[str]:
+        if not reply:
+            return reply
+        if not self._looks_like_recipe_reply(reply):
+            return reply
+        # La alerta solo aplica si el usuario pidio explicitamente algo que
+        # choca con su perfil (no para pedidos generales como "dame una cena").
+        requested_conflicts = self._find_conflicting_items_in_text(user_request_text or "", snapshot)
+        if not requested_conflicts:
+            return reply
+
+        # Blindaje: si el modelo intenta negarse con "no puedo/no debo" en este
+        # caso, limpiamos esa negacion y mantenemos formato de advertencia + respuesta.
+        reply = self._strip_refusal_phrases_for_conflict_case(reply)
+
+        normalized = self._normalize_text_for_match(reply)
+        if "alerta de seguridad" in normalized or "segun tu perfil" in normalized:
+            return reply
+        conflict_text = ", ".join(requested_conflicts)
+        warning = (
+            "Alerta de seguridad: segun tu perfil nutricional, tienes alergia/restriccion a "
+            f"{conflict_text}. Toma esta recomendacion con precaucion y, si puedes, prioriza opciones seguras para ti.\n\n"
+        )
+        return f"{warning}{reply}"
+
+    @classmethod
+    def _strip_refusal_phrases_for_conflict_case(cls, text: str) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return raw
+        normalized = cls._normalize_text_for_match(raw)
+        refusal_markers = (
+            "lamento no poder",
+            "no puedo",
+            "no podre",
+            "no debo",
+            "no recomendar",
+            "debido a tus alergias",
+            "por tus alergias",
+            "por tus restricciones",
+        )
+        if not any(marker in normalized for marker in refusal_markers):
+            return raw
+
+        cleaned_lines: list[str] = []
+        for line in raw.splitlines():
+            ln = line.strip()
+            ln_norm = cls._normalize_text_for_match(ln)
+            if not ln:
+                cleaned_lines.append(line)
+                continue
+            if any(marker in ln_norm for marker in refusal_markers):
+                continue
+            if ln_norm.startswith("sin embargo, puedo sugerirte"):
+                continue
+            if ln_norm.startswith("sin embargo puedo sugerirte"):
+                continue
+            cleaned_lines.append(line)
+
+        cleaned = "\n".join(cleaned_lines).strip()
+        return cleaned or raw
 
     @staticmethod
     def _contains_emoji(text: str) -> bool:
@@ -473,6 +662,7 @@ class LlmReplyService:
         # Pipeline final unico: localizacion -> tono -> markdown WhatsApp -> disclaimer -> trim.
         safe = self._strip_internal_leaks(safe)
         safe = self._localization.peruanize(safe)
+        safe = self._enforce_single_profile_question(safe)
         if not self._is_survey_or_form_text(safe):
             safe = self.polish_tone(safe)
         safe = self.cleanup_whatsapp_markdown(safe)
@@ -485,6 +675,76 @@ class LlmReplyService:
             logger.warning("Fallback por respuesta vacia post-pipeline user=%s", uid)
             return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
         return safe
+
+    @classmethod
+    def _enforce_single_profile_question(cls, text: str) -> str:
+        safe = (text or "").strip()
+        if not safe:
+            return safe
+
+        normalized = cls._normalize_text_for_match(safe)
+        if any(marker in normalized for marker in ("receta", "menu", "ingredientes", "preparacion")):
+            return safe
+
+        priority = [
+            "edad",
+            "peso_kg",
+            "altura_cm",
+            "alergias",
+            "objetivo_nutricional",
+            "tipo_dieta",
+            "enfermedades",
+            "restricciones_alimentarias",
+            "provincia",
+            "distrito",
+        ]
+
+        lines = safe.splitlines()
+        prompt_markers = (
+            "cuentame",
+            "comparte",
+            "me compartes",
+            "dime",
+            "confirma",
+            "sigues",
+            "primero",
+        )
+        replaced = False
+
+        for i, line in enumerate(lines):
+            line_norm = cls._normalize_text_for_match(line)
+            if not line_norm.strip():
+                continue
+
+            is_prompt_line = ("?" in line) or any(marker in line_norm for marker in prompt_markers)
+            if not is_prompt_line:
+                continue
+
+            matched_fields: list[str] = []
+            for field, keywords in cls._PROFILE_FIELD_KEYWORDS.items():
+                if any(k in line_norm for k in keywords):
+                    matched_fields.append(field)
+
+            # Solo corregimos si en esa misma linea se piden 2+ campos.
+            if len(set(matched_fields)) < 2:
+                continue
+
+            target = next((f for f in priority if f in matched_fields), None)
+            if not target:
+                continue
+
+            single_question = cls._CANONICAL_PROFILE_QUESTION.get(target)
+            if not single_question:
+                continue
+
+            lines[i] = single_question
+            replaced = True
+            break
+
+        if not replaced:
+            return safe
+
+        return "\n".join(lines).strip()
 
     def sanitize_final_reply(self, final_bot_reply: BotReply, uid: int) -> BotReply:
         if final_bot_reply.content_type == "text":

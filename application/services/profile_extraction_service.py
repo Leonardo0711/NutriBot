@@ -1318,7 +1318,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         operation: str,
     ) -> None:
         today = now_peru.date()
-        where_master = "tipo = 'ALERGENO'" if only_alergenos else "TRUE"
+        where_master = "tipo IN ('ALERGENO','INTOLERANCIA')" if only_alergenos else "TRUE"
 
         deactivate_query = """
             UPDATE perfil_nutricional_restriccion pr
@@ -1329,7 +1329,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if only_alergenos:
             deactivate_query += """
               AND pr.restriccion_id IN (
-                    SELECT id FROM mae_restriccion_alimentaria WHERE tipo = 'ALERGENO'
+                    SELECT id FROM mae_restriccion_alimentaria WHERE tipo IN ('ALERGENO','INTOLERANCIA')
               )
             """
 
@@ -1371,7 +1371,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if only_alergenos:
                 remove_query += """
                   AND pr.restriccion_id IN (
-                        SELECT id FROM mae_restriccion_alimentaria WHERE tipo = 'ALERGENO'
+                        SELECT id FROM mae_restriccion_alimentaria WHERE tipo IN ('ALERGENO','INTOLERANCIA')
                   )
                 """
             await session.execute(text(remove_query), {"pid": perfil_id, "today": today, "ids": resolved_ids})

@@ -107,14 +107,14 @@ class ProfileInterceptionService:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
                     "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud.\n\n"
-                    "Si te parece, armamos tu perfil paso a paso para personalizar mejor tus recomendaciones.\n\n"
-                    "Empezamos con tu edad?"
+                    "Estoy aqui para ayudarte con orientacion y recomendaciones de alimentacion segun tu perfil.\n\n"
+                    "Cuando quieras, empezamos tu perfil paso a paso."
                 )
             else:
                 reply = (
                     "Hola de nuevo 😊\n\n"
-                    "Si quieres, retomamos tu perfil con una sola pregunta por mensaje.\n\n"
-                    "Continuamos?"
+                    "Estoy aqui para ayudarte.\n\n"
+                    "Cuando quieras, retomamos tu perfil paso a paso."
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True

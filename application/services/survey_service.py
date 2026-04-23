@@ -93,10 +93,10 @@ _SCALE_PREFIX = {
 class SurveyResponseExtractor:
     """Structured-first extractor for survey answers."""
 
-    _SKIP_EXACT = {"paso", "saltar", "skip", "no quiero", "siguiente", "prefiero no", "omitir"}
+    _SKIP_EXACT = {"paso", "saltar", "skip", "no quiero", "siguiente", "prefiero no", "omitir", "nopi"}
     _CANCEL_PHRASES = {"cancelar todo", "detener bot", "salir de todo", "stop survey"}
     _YES_WORDS = re.compile(r"(?:\b|^)(si|sí|sii|sip|yes|claro|dale|ok|de acuerdo|acepto|autorizo|ya|yap|yaa)(?:\b|$)", re.IGNORECASE)
-    _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
+    _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nopi|noo|nooo|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(para que|por que|que uso|que finalidad)", re.IGNORECASE)
     _NUTRITION_HINTS = (
         "menu", "receta", "dieta", "imc", "calorias", "desayuno", "almuerzo",
@@ -433,6 +433,14 @@ class SurveyService:
             or bool(normalized.image_base64)
             or bool(normalized.used_audio)
         )
+
+    def _missing_media_feedback_states(self, parciales: dict) -> list[str]:
+        pending: list[str] = []
+        if self._parse_int(parciales.get("p8"), 1, 5) is None:
+            pending.append("esperando_audio_optin")
+        if self._parse_int(parciales.get("p9"), 1, 5) is None:
+            pending.append("esperando_imagen_optin")
+        return pending
 
     @staticmethod
     def _merge_prefix(*parts: str) -> str:
@@ -818,10 +826,39 @@ class SurveyService:
             if progress.estado_actual == "completado":
                 state.meaningful_interactions_count = 0
                 return None
+            
+            parciales = dict(progress.respuestas_parciales or {})
+            resumption_state = progress.estado_actual
+            resumption_prefix = "Retomemos el formulario pendiente."
+
+            # Mejora: Si no proporcionó correo, volver a pedirlo al retomar, pero luego saltar a donde estaba
+            if not parciales.get("correo"):
+                # Guardamos donde estaba para volver despues
+                if resumption_state != "esperando_correo":
+                    parciales["return_to_state"] = resumption_state
+                
+                resumption_state = "esperando_correo"
+                parciales["correo_decline_count"] = 0 # Reset para que vuelva a pedir
+                await self._persist_progress(
+                    session=session,
+                    progress_id=progress.id,
+                    parciales=parciales,
+                    next_state=resumption_state,
+                    audio_test_requested=bool(getattr(progress, "audio_test_requested", False)),
+                    audio_test_completed=bool(getattr(progress, "audio_test_completed", False)),
+                    audio_test_declined=bool(getattr(progress, "audio_test_declined", False)),
+                    image_test_requested=bool(getattr(progress, "image_test_requested", False)),
+                    image_test_completed=bool(getattr(progress, "image_test_completed", False)),
+                    image_test_declined=bool(getattr(progress, "image_test_declined", False)),
+                    uso_audio=bool(getattr(progress, "uso_audio", False)),
+                    uso_imagen=bool(getattr(progress, "uso_imagen", False)),
+                )
+                resumption_prefix = "¡Hola de nuevo! Retomemos el formulario pendiente. Empecemos por tu correo (puedes decir que no si prefieres) y luego seguimos donde nos quedamos."
+
             state.mode = "collecting_usability"
-            state.awaiting_question_code = progress.estado_actual
+            state.awaiting_question_code = resumption_state
             state.meaningful_interactions_count = 0
-            return self._build_question_reply(progress.estado_actual, prefix="Retomemos el formulario pendiente.")
+            return self._build_question_reply(resumption_state, prefix=resumption_prefix)
 
         first_state = FORM_STATES_ORDER[0]
         await session.execute(
@@ -1096,8 +1133,22 @@ class SurveyService:
                 cleaned_value = "Si" if auth else "No"
 
             parciales[field_key] = cleaned_value
-            idx = FORM_STATES_ORDER.index(current_state)
-            next_state = FORM_STATES_ORDER[idx + 1] if idx + 1 < len(FORM_STATES_ORDER) else None
+            
+            # Logica de "volver al estado original" si venimos de una reanudacion
+            return_to = parciales.pop("return_to_state", None)
+            forced_final_email = bool(parciales.pop("correo_required_for_finalize", False))
+            if return_to:
+                next_state = return_to
+            elif current_state == "esperando_correo" and forced_final_email:
+                # Si el correo se pidió solo para finalizar, no volver a recorrer
+                # toda la encuesta. Cerrar al terminar este paso.
+                if not cleaned_value:
+                    parciales["correo_opt_out_final"] = True
+                next_state = None
+            else:
+                idx = FORM_STATES_ORDER.index(current_state)
+                next_state = FORM_STATES_ORDER[idx + 1] if idx + 1 < len(FORM_STATES_ORDER) else None
+            
             next_state, auto_info = self._auto_skip_feature_states(
                 next_state=next_state,
                 parciales=parciales,
@@ -1107,25 +1158,62 @@ class SurveyService:
             transition_prefix = self._merge_prefix(transition_prefix, auto_info)
 
         if next_state is None:
-            await self._persist_progress(
-                session=session,
-                progress_id=progress.id,
-                parciales=parciales,
-                next_state="completado",
-                audio_test_requested=audio_test_requested,
-                audio_test_completed=audio_test_completed,
-                audio_test_declined=audio_test_declined,
-                image_test_requested=image_test_requested,
-                image_test_completed=image_test_completed,
-                image_test_declined=image_test_declined,
-                uso_audio=uso_audio,
-                uso_imagen=uso_imagen,
-            )
-            await self._persist_final_results(session, progress, parciales, state)
-            state.usability_completion_pct = 100
-            state.mode = "active_chat"
-            state.awaiting_question_code = None
-            return BotReply(text="Muchas gracias por completar el formulario.", content_type="text")
+            # Antes de marcar como completado, verificar si falta el correo
+            correo_missing = not parciales.get("correo")
+            allow_finish_without_correo = bool(parciales.get("correo_opt_out_final"))
+            if correo_missing and not allow_finish_without_correo:
+                next_state = "esperando_correo"
+                parciales["correo_required_for_finalize"] = True
+                transition_prefix = self._merge_prefix(transition_prefix, "Para finalizar y guardar tus respuestas, necesitamos que nos proporciones tu correo.")
+            else:
+                pending_media_states = self._missing_media_feedback_states(parciales)
+                if pending_media_states:
+                    resume_state = pending_media_states[0]
+                    await self._persist_progress(
+                        session=session,
+                        progress_id=progress.id,
+                        parciales=parciales,
+                        next_state=resume_state,
+                        audio_test_requested=audio_test_requested,
+                        audio_test_completed=audio_test_completed,
+                        audio_test_declined=audio_test_declined,
+                        image_test_requested=image_test_requested,
+                        image_test_completed=image_test_completed,
+                        image_test_declined=image_test_declined,
+                        uso_audio=uso_audio,
+                        uso_imagen=uso_imagen,
+                    )
+                    state.mode = "active_chat"
+                    state.awaiting_question_code = None
+                    state.usability_completion_pct = 85
+                    return BotReply(
+                        text=(
+                            "Gracias 😊 Ya guardé tus respuestas actuales.\n\n"
+                            "Aún nos faltan las preguntas de audio e imagen para cerrar el formulario completo. "
+                            "Lo retomamos luego desde ahí."
+                        ),
+                        content_type="text",
+                    )
+
+                await self._persist_progress(
+                    session=session,
+                    progress_id=progress.id,
+                    parciales=parciales,
+                    next_state="completado",
+                    audio_test_requested=audio_test_requested,
+                    audio_test_completed=audio_test_completed,
+                    audio_test_declined=audio_test_declined,
+                    image_test_requested=image_test_requested,
+                    image_test_completed=image_test_completed,
+                    image_test_declined=image_test_declined,
+                    uso_audio=uso_audio,
+                    uso_imagen=uso_imagen,
+                )
+                await self._persist_final_results(session, progress, parciales, state)
+                state.usability_completion_pct = 100
+                state.mode = "active_chat"
+                state.awaiting_question_code = None
+                return BotReply(text="Muchas gracias por completar el formulario.", content_type="text")
 
         await self._persist_progress(
             session=session,

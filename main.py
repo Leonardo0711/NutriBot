@@ -37,12 +37,19 @@ async def _periodic_task(coro, interval: float, name: str) -> None:
     """Ejecuta una coroutine periódicamente con manejo de errores."""
     while True:
         try:
-            await coro()
+            processed = await coro()
         except asyncio.CancelledError:
             logger.info("Worker %s detenido.", name)
             return
         except Exception:
             logger.exception("Error en worker %s", name)
+            processed = 0
+
+        # Si hubo trabajo efectivo, continuamos al siguiente ciclo sin esperar
+        # para mejorar latencia de cola en modo monolith.
+        if isinstance(processed, int) and processed > 0:
+            continue
+
         await asyncio.sleep(interval)
 
 

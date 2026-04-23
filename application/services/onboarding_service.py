@@ -100,6 +100,43 @@ class OnboardingService:
         OnboardingStep.PROVINCIA.value: "compartirte orientacion y campanas de salud mas cercanas",
         OnboardingStep.DISTRITO.value: "compartirte orientacion y campanas de salud mas cercanas",
     }
+    STEP_CLARIFICATIONS = {
+        OnboardingStep.EDAD.value: "Me refiero a tu edad en anos cumplidos.",
+        OnboardingStep.PESO.value: "Me refiero a tu peso aproximado actual.",
+        OnboardingStep.ALTURA.value: "Me refiero a tu estatura (talla).",
+        OnboardingStep.TIPO_DIETA.value: "Me refiero a tu estilo de alimentacion habitual.",
+        OnboardingStep.ALERGIAS.value: "Me refiero a alergias o intolerancias a alimentos.",
+        OnboardingStep.ENFERMEDADES.value: "Me refiero a condiciones de salud que influyen en tu alimentacion.",
+        OnboardingStep.RESTRICCIONES.value: "Me refiero a alimentos que evitas por salud, preferencia o religion.",
+        OnboardingStep.OBJETIVO.value: "Me refiero a tu meta principal con la alimentacion.",
+        OnboardingStep.PROVINCIA.value: "Me refiero a la provincia donde vives actualmente.",
+        OnboardingStep.DISTRITO.value: "Me refiero al distrito donde vives actualmente.",
+    }
+    STEP_EXAMPLES = {
+        OnboardingStep.EDAD.value: "23",
+        OnboardingStep.PESO.value: "68 kg",
+        OnboardingStep.ALTURA.value: "1.70 m o 170 cm",
+        OnboardingStep.TIPO_DIETA.value: "omnivora (comes de todo), vegetariana, vegana o ninguna",
+        OnboardingStep.ALERGIAS.value: "mani, mariscos, lactosa o ninguna",
+        OnboardingStep.ENFERMEDADES.value: "diabetes, hipertension, hipotiroidismo o ninguna",
+        OnboardingStep.RESTRICCIONES.value: "no como cerdo, sin gluten o ninguna",
+        OnboardingStep.OBJETIVO.value: "bajar peso, ganar masa muscular o mejorar habitos",
+        OnboardingStep.PROVINCIA.value: "Lima",
+        OnboardingStep.DISTRITO.value: "Miraflores",
+    }
+    CLARIFICATION_MARKERS = (
+        "a que te refieres",
+        "a que se refiere",
+        "que significa",
+        "que es",
+        "como asi",
+        "como asi?",
+        "no entiendo",
+        "explica",
+        "ejemplo",
+        "no me queda claro",
+        "no me queda clara",
+    )
     SOFT_REFUSAL_MARKERS = (
         "para que",
         "para qué",
@@ -123,6 +160,39 @@ class OnboardingService:
         "no pienso",
         "no dare",
         "no daré",
+    )
+    INVITATION_ACCEPT_MARKERS = (
+        "si",
+        "sí",
+        "ok",
+        "okay",
+        "claro",
+        "dale",
+        "vamos",
+        "empez",
+        "continu",
+        "listo",
+        "ya",
+    )
+    INVITATION_REJECT_MARKERS = (
+        "no deseo",
+        "prefiero no",
+        "mas tarde",
+        "más tarde",
+        "luego",
+        "otro dia",
+        "otro día",
+        "no ahora",
+    )
+    NUTRITION_REQUEST_MARKERS = (
+        "menu",
+        "menú",
+        "receta",
+        "comida",
+        "desayuno",
+        "almuerzo",
+        "cena",
+        "dieta",
     )
 
     @staticmethod
@@ -155,6 +225,29 @@ class OnboardingService:
             return "personalizar mejor tus orientaciones"
         return self.STEP_PURPOSES.get(step, "personalizar mejor tus orientaciones")
 
+    @classmethod
+    def _is_clarification_request(cls, user_text: str) -> bool:
+        txt = (user_text or "").strip().lower()
+        if not txt:
+            return False
+        if txt.endswith("?"):
+            return any(marker in txt for marker in cls.CLARIFICATION_MARKERS)
+        return any(marker in txt for marker in cls.CLARIFICATION_MARKERS)
+
+    def _build_step_clarification_reply(self, current_step: Optional[str]) -> str:
+        if not current_step:
+            return "Claro 😊 dime y te explico mejor."
+        purpose = self._purpose_for_step(current_step)
+        clarification = self.STEP_CLARIFICATIONS.get(current_step, "Me refiero a ese dato de tu perfil.")
+        example = self.STEP_EXAMPLES.get(current_step, "un valor simple")
+        question = ONBOARDING_QUESTIONS.get(current_step, "")
+        return (
+            f"Claro 😊 {clarification}\n"
+            f"Esto me ayuda a {purpose}.\n"
+            f"Ejemplo: {example}.\n\n"
+            f"{question}"
+        ).strip()
+
     def _extract_numeric_step_fallback(self, current_step: Optional[str], user_text: str) -> dict:
         """Rescate deterministico para respuestas numericas cortas durante onboarding."""
         if not current_step:
@@ -182,6 +275,143 @@ class OnboardingService:
             return {}
 
         return {}
+
+    @classmethod
+    def _is_invitation_reject(cls, user_text: str) -> bool:
+        txt = (user_text or "").strip().lower()
+        if not txt:
+            return False
+        if txt in {"no", "nop", "nah"}:
+            return True
+        return any(marker in txt for marker in cls.INVITATION_REJECT_MARKERS)
+
+    @classmethod
+    def _is_invitation_accept(cls, user_text: str) -> bool:
+        txt = (user_text or "").strip().lower()
+        if not txt:
+            return False
+        return any(re.search(rf"\b{re.escape(marker)}\b", txt) for marker in cls.INVITATION_ACCEPT_MARKERS)
+
+    @classmethod
+    def _is_nutrition_request(cls, user_text: str) -> bool:
+        txt = (user_text or "").strip().lower()
+        if not txt:
+            return False
+        return any(marker in txt for marker in cls.NUTRITION_REQUEST_MARKERS)
+
+    def _extract_invitation_profile_data(self, user_text: str) -> dict:
+        txt = (user_text or "").strip()
+        if not txt:
+            return {}
+        txt_lower = txt.lower()
+        if "?" in txt:
+            return {}
+
+        clean_data: dict[str, str] = {}
+
+        age = parse_age(txt)
+        if age is not None and (
+            re.fullmatch(r"\d{1,3}", txt.strip()) is not None
+            or any(marker in txt_lower for marker in ("edad", "años", "anos", "tengo", "cumpli", "cumplí"))
+        ):
+            clean_data["edad"] = str(age)
+
+        weight = parse_weight(txt)
+        if weight is not None and any(marker in txt_lower for marker in ("peso", "kg", "kilo", "quilo", "libras", "lb")):
+            clean_data["peso_kg"] = str(weight)
+
+        height = parse_height(txt)
+        if height is not None and any(marker in txt_lower for marker in ("talla", "altura", "mido", "cm", "metro", "metros", " m ")):
+            clean_data["altura_cm"] = str(height)
+
+        if ("alerg" in txt_lower or "intoler" in txt_lower) and "alergias" not in clean_data:
+            parsed = standardize_text_list(txt)
+            if parsed:
+                clean_data["alergias"] = parsed
+
+        if "bajar peso" in txt_lower:
+            clean_data["objetivo_nutricional"] = "BAJAR PESO"
+        elif "ganar masa" in txt_lower:
+            clean_data["objetivo_nutricional"] = "GANAR MASA MUSCULAR"
+        elif "mejorar habitos" in txt_lower or "mejorar hábitos" in txt_lower:
+            clean_data["objetivo_nutricional"] = "MEJORAR HABITOS"
+
+        return clean_data
+
+    @staticmethod
+    def _onboarding_step_for_field(field_code: str) -> Optional[str]:
+        mapping = {
+            "edad": OnboardingStep.EDAD.value,
+            "peso_kg": OnboardingStep.PESO.value,
+            "altura_cm": OnboardingStep.ALTURA.value,
+            "alergias": OnboardingStep.ALERGIAS.value,
+            "objetivo_nutricional": OnboardingStep.OBJETIVO.value,
+            "tipo_dieta": OnboardingStep.TIPO_DIETA.value,
+            "enfermedades": OnboardingStep.ENFERMEDADES.value,
+            "restricciones_alimentarias": OnboardingStep.RESTRICCIONES.value,
+            "provincia": OnboardingStep.PROVINCIA.value,
+            "distrito": OnboardingStep.DISTRITO.value,
+        }
+        return mapping.get(field_code)
+
+    async def _handle_invitation_turn(
+        self,
+        *,
+        user_text: str,
+        state: ConversationState,
+        session: AsyncSession,
+    ) -> Optional[str]:
+        txt = (user_text or "").strip()
+        if not txt:
+            return None
+
+        inferred_data = self._extract_invitation_profile_data(txt)
+        if self._is_invitation_reject(txt):
+            self._set_onboarding_state(
+                state,
+                OnboardingStatus.SKIPPED,
+                None,
+                skip_count=state.onboarding_skip_count + 1,
+            )
+            return (
+                "Entendido 😊 seguimos conversando normal.\n\n"
+                "Cuando quieras personalizar tu perfil, solo me avisas."
+            )
+
+        if self._is_nutrition_request(txt) and not inferred_data and not self._is_invitation_accept(txt):
+            self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
+            return None
+
+        if inferred_data:
+            first_field = next(iter(inferred_data.keys()))
+            await self._profile_extractor.save_clean_data(
+                state.usuario_id,
+                inferred_data,
+                session,
+                source_text=txt,
+                current_step=self._onboarding_step_for_field(first_field),
+            )
+
+        accepted = bool(inferred_data) or self._is_invitation_accept(txt)
+        if not accepted:
+            return (
+                "Cuando quieras, empezamos tu perfil paso a paso 😊\n\n"
+                "Tambien puedes compartir directamente tu edad."
+            )
+
+        next_step = await self._find_next_missing_step(
+            session,
+            state.usuario_id,
+            phase=ONBOARDING_PHASE_1,
+        )
+        if next_step is None:
+            self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+            return "Ya tengo tu perfil basico completo 😊 ¿En que te ayudo hoy?"
+
+        self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+        if inferred_data:
+            return f"Perfecto, ya registre ese dato.\n\n{ONBOARDING_QUESTIONS[next_step]}"
+        return f"Genial 😊 vamos paso a paso con una sola pregunta.\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
     def _looks_like_valid_health_negative(self, step: Optional[str], user_text: str) -> bool:
         if not self._is_health_step(step):
@@ -458,6 +688,15 @@ FORMATO DE SALIDA (JSON):
         vl = user_text.lower().strip()
         current_step = state.onboarding_step
 
+        # La invitacion inicial se resuelve de forma deterministica para evitar
+        # repreguntas y aceptar datos directos (ej: "tengo 23 anos").
+        if current_step == OnboardingStep.INVITACION.value:
+            return await self._handle_invitation_turn(
+                user_text=user_text,
+                state=state,
+                session=session,
+            )
+
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
         intent = analysis["intent"]
@@ -475,6 +714,7 @@ FORMATO DE SALIDA (JSON):
             # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
             PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
+            clarification_request = self._is_clarification_request(user_text)
             refusal_kind = self._classify_data_refusal(
                 current_step=current_step,
                 user_text=user_text,
@@ -491,7 +731,7 @@ FORMATO DE SALIDA (JSON):
                 purpose = self._purpose_for_step(current_step)
                 return (
                     f"Buena pregunta 😊 te lo pido para {purpose}.\n\n"
-                    f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                    f"{self._build_step_clarification_reply(current_step)}"
                 )
             
             # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito):
@@ -513,6 +753,8 @@ FORMATO DE SALIDA (JSON):
             # REGLA DE OBSTINACIÓN (Nutrición requiere Perfil):
             if intent == "DOUBT" and current_step in PRIORITARY_STEPS:
                 if not self._can_try_health_rescue(current_step, user_text, is_food_request):
+                    if clarification_request:
+                        return self._build_step_clarification_reply(current_step)
                     missing_label = self.FIELD_LABELS.get(current_step, current_step)
                     purpose = self._purpose_for_step(current_step)
                     return (
@@ -539,6 +781,8 @@ FORMATO DE SALIDA (JSON):
                         return f"No hay problema 😊\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
                 if explanation:
+                    if clarification_request:
+                        return self._build_step_clarification_reply(current_step)
                     return f"{explanation}\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
 
                 if is_food_request:
@@ -559,43 +803,6 @@ FORMATO DE SALIDA (JSON):
             if intent == "STOP":
                 self._set_onboarding_state(state, OnboardingStatus.PAUSED, current_step)
                 return "De acuerdo, pausamos aquí. Si quieres seguir más tarde, solo dime 'continuar'. 👋"
-
-        # --- INVITACIÓN ---
-        if current_step == OnboardingStep.INVITACION.value:
-            prompt = f"""Analiza la respuesta del usuario a una invitación de 'Personalizar perfil nutricional'.
-            Responde SOLO con una palabra: ACCEPT, REJECT o OTHER.
-            USUARIO: "{user_text}"
-            """
-            resp = await self._openai_client.chat.completions.create(
-                model=self._openai_model,
-                messages=[{"role": "system", "content": "Eres un clasificador de intenciones binarias."},
-                          {"role": "user", "content": prompt}],
-                max_tokens=5,
-                temperature=0
-            )
-            intent = resp.choices[0].message.content.strip().upper()
-            
-            if "REJECT" in intent:
-                if len(user_text) > 15:
-                    self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
-                    return None
-                
-                self._set_onboarding_state(state, OnboardingStatus.SKIPPED, None, skip_count=state.onboarding_skip_count + 1)
-                return "¡Entendido! Seguimos conversando libremente. Si alguna vez quieres personalizar tu perfil, solo dímelo. 😊 ¿En qué más puedo ayudarte hoy?"
-            elif "OTHER" in intent:
-                self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
-                return None
-            else:
-                next_step = await self._find_next_missing_step(session, state.usuario_id)
-                if next_step is None:
-                    self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-                    return "¡Veo que ya tengo tu perfil nutricional completo! 😊 ¿En qué puedo ayudarte hoy?"
-
-                self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
-                return (
-                    "¡Genial! 😊 Lo haremos paso a paso, una pregunta por mensaje.\n\n"
-                    f"{ONBOARDING_QUESTIONS[next_step]}"
-                )
 
         # --- PROCESAMIENTO DE RESPUESTA ---
         current_step = state.onboarding_step
