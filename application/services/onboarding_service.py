@@ -521,7 +521,7 @@ class OnboardingService:
         self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
         if inferred_data:
             return f"Perfecto, ya registre ese dato.\n\n{ONBOARDING_QUESTIONS[next_step]}"
-        return f"Genial 😊 vamos paso a paso con una sola pregunta.\n\n{ONBOARDING_QUESTIONS[next_step]}"
+        return f"Genial 😊 vamos paso a paso.\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
     def _looks_like_valid_health_negative(self, step: Optional[str], user_text: str) -> bool:
         if not self._is_health_step(step):
@@ -648,9 +648,9 @@ class OnboardingService:
         session: AsyncSession,
         usuario_id: int,
         is_food_request: bool,
-    ) -> dict:
+    ) -> tuple[dict, Optional[str]]:
         if not self._can_try_health_rescue(current_step, user_text, is_food_request):
-            return {}
+            return {}, None
 
         candidate_text = self._clean_health_fallback_text(user_text)
         candidate = standardize_text_list(candidate_text)
@@ -659,19 +659,29 @@ class OnboardingService:
             not candidate
             or candidate_upper in self.HEALTH_FALLBACK_INVALID_VALUES
         ):
-            return {}
+            return {}, None
 
         field_code = self.HEALTH_FIELD_BY_STEP.get(current_step)
         if not field_code:
-            return {}
+            return {}, None
 
-        extracted = {field_code: candidate}
+        # Mensaje amable cuando el valor es claramente invalido/absurdo.
+        if self._profile_extractor.contains_absurd_claim(candidate):
+            question = ONBOARDING_QUESTIONS.get(current_step, "")
+            return (
+                {},
+                "Gracias por contarmelo 😊 Ese dato no parece una alergia o intolerancia alimentaria valida.\n\n"
+                "¿Podrias indicarme una alergia/intolerancia real (por ejemplo: mani, lactosa, mariscos) o decir *ninguna*?"
+                f"\n\n{question}",
+            )
+
+        raw_extractions = {field_code: candidate}
         try:
-            await self._profile_extractor.save_clean_data(
-                usuario_id,
-                extracted,
-                session,
-                source_text=user_text,
+            ext_result = await self._profile_extractor.apply_cleaning_and_save(
+                raw_extractions=raw_extractions,
+                user_text=user_text,
+                usuario_id=usuario_id,
+                session=session,
                 current_step=current_step,
             )
         except Exception:
@@ -682,14 +692,24 @@ class OnboardingService:
                 current_step,
                 candidate,
             )
-            return {}
-        logger.info(
-            "Onboarding fallback: user=%s, step=%s, value=%s",
-            usuario_id,
-            current_step,
-            candidate,
-        )
-        return extracted
+            return {}, None
+
+        if ext_result.meta_flags.get("needs_health_clarification"):
+            prompt = ext_result.meta_flags.get("clarification_prompt")
+            if prompt:
+                question = ONBOARDING_QUESTIONS.get(current_step, "")
+                return {}, f"{prompt}\n\n{question}"
+            return {}, None
+
+        extracted = ext_result.clean_data or {}
+        if extracted:
+            logger.info(
+                "Onboarding fallback: user=%s, step=%s, value=%s",
+                usuario_id,
+                current_step,
+                candidate,
+            )
+        return extracted, None
 
     SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
 
@@ -979,12 +999,13 @@ FORMATO DE SALIDA (JSON):
             extracted = {}
 
         # Fallback inteligente para campos de salud (alergias/enfermedades/restricciones)
+        fallback_clarification_prompt = None
         if (
             intent == "ANSWER"
             and not extracted
             and self._is_health_step(current_step)
         ):
-            extracted = await self._extract_health_fallback(
+            extracted, fallback_clarification_prompt = await self._extract_health_fallback(
                 current_step=current_step,
                 user_text=user_text,
                 session=session,
@@ -994,6 +1015,8 @@ FORMATO DE SALIDA (JSON):
 
         if not extracted:
             if intent == "ANSWER":
+                if fallback_clarification_prompt:
+                    return fallback_clarification_prompt
                 if self._check_frustration(history, current_step):
                     return (
                         "Tranqui, lo hacemos simple 😊\n\n"
