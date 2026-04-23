@@ -191,6 +191,30 @@ class OnboardingService:
         "no dare",
         "no daré",
     )
+    EXPLICIT_SKIP_MARKERS = (
+        "saltar",
+        "saltar esta",
+        "paso",
+        "omitir",
+        "siguiente",
+        "dejemoslo",
+        "dejemoslo para luego",
+        "luego",
+        "mas tarde",
+        "más tarde",
+    )
+    SHORT_CLARIFICATION_INPUTS = {
+        "para",
+        "para?",
+        "para que",
+        "para qué",
+        "que",
+        "que?",
+        "qué",
+        "qué?",
+        "porque",
+        "por qué",
+    }
     INVITATION_ACCEPT_MARKERS = (
         "si",
         "sí",
@@ -528,6 +552,8 @@ class OnboardingService:
         txt = (user_text or "").strip().lower()
         if not txt or self._looks_like_valid_health_negative(current_step, txt):
             return "NONE"
+        if txt in self.SHORT_CLARIFICATION_INPUTS:
+            return "SOFT_EXPLAIN"
         if txt in {"no", "nop", "nah"}:
             return "SOFT_EXPLAIN"
 
@@ -544,6 +570,21 @@ class OnboardingService:
         if has_soft:
             return "SOFT_EXPLAIN"
         return "NONE"
+
+    @classmethod
+    def _is_explicit_skip_request(cls, user_text: str) -> bool:
+        txt = (user_text or "").strip().lower()
+        if not txt:
+            return False
+        if txt in {"no", "nop", "nah"}:
+            return False
+        return any(marker in txt for marker in cls.EXPLICIT_SKIP_MARKERS)
+
+    @staticmethod
+    def _phase_for_step(step_code: Optional[str]) -> list:
+        if step_code and any(step.value == step_code for step in ONBOARDING_PHASE_2):
+            return ONBOARDING_PHASE_2
+        return ONBOARDING_PHASE_1
 
     async def _skip_current_step_and_advance(
         self,
@@ -772,6 +813,7 @@ FORMATO DE SALIDA (JSON):
 
         vl = user_text.lower().strip()
         current_step = state.onboarding_step
+        skip_already_applied = False
 
         # La invitacion inicial se resuelve de forma deterministica para evitar
         # repreguntas y aceptar datos directos (ej: "tengo 23 anos").
@@ -785,6 +827,10 @@ FORMATO DE SALIDA (JSON):
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
         intent = analysis["intent"]
+        explicit_skip_request = self._is_explicit_skip_request(user_text)
+        if intent == "SKIP" and not explicit_skip_request:
+            # Evita saltos por falsos positivos tipo "para", "que?".
+            intent = "DOUBT"
         numeric_fallback = self._extract_numeric_step_fallback(current_step, user_text)
         if numeric_fallback and (intent != "ANSWER" or not analysis.get("data")):
             intent = "ANSWER"
@@ -798,6 +844,7 @@ FORMATO DE SALIDA (JSON):
         if current_step and current_step != OnboardingStep.INVITACION.value:
             # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
             PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
+            PHASE2_STEPS = [s.value for s in ONBOARDING_PHASE_2]
             is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
             clarification_request = self._is_clarification_request(user_text)
             refusal_kind = self._classify_data_refusal(
@@ -854,6 +901,11 @@ FORMATO DE SALIDA (JSON):
                     )
                 intent = "ANSWER"
 
+            # Fase 2 es progresiva: si cambia de tema, no bloqueamos la conversacion.
+            if current_step in PHASE2_STEPS and is_food_request and intent in ("DOUBT", "GREETING", "SKIP"):
+                self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+                return None
+
             if intent == "DOUBT":
                 explanation = analysis.get("explanation")
                 
@@ -886,6 +938,7 @@ FORMATO DE SALIDA (JSON):
             
             if intent == "SKIP":
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+                skip_already_applied = True
             
             if intent == "GREETING":
                 return None
@@ -941,13 +994,13 @@ FORMATO DE SALIDA (JSON):
                     "No logre captar ese dato 😅\n\n"
                     f"Me lo repites asi de simple:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
                 )
-            elif intent == "SKIP":
+            elif intent == "SKIP" and not skip_already_applied:
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)
             else:
                 pass
 
-        if not extracted and intent == "SKIP":
-             await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+        if not extracted and intent == "SKIP" and not skip_already_applied:
+            await self._mark_field_as_skipped(session, state.usuario_id, current_step)
 
         # Si hubo una extracción y requiere aclaración clínica, atajamos el flujo
         if extracted and meta_flags.get("needs_health_clarification"):
@@ -955,8 +1008,10 @@ FORMATO DE SALIDA (JSON):
             return meta_flags.get("clarification_prompt", "¿Te importaría aclararlo un poco más para ser más precisos?")
 
         updated_cols = list(extracted.keys()) if extracted else []
+        active_phase = self._phase_for_step(current_step)
+        phase_steps = [s for s in active_phase if s != OnboardingStep.INVITACION]
         current_idx = -1
-        for i, s in enumerate(ONBOARDING_STEPS_ORDER):
+        for i, s in enumerate(phase_steps):
             if s.value == current_step:
                 current_idx = i
                 break
@@ -967,16 +1022,16 @@ FORMATO DE SALIDA (JSON):
             and any(w in vl.split() or vl.startswith(w) for w in ["saltar", "paso", "omitir", "luego", "siguiente"])
         )
         
-        search_start_idx = current_idx + 1 if (was_current_answered or was_current_skipped) else current_idx
+        search_start_idx = current_idx + 1 if (was_current_answered or was_current_skipped) else max(current_idx, 0)
 
-        # PHASE 1: buscar solo en pasos de Phase 1 durante onboarding activo
+        # Continuar en la misma fase activa.
         next_step = await self._find_next_missing_step(
             session,
             state.usuario_id,
             treat_ninguna_as_missing=treat_ninguna_as_missing,
             start_from_idx=search_start_idx,
             ignore_cols=updated_cols,
-            phase=ONBOARDING_PHASE_1,
+            phase=phase_steps,
         )
         if next_step:
             self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
@@ -991,8 +1046,10 @@ FORMATO DE SALIDA (JSON):
 
             return f"{ONBOARDING_QUESTIONS[next_step]}"
         else:
-            # Phase 1 completada → dar valor inmediato y pasar a active_chat
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+            if any(step.value == current_step for step in ONBOARDING_PHASE_2):
+                return "Listo 😊 ya completé los datos extra de tu perfil."
+            # Phase 1 completada → dar valor inmediato y pasar a active_chat
             return await self._build_phase1_completion_message(session, state.usuario_id)
 
     async def _find_next_missing_step(
