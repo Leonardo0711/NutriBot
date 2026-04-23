@@ -123,11 +123,25 @@ NUTRITION_KEYWORDS = [
     "frutas", "verduras", "vegetales",
 ]
 
-PERSONALIZATION_KEYWORDS = [
-    "personalizar", "completar mi perfil", "mis datos",
-    "actualizar perfil", "perfil nutricional", "llenar datos",
-    "mis objetivos", "cambiar mi", "actualizar mi",
-]
+PERSONALIZATION_ACTION_ROOTS = (
+    "actualiz",
+    "personaliz",
+    "complet",
+    "llen",
+    "modific",
+    "edit",
+    "cambi",
+    "ajust",
+    "correg",
+    "update",
+)
+
+PERSONALIZATION_PROFILE_ROOTS = (
+    "perfil",
+    "dato",
+    "nutric",
+    "cuenta",
+)
 
 SURVEY_KEYWORDS = [
     "encuesta", "formulario", "satisfaccion", "experiencia",
@@ -277,10 +291,10 @@ def classify_message(
     if correction:
         return correction
 
-    # 7. SOLICITUD DE PERSONALIZACIÓN
-    for pk in PERSONALIZATION_KEYWORDS:
-        if _contains_keyword(norm, pk):
-            return RouteResult(Intent.PERSONALIZE_REQUEST, 0.9, reason=f"Personalización: '{pk}'")
+    # 7. SOLICITUD DE PERSONALIZACIÓN (robusta a typos, sin frases exactas)
+    personalization = _detect_personalization_request_intent(norm)
+    if personalization:
+        return personalization
 
     # 8. ENCUESTA
     for sk in SURVEY_KEYWORDS:
@@ -316,6 +330,43 @@ def classify_message(
 # ──────────────────────────────────────────────
 # Sub-clasificadores
 # ──────────────────────────────────────────────
+
+def _detect_personalization_request_intent(norm: str) -> Optional[RouteResult]:
+    if not norm:
+        return None
+
+    tokens = re.findall(r"[a-z0-9]+", norm)
+    if not tokens:
+        return None
+
+    has_profile_signal = any(
+        tok.startswith(PERSONALIZATION_PROFILE_ROOTS)
+        or fuzzy_match(tok, "perfil", threshold=0.72)
+        for tok in tokens
+    )
+    if not has_profile_signal:
+        has_profile_signal = ("perfil" in norm) or ("nutric" in norm and "dato" in norm)
+
+    has_action_signal = any(
+        tok.startswith(PERSONALIZATION_ACTION_ROOTS)
+        or fuzzy_match(tok, "actualizar", threshold=0.72)
+        or fuzzy_match(tok, "personalizar", threshold=0.72)
+        or fuzzy_match(tok, "completar", threshold=0.72)
+        for tok in tokens
+    )
+
+    direct_compound = (
+        ("perfil" in norm and ("actual" in norm or "personal" in norm or "complet" in norm))
+        or ("mis datos" in norm and ("cambi" in norm or "actual" in norm))
+    )
+
+    if (has_profile_signal and has_action_signal) or direct_compound:
+        return RouteResult(
+            Intent.PERSONALIZE_REQUEST,
+            0.9,
+            reason="Personalización detectada por intención semántica",
+        )
+    return None
 
 def _try_answer_current_step(
     norm: str,
@@ -581,7 +632,19 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                     )
 
         # Objetivo nutricional
-        if "objetivo" in clause or clause.startswith("quiero ") or clause.startswith("busco "):
+        objective_hint_words = (
+            "bajar", "subir", "ganar", "masa", "muscular", "peso",
+            "habito", "salud", "saludable", "controlar", "mejorar",
+            "reducir", "aumentar", "grasa", "definir",
+        )
+        is_objective_sentence = ("objetivo" in clause or "meta" in clause)
+        starts_goal_verb = clause.startswith("quiero ") or clause.startswith("busco ")
+        if starts_goal_verb and not any(w in clause for w in objective_hint_words):
+            starts_goal_verb = False
+        if starts_goal_verb and any(k in clause for k in ("receta", "menu", "menú", "cena", "almuerzo", "desayuno", "comida")):
+            starts_goal_verb = False
+
+        if is_objective_sentence or starts_goal_verb:
             m = re.search(r"(?:mi objetivo(?: principal)? es|quiero|busco)\s+(.+)", clause)
             if m:
                 value = _clean_profile_value(m.group(1))
@@ -615,6 +678,13 @@ def _detect_nutrition_intent(norm: str) -> Optional[RouteResult]:
             reason=f"Múltiples keywords nutricionales ({match_count})",
         )
     elif match_count == 1:
+        short_request_markers = ("receta", "menu", "dieta", "desayuno", "almuerzo", "cena", "comida")
+        if any(_contains_keyword(norm, marker) for marker in short_request_markers):
+            return RouteResult(
+                Intent.RECOMMENDATION_REQUEST,
+                0.82,
+                reason="Solicitud nutricional corta detectada",
+            )
         if len(norm.split()) > 4:
             return RouteResult(
                 Intent.NUTRITION_QUERY,

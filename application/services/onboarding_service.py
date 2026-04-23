@@ -16,6 +16,7 @@ from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER, ONBOARDING_PHASE_1, ONBOARDING_PHASE_2
 from domain.utils import get_now_peru
 from domain.parsers import parse_age, parse_weight, parse_height, standardize_text_list
+from domain.normalizer import normalize_text, fuzzy_match
 from application.services.profile_extraction_service import ProfileExtractionService
 from application.services.profile_read_service import ProfileReadService
 from application.services.nutrition_assessment_service import NutritionAssessmentService
@@ -213,6 +214,24 @@ class OnboardingService:
         "otro día",
         "no ahora",
     )
+    PERSONALIZATION_ACTION_ROOTS = (
+        "actualiz",
+        "personaliz",
+        "complet",
+        "llen",
+        "modific",
+        "edit",
+        "cambi",
+        "ajust",
+        "correg",
+        "update",
+    )
+    PERSONALIZATION_PROFILE_ROOTS = (
+        "perfil",
+        "dato",
+        "nutric",
+        "cuenta",
+    )
     NUTRITION_REQUEST_MARKERS = (
         "menu",
         "menú",
@@ -334,6 +353,38 @@ class OnboardingService:
             return False
         return any(marker in txt for marker in cls.NUTRITION_REQUEST_MARKERS)
 
+    @classmethod
+    def _is_personalization_request(cls, user_text: str) -> bool:
+        txt = normalize_text((user_text or "").strip())
+        if not txt:
+            return False
+        tokens = re.findall(r"[a-z0-9]+", txt)
+        if not tokens:
+            return False
+
+        has_profile_signal = any(
+            tok.startswith(cls.PERSONALIZATION_PROFILE_ROOTS)
+            or fuzzy_match(tok, "perfil", threshold=0.72)
+            for tok in tokens
+        )
+        if not has_profile_signal:
+            has_profile_signal = ("perfil" in txt) or ("nutric" in txt and "dato" in txt)
+
+        has_action_signal = any(
+            tok.startswith(cls.PERSONALIZATION_ACTION_ROOTS)
+            or fuzzy_match(tok, "actualizar", threshold=0.72)
+            or fuzzy_match(tok, "personalizar", threshold=0.72)
+            or fuzzy_match(tok, "completar", threshold=0.72)
+            for tok in tokens
+        )
+
+        direct_compound = (
+            ("perfil" in txt and ("actual" in txt or "personal" in txt or "complet" in txt))
+            or ("mis datos" in txt and ("cambi" in txt or "actual" in txt))
+        )
+
+        return bool((has_profile_signal and has_action_signal) or direct_compound)
+
     def _extract_invitation_profile_data(self, user_text: str) -> dict:
         txt = (user_text or "").strip()
         if not txt:
@@ -427,7 +478,7 @@ class OnboardingService:
                 current_step=self._onboarding_step_for_field(first_field),
             )
 
-        accepted = bool(inferred_data) or self._is_invitation_accept(txt)
+        accepted = bool(inferred_data) or self._is_invitation_accept(txt) or self._is_personalization_request(txt)
         if not accepted:
             return (
                 "Estoy aqui para ayudarte 😊\n\n"
@@ -566,7 +617,6 @@ class OnboardingService:
         if (
             not candidate
             or candidate_upper in self.HEALTH_FALLBACK_INVALID_VALUES
-            or self._profile_extractor.contains_absurd_claim(candidate)
         ):
             return {}
 

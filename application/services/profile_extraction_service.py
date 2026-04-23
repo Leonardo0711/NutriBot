@@ -2,6 +2,7 @@
 Nutribot Backend — ProfileExtractionService
 Servicio de Aplicación Orientado a Objetos para extraer perfil.
 """
+import asyncio
 import json
 import logging
 import math
@@ -14,6 +15,7 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.parsers import parse_weight, parse_height, parse_age, standardize_text_list
@@ -509,12 +511,16 @@ REGLAS CRITICAS DE ROBUSTEZ:
         query_norm = self._normalize_text(raw_query)
         if not query_norm:
             return None
-        return await self._semantic_cache_get(
-            session,
-            field_code=field_code,
-            query_normalized=query_norm,
-            increment_hit=False,
-        )
+        try:
+            return await self._semantic_cache_get(
+                session,
+                field_code=field_code,
+                query_normalized=query_norm,
+                increment_hit=False,
+            )
+        except DBAPIError:
+            logger.debug("semantic_cache_peek omitido por transaccion no limpia", exc_info=True)
+            return None
 
     async def _log_semantic_match(
         self,
@@ -796,6 +802,89 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 return row
         return None
 
+    @classmethod
+    def _rows_by_code(cls, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        mapping: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = cls._normalize_text(row.get("codigo"))
+            if key and key not in mapping:
+                mapping[key] = row
+        return mapping
+
+    async def _resolve_catalog_exact_match(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        query_normalized: str,
+    ) -> Optional[dict[str, Any]]:
+        if not entity_type or not query_normalized:
+            return None
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT entidad_codigo, texto_busqueda
+                    FROM semantic_catalog
+                    WHERE entidad_tipo = :etype
+                      AND activo = TRUE
+                      AND texto_normalizado = :qnorm
+                    ORDER BY peso_lexico DESC, peso_semantico DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"etype": entity_type, "qnorm": query_normalized},
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+    async def _resolve_catalog_trgm_match(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        query_normalized: str,
+    ) -> Optional[dict[str, Any]]:
+        if not entity_type or not query_normalized:
+            return None
+        try:
+            async with session.begin_nested():
+                row = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT
+                                entidad_codigo,
+                                texto_busqueda,
+                                similarity(texto_normalizado, CAST(:qnorm AS text)) AS score
+                            FROM semantic_catalog
+                            WHERE entidad_tipo = :etype
+                              AND activo = TRUE
+                              AND texto_normalizado %% CAST(:qnorm AS text)
+                            ORDER BY score DESC, peso_lexico DESC, id ASC
+                            LIMIT 1
+                            """
+                        ),
+                        {"etype": entity_type, "qnorm": query_normalized},
+                    )
+                ).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            logger.debug("TRGM de semantic_catalog no disponible para entidad_tipo=%s", entity_type, exc_info=True)
+            return None
+
+    @classmethod
+    def _should_attempt_ai_semantic(cls, normalized_query: str) -> bool:
+        if not normalized_query:
+            return False
+        compact = normalized_query.replace(" ", "")
+        if len(compact) < 3:
+            return False
+        tokens = normalized_query.split()
+        if len(tokens) == 1 and len(tokens[0]) <= 2:
+            return False
+        return True
+
     async def _resolve_alias_match(
         self,
         session: AsyncSession,
@@ -890,6 +979,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
     ) -> Optional[dict[str, Any]]:
         if not self._openai_client or not entity_type or not query_text:
             return None
+        if not self._should_attempt_ai_semantic(self._normalize_text(query_text)):
+            return None
         await self._enqueue_missing_catalog_embeddings(session, entity_type=entity_type)
         has_embeddings = (
             await session.execute(
@@ -909,9 +1000,12 @@ REGLAS CRITICAS DE ROBUSTEZ:
         if not has_embeddings:
             return None
         try:
-            emb_resp = await self._openai_client.embeddings.create(
-                input=[query_text],
-                model=self.SEMANTIC_EMBED_MODEL,
+            emb_resp = await asyncio.wait_for(
+                self._openai_client.embeddings.create(
+                    input=[query_text],
+                    model=self.SEMANTIC_EMBED_MODEL,
+                ),
+                timeout=2.8,
             )
             embedding = emb_resp.data[0].embedding
             literal = self._build_embedding_literal(embedding)
@@ -960,6 +1054,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
     ) -> Optional[dict[str, Any]]:
         if not self._openai_client or not candidates:
             return None
+        if not self._should_attempt_ai_semantic(self._normalize_text(query_text)):
+            return None
         shortlist = candidates[:8]
         prompt = (
             "Usuario dijo: "
@@ -969,15 +1065,18 @@ REGLAS CRITICAS DE ROBUSTEZ:
             "Responde JSON con {'codigo': <string|null>, 'confidence': <0-1>}."
         )
         try:
-            resp = await self._openai_client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": "Resuelve entidades de catalogo con criterio conservador."},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=120,
+            resp = await asyncio.wait_for(
+                self._openai_client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": "Resuelve entidades de catalogo con criterio conservador."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0,
+                    max_tokens=120,
+                ),
+                timeout=3.2,
             )
             data = json.loads(resp.choices[0].message.content or "{}")
             code = data.get("codigo")
@@ -1031,278 +1130,354 @@ REGLAS CRITICAS DE ROBUSTEZ:
         ranked_candidates: list[dict[str, Any]] = []
 
         try:
-            cache = await self._semantic_cache_get(
-                session,
-                field_code=table_name,
-                query_normalized=target_norm,
-            )
+            async with session.begin_nested():
+                cache = await self._semantic_cache_get(
+                    session,
+                    field_code=table_name,
+                    query_normalized=target_norm,
+                )
 
-            query = text(
-                f"""
-                SELECT id, {code_column} AS codigo, {name_column} AS nombre
-                FROM {table_name}
-                WHERE activo = TRUE
-                  AND {extra_where}
-                """
-            )
-            rows = [dict(r) for r in (await session.execute(query)).mappings().all()]
-            if not rows:
-                review_reason = "NO_MATCH"
-                error_detail = f"Sin filas activas en {table_name}"
-            else:
-                if cache and cache.get("entidad_codigo_resuelto"):
-                    cached_row = self._find_row_by_code(rows, cache.get("entidad_codigo_resuelto"))
-                    if cached_row:
-                        resolved_row = cached_row
-                        cache_hit = True
-                        cached_strategy = str(cache.get("estrategia_usada") or "").upper()
-                        strategy = f"CACHE_{cached_strategy}" if cached_strategy else "CACHE"
-                        confidence = float(cache.get("confidence") or 0.0)
-                        exact_match = cached_strategy == "EXACT"
+                query = text(
+                    f"""
+                    SELECT id, {code_column} AS codigo, {name_column} AS nombre
+                    FROM {table_name}
+                    WHERE activo = TRUE
+                      AND {extra_where}
+                    """
+                )
+                rows = [dict(r) for r in (await session.execute(query)).mappings().all()]
+                rows_by_code = self._rows_by_code(rows)
+                if not rows:
+                    review_reason = "NO_MATCH"
+                    error_detail = f"Sin filas activas en {table_name}"
+                else:
+                    if cache and cache.get("entidad_codigo_resuelto"):
+                        cached_row = self._find_row_by_code(rows, cache.get("entidad_codigo_resuelto"))
+                        if cached_row:
+                            resolved_row = cached_row
+                            cache_hit = True
+                            cached_strategy = str(cache.get("estrategia_usada") or "").upper()
+                            strategy = f"CACHE_{cached_strategy}" if cached_strategy else "CACHE"
+                            confidence = float(cache.get("confidence") or 0.0)
+                            exact_match = cached_strategy == "EXACT"
 
-                if not resolved_row:
-                    best_row: Optional[dict[str, Any]] = None
-                    best_score = 0.0
-                    for row in rows:
-                        score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
-                        if score > best_score:
-                            best_score = score
-                            best_row = row
-                    if best_row and best_score >= minimum_score:
-                        resolved_row = best_row
-                        strategy = "EXACT"
-                        confidence = float(best_score)
-                        exact_match = True
-                        await self._semantic_cache_put(
+                    if not resolved_row:
+                        catalog_exact = await self._resolve_catalog_exact_match(
                             session,
-                            field_code=table_name,
-                            raw_query=raw_text,
-                            query_normalized=target_norm,
                             entity_type=entity_type,
-                            entity_code=str(best_row.get("codigo")),
-                            strategy="EXACT",
-                            confidence=best_score,
-                            top_candidates=[
-                                {
-                                    "codigo": best_row.get("codigo"),
-                                    "nombre": best_row.get("nombre"),
-                                    "score": round(best_score, 4),
-                                }
-                            ],
-                        )
-
-                if not resolved_row:
-                    alias_meta = await self._resolve_alias_match(
-                        session,
-                        entity_type=entity_type,
-                        query_normalized=target_norm,
-                        rows=rows,
-                    )
-                    if alias_meta and alias_meta.get("master_row"):
-                        resolved_row = dict(alias_meta.get("master_row"))
-                        strategy = "ALIAS"
-                        confidence = 0.96
-                        await self._semantic_cache_put(
-                            session,
-                            field_code=table_name,
-                            raw_query=raw_text,
                             query_normalized=target_norm,
-                            entity_type=entity_type,
-                            entity_code=str(resolved_row.get("codigo")),
-                            strategy="ALIAS",
-                            confidence=confidence,
-                            top_candidates=[
-                                {
-                                    "codigo": resolved_row.get("codigo"),
-                                    "nombre": resolved_row.get("nombre"),
-                                    "score": confidence,
-                                }
-                            ],
                         )
-
-                if not resolved_row:
-                    trgm_row = await self._resolve_trgm_match(
-                        session,
-                        table_name=table_name,
-                        code_column=code_column,
-                        name_column=name_column,
-                        extra_where=extra_where,
-                        query_normalized=target_norm,
-                    )
-                    trigram_score = float(trgm_row.get("score") or 0.0) if trgm_row else None
-                    if trgm_row and trigram_score >= max(0.78, minimum_score - 0.12):
-                        resolved_row = trgm_row
-                        strategy = "TRGM"
-                        confidence = float(trigram_score)
-                        decided_by_rule = True
-                        await self._semantic_cache_put(
-                            session,
-                            field_code=table_name,
-                            raw_query=raw_text,
-                            query_normalized=target_norm,
-                            entity_type=entity_type,
-                            entity_code=str(trgm_row.get("codigo")),
-                            strategy="TRGM",
-                            confidence=confidence,
-                            top_candidates=[
-                                {
-                                    "codigo": trgm_row.get("codigo"),
-                                    "nombre": trgm_row.get("nombre"),
-                                    "score": round(confidence, 4),
-                                }
-                            ],
-                        )
-
-                if not resolved_row:
-                    fuzzy_row: Optional[dict[str, Any]] = None
-                    fuzzy_score = 0.0
-                    for row in rows:
-                        code_norm = self._normalize_text(row.get("codigo"))
-                        name_norm = self._normalize_text(row.get("nombre"))
-                        ratio = max(
-                            SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
-                            SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
-                        )
-                        if ratio > fuzzy_score:
-                            fuzzy_score = ratio
-                            fuzzy_row = row
-                    if fuzzy_row and fuzzy_score >= max(0.8, minimum_score - 0.1):
-                        resolved_row = fuzzy_row
-                        strategy = "FUZZY"
-                        confidence = float(fuzzy_score)
-                        decided_by_rule = True
-                        await self._semantic_cache_put(
-                            session,
-                            field_code=table_name,
-                            raw_query=raw_text,
-                            query_normalized=target_norm,
-                            entity_type=entity_type,
-                            entity_code=str(fuzzy_row.get("codigo")),
-                            strategy="FUZZY",
-                            confidence=confidence,
-                            top_candidates=[
-                                {
-                                    "codigo": fuzzy_row.get("codigo"),
-                                    "nombre": fuzzy_row.get("nombre"),
-                                    "score": round(confidence, 4),
-                                }
-                            ],
-                        )
-
-                if not resolved_row:
-                    vector_row = await self._resolve_vector_match(
-                        session,
-                        entity_type=entity_type,
-                        query_text=raw_text,
-                        rows=rows,
-                    )
-                    vector_score = float(vector_row.get("score") or 0.0) if vector_row else None
-                    if vector_row and vector_score >= max(0.78, minimum_score - 0.12):
-                        resolved_row = vector_row
-                        strategy = "VECTOR"
-                        confidence = float(vector_score)
-                        await self._semantic_cache_put(
-                            session,
-                            field_code=table_name,
-                            raw_query=raw_text,
-                            query_normalized=target_norm,
-                            entity_type=entity_type,
-                            entity_code=str(vector_row.get("codigo")),
-                            strategy="VECTOR",
-                            confidence=confidence,
-                            top_candidates=[
-                                {
-                                    "codigo": vector_row.get("codigo"),
-                                    "nombre": vector_row.get("nombre"),
-                                    "score": round(confidence, 4),
-                                }
-                            ],
-                        )
-
-                if not resolved_row:
-                    for row in rows:
-                        code_norm = self._normalize_text(row.get("codigo"))
-                        name_norm = self._normalize_text(row.get("nombre"))
-                        lexical = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
-                        ratio = max(
-                            SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
-                            SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
-                        )
-                        score = max(lexical, ratio * 0.92)
-                        if score < 0.35:
-                            continue
-                        ranked_candidates.append(
-                            {
-                                "codigo": row.get("codigo"),
-                                "nombre": row.get("nombre"),
-                                "score": round(score, 4),
-                            }
-                        )
-                    ranked_candidates.sort(key=lambda x: x["score"], reverse=True)
-
-                    if ranked_candidates and float(ranked_candidates[0]["score"]) >= self.SEMANTIC_LLM_FALLBACK_MIN_SCORE:
-                        escalated_to_ai = True
-                        llm_pick = await self._resolve_llm_fallback(
-                            query_text=raw_text,
-                            candidates=ranked_candidates,
-                        )
-                        if llm_pick and llm_pick.get("codigo"):
-                            llm_row = self._find_row_by_code(rows, llm_pick.get("codigo"))
-                            if llm_row:
-                                resolved_row = llm_row
-                                strategy = "LLM"
-                                confidence = float(llm_pick.get("score") or 0.0)
+                        if catalog_exact and catalog_exact.get("entidad_codigo"):
+                            resolved_row = rows_by_code.get(
+                                self._normalize_text(catalog_exact.get("entidad_codigo"))
+                            )
+                            if resolved_row:
+                                strategy = "CATALOG_EXACT"
+                                confidence = 0.97
+                                exact_match = True
                                 await self._semantic_cache_put(
                                     session,
                                     field_code=table_name,
                                     raw_query=raw_text,
                                     query_normalized=target_norm,
                                     entity_type=entity_type,
-                                    entity_code=str(llm_row.get("codigo")),
-                                    strategy="LLM",
+                                    entity_code=str(resolved_row.get("codigo")),
+                                    strategy="CATALOG_EXACT",
                                     confidence=confidence,
-                                    top_candidates=ranked_candidates[:5],
+                                    top_candidates=[
+                                        {
+                                            "codigo": resolved_row.get("codigo"),
+                                            "nombre": resolved_row.get("nombre"),
+                                            "score": confidence,
+                                        }
+                                    ],
                                 )
+
                     if not resolved_row:
-                        review_reason = "LOW_CONFIDENCE" if ranked_candidates else "NO_MATCH"
+                        best_row: Optional[dict[str, Any]] = None
+                        best_score = 0.0
+                        for row in rows:
+                            score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
+                            if score > best_score:
+                                best_score = score
+                                best_row = row
+                        if best_row and best_score >= minimum_score:
+                            resolved_row = best_row
+                            strategy = "EXACT"
+                            confidence = float(best_score)
+                            exact_match = True
+                            await self._semantic_cache_put(
+                                session,
+                                field_code=table_name,
+                                raw_query=raw_text,
+                                query_normalized=target_norm,
+                                entity_type=entity_type,
+                                entity_code=str(best_row.get("codigo")),
+                                strategy="EXACT",
+                                confidence=best_score,
+                                top_candidates=[
+                                    {
+                                        "codigo": best_row.get("codigo"),
+                                        "nombre": best_row.get("nombre"),
+                                        "score": round(best_score, 4),
+                                    }
+                                ],
+                            )
 
-                if resolved_row and entity_type:
-                    canonical_name = str(resolved_row.get("nombre") or "")
-                    canonical_entry = await self._upsert_semantic_catalog_entry(
-                        session,
-                        entity_type=entity_type,
-                        entity_code=str(resolved_row.get("codigo")),
-                        canonical_name=canonical_name,
-                        search_text=canonical_name,
-                        alias_semantico_id=int(alias_meta.get("alias_id")) if alias_meta and alias_meta.get("alias_id") else None,
-                    )
-                    if canonical_entry and not canonical_entry.get("embedding"):
-                        await self._enqueue_embedding_job(
+                    if not resolved_row:
+                        alias_meta = await self._resolve_alias_match(
                             session,
-                            source_table="semantic_catalog",
-                            source_id=int(canonical_entry.get("id")),
-                            source_text=str(canonical_entry.get("texto_busqueda") or canonical_name),
-                            model=self.SEMANTIC_EMBED_MODEL,
+                            entity_type=entity_type,
+                            query_normalized=target_norm,
+                            rows=rows,
                         )
+                        if alias_meta and alias_meta.get("master_row"):
+                            resolved_row = dict(alias_meta.get("master_row"))
+                            strategy = "ALIAS"
+                            confidence = 0.96
+                            await self._semantic_cache_put(
+                                session,
+                                field_code=table_name,
+                                raw_query=raw_text,
+                                query_normalized=target_norm,
+                                entity_type=entity_type,
+                                entity_code=str(resolved_row.get("codigo")),
+                                strategy="ALIAS",
+                                confidence=confidence,
+                                top_candidates=[
+                                    {
+                                        "codigo": resolved_row.get("codigo"),
+                                        "nombre": resolved_row.get("nombre"),
+                                        "score": confidence,
+                                    }
+                                ],
+                            )
 
-                    canonical_norm = self._normalize_text(canonical_name)
-                    if target_norm and target_norm != canonical_norm:
-                        query_entry = await self._upsert_semantic_catalog_entry(
+                    if not resolved_row:
+                        catalog_trgm = await self._resolve_catalog_trgm_match(
+                            session,
+                            entity_type=entity_type,
+                            query_normalized=target_norm,
+                        )
+                        catalog_trgm_score = float(catalog_trgm.get("score") or 0.0) if catalog_trgm else 0.0
+                        if catalog_trgm and catalog_trgm_score >= max(0.78, minimum_score - 0.12):
+                            resolved_row = rows_by_code.get(
+                                self._normalize_text(catalog_trgm.get("entidad_codigo"))
+                            )
+                            if resolved_row:
+                                strategy = "CATALOG_TRGM"
+                                confidence = catalog_trgm_score
+                                decided_by_rule = True
+                                trigram_score = catalog_trgm_score
+                                await self._semantic_cache_put(
+                                    session,
+                                    field_code=table_name,
+                                    raw_query=raw_text,
+                                    query_normalized=target_norm,
+                                    entity_type=entity_type,
+                                    entity_code=str(resolved_row.get("codigo")),
+                                    strategy="CATALOG_TRGM",
+                                    confidence=confidence,
+                                    top_candidates=[
+                                        {
+                                            "codigo": resolved_row.get("codigo"),
+                                            "nombre": resolved_row.get("nombre"),
+                                            "score": round(confidence, 4),
+                                        }
+                                    ],
+                                )
+
+                    if not resolved_row:
+                        trgm_row = await self._resolve_trgm_match(
+                            session,
+                            table_name=table_name,
+                            code_column=code_column,
+                            name_column=name_column,
+                            extra_where=extra_where,
+                            query_normalized=target_norm,
+                        )
+                        trigram_score = float(trgm_row.get("score") or 0.0) if trgm_row else None
+                        if trgm_row and trigram_score >= max(0.78, minimum_score - 0.12):
+                            resolved_row = trgm_row
+                            strategy = "TRGM"
+                            confidence = float(trigram_score)
+                            decided_by_rule = True
+                            await self._semantic_cache_put(
+                                session,
+                                field_code=table_name,
+                                raw_query=raw_text,
+                                query_normalized=target_norm,
+                                entity_type=entity_type,
+                                entity_code=str(trgm_row.get("codigo")),
+                                strategy="TRGM",
+                                confidence=confidence,
+                                top_candidates=[
+                                    {
+                                        "codigo": trgm_row.get("codigo"),
+                                        "nombre": trgm_row.get("nombre"),
+                                        "score": round(confidence, 4),
+                                    }
+                                ],
+                            )
+
+                    if not resolved_row:
+                        fuzzy_row: Optional[dict[str, Any]] = None
+                        fuzzy_score = 0.0
+                        for row in rows:
+                            code_norm = self._normalize_text(row.get("codigo"))
+                            name_norm = self._normalize_text(row.get("nombre"))
+                            ratio = max(
+                                SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
+                                SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
+                            )
+                            if ratio > fuzzy_score:
+                                fuzzy_score = ratio
+                                fuzzy_row = row
+                        if fuzzy_row and fuzzy_score >= max(0.8, minimum_score - 0.1):
+                            resolved_row = fuzzy_row
+                            strategy = "FUZZY"
+                            confidence = float(fuzzy_score)
+                            decided_by_rule = True
+                            await self._semantic_cache_put(
+                                session,
+                                field_code=table_name,
+                                raw_query=raw_text,
+                                query_normalized=target_norm,
+                                entity_type=entity_type,
+                                entity_code=str(fuzzy_row.get("codigo")),
+                                strategy="FUZZY",
+                                confidence=confidence,
+                                top_candidates=[
+                                    {
+                                        "codigo": fuzzy_row.get("codigo"),
+                                        "nombre": fuzzy_row.get("nombre"),
+                                        "score": round(confidence, 4),
+                                    }
+                                ],
+                            )
+
+                    if not resolved_row and self._should_attempt_ai_semantic(target_norm):
+                        vector_row = await self._resolve_vector_match(
+                            session,
+                            entity_type=entity_type,
+                            query_text=raw_text,
+                            rows=rows,
+                        )
+                        vector_score = float(vector_row.get("score") or 0.0) if vector_row else None
+                        if vector_row and vector_score >= max(0.78, minimum_score - 0.12):
+                            resolved_row = vector_row
+                            strategy = "VECTOR"
+                            confidence = float(vector_score)
+                            await self._semantic_cache_put(
+                                session,
+                                field_code=table_name,
+                                raw_query=raw_text,
+                                query_normalized=target_norm,
+                                entity_type=entity_type,
+                                entity_code=str(vector_row.get("codigo")),
+                                strategy="VECTOR",
+                                confidence=confidence,
+                                top_candidates=[
+                                    {
+                                        "codigo": vector_row.get("codigo"),
+                                        "nombre": vector_row.get("nombre"),
+                                        "score": round(confidence, 4),
+                                    }
+                                ],
+                            )
+
+                    if not resolved_row:
+                        for row in rows:
+                            code_norm = self._normalize_text(row.get("codigo"))
+                            name_norm = self._normalize_text(row.get("nombre"))
+                            lexical = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
+                            ratio = max(
+                                SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
+                                SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
+                            )
+                            score = max(lexical, ratio * 0.92)
+                            if score < 0.35:
+                                continue
+                            ranked_candidates.append(
+                                {
+                                    "codigo": row.get("codigo"),
+                                    "nombre": row.get("nombre"),
+                                    "score": round(score, 4),
+                                }
+                            )
+                        ranked_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+                        top_score = float(ranked_candidates[0]["score"]) if ranked_candidates else 0.0
+                        second_score = float(ranked_candidates[1]["score"]) if len(ranked_candidates) > 1 else 0.0
+                        can_escalate = (
+                            ranked_candidates
+                            and top_score >= max(self.SEMANTIC_LLM_FALLBACK_MIN_SCORE, 0.7)
+                            and (top_score - second_score) >= 0.05
+                            and self._should_attempt_ai_semantic(target_norm)
+                        )
+                        if can_escalate:
+                            escalated_to_ai = True
+                            llm_pick = await self._resolve_llm_fallback(
+                                query_text=raw_text,
+                                candidates=ranked_candidates,
+                            )
+                            if llm_pick and llm_pick.get("codigo"):
+                                llm_row = self._find_row_by_code(rows, llm_pick.get("codigo"))
+                                if llm_row:
+                                    resolved_row = llm_row
+                                    strategy = "LLM"
+                                    confidence = float(llm_pick.get("score") or 0.0)
+                                    await self._semantic_cache_put(
+                                        session,
+                                        field_code=table_name,
+                                        raw_query=raw_text,
+                                        query_normalized=target_norm,
+                                        entity_type=entity_type,
+                                        entity_code=str(llm_row.get("codigo")),
+                                        strategy="LLM",
+                                        confidence=confidence,
+                                        top_candidates=ranked_candidates[:5],
+                                    )
+                        if not resolved_row:
+                            review_reason = "LOW_CONFIDENCE" if ranked_candidates else "NO_MATCH"
+
+                    if resolved_row and entity_type:
+                        canonical_name = str(resolved_row.get("nombre") or "")
+                        canonical_entry = await self._upsert_semantic_catalog_entry(
                             session,
                             entity_type=entity_type,
                             entity_code=str(resolved_row.get("codigo")),
                             canonical_name=canonical_name,
-                            search_text=raw_text,
+                            search_text=canonical_name,
                             alias_semantico_id=int(alias_meta.get("alias_id")) if alias_meta and alias_meta.get("alias_id") else None,
                         )
-                        if query_entry and not query_entry.get("embedding"):
+                        if canonical_entry and not canonical_entry.get("embedding"):
                             await self._enqueue_embedding_job(
                                 session,
                                 source_table="semantic_catalog",
-                                source_id=int(query_entry.get("id")),
-                                source_text=str(query_entry.get("texto_busqueda") or raw_text),
+                                source_id=int(canonical_entry.get("id")),
+                                source_text=str(canonical_entry.get("texto_busqueda") or canonical_name),
                                 model=self.SEMANTIC_EMBED_MODEL,
                             )
+
+                        canonical_norm = self._normalize_text(canonical_name)
+                        if target_norm and target_norm != canonical_norm:
+                            query_entry = await self._upsert_semantic_catalog_entry(
+                                session,
+                                entity_type=entity_type,
+                                entity_code=str(resolved_row.get("codigo")),
+                                canonical_name=canonical_name,
+                                search_text=raw_text,
+                                alias_semantico_id=int(alias_meta.get("alias_id")) if alias_meta and alias_meta.get("alias_id") else None,
+                            )
+                            if query_entry and not query_entry.get("embedding"):
+                                await self._enqueue_embedding_job(
+                                    session,
+                                    source_table="semantic_catalog",
+                                    source_id=int(query_entry.get("id")),
+                                    source_text=str(query_entry.get("texto_busqueda") or raw_text),
+                                    model=self.SEMANTIC_EMBED_MODEL,
+                                )
 
         except Exception as exc:
             error_detail = f"{type(exc).__name__}: {exc}"
@@ -1610,18 +1785,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if clean_val is not None:
                 col_name = config["col"]
 
-                # Blindaje anti-datos absurdos en campos criticos de salud/perfil.
-                if col_name in {"alergias", "enfermedades", "restricciones_alimentarias"}:
-                    if self.contains_absurd_claim(str(clean_val)):
-                        logger.warning(
-                            "Data Shield: blocked implausible value for field '%s': %s",
-                            col_name,
-                            clean_val,
-                        )
-                        meta_flags["warnings"].append(
-                            f"Valor implausible bloqueado para {col_name}: {clean_val}"
-                        )
-                        continue
+                # No bloquear por listas estaticas aqui.
+                # La resolucion final se hace contra maestro/alias/fuzzy/vector y, al final, LLM.
+                if col_name in {"alergias", "enfermedades", "restricciones_alimentarias"} and self.contains_absurd_claim(str(clean_val)):
+                    logger.info(
+                        "Semantic pipeline: valor de baja plausibilidad detectado para '%s': %s",
+                        col_name,
+                        clean_val,
+                    )
 
                 # Validacion clinica generica: detectar datos ambiguos
                 if col_name in {"enfermedades", "alergias"}:
@@ -1918,7 +2089,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             resolved_ids.append(restriccion_id)
 
         if not resolved_ids:
-            return
+            return unresolved
 
         if operation == self.OP_REPLACE:
             await session.execute(text(deactivate_query), {"pid": perfil_id, "today": today})
@@ -2072,6 +2243,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 )
                 if patron_id:
                     perfil_updates["patron_alimentario_id"] = patron_id
+                else:
+                    unresolved_by_field["tipo_dieta"] = [str(value)]
                 await self._log_profile_extraction(
                     session,
                     usuario_id,
@@ -2103,6 +2276,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 )
                 if objetivo_id:
                     perfil_updates["objetivo_nutricional_id"] = objetivo_id
+                else:
+                    unresolved_by_field["objetivo_nutricional"] = [str(value)]
                 await self._log_profile_extraction(
                     session,
                     usuario_id,
@@ -2137,6 +2312,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 if distrito_id:
                     perfil_updates["distrito_id"] = distrito_id
                     perfil_updates["fuente_ubicacion"] = "usuario"
+                else:
+                    unresolved_by_field["distrito"] = [str(value)]
                 await self._log_profile_extraction(
                     session,
                     usuario_id,
