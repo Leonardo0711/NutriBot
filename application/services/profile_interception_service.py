@@ -1,4 +1,4 @@
-﻿"""
+"""
 Nutribot Backend - Profile Interception Service
 """
 from __future__ import annotations
@@ -107,14 +107,13 @@ class ProfileInterceptionService:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
                     "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud.\n\n"
-                    "Estoy aqui para ayudarte con orientacion y recomendaciones de alimentacion segun tu perfil.\n\n"
-                    "Cuando quieras, empezamos tu perfil paso a paso."
+                    "Estoy aqui para ayudarte con orientacion y recomendaciones de alimentacion saludable.\n\n"
+                    "Preguntame lo que necesites, estoy para ayudarte 🍎"
                 )
             else:
                 reply = (
                     "Hola de nuevo 😊\n\n"
-                    "Estoy aqui para ayudarte.\n\n"
-                    "Cuando quieras, retomamos tu perfil paso a paso."
+                    "Que gusto verte por aqui. ¿En que te puedo ayudar hoy? 🍏"
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True

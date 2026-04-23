@@ -146,6 +146,19 @@ class SurveyResponseExtractor:
         "ya",
         "yap",
     }
+    _NUMBER_WORDS = {
+        "uno": 1,
+        "una": 1,
+        "dos": 2,
+        "tres": 3,
+        "cuatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "siete": 7,
+        "ocho": 8,
+        "nueve": 9,
+        "diez": 10,
+    }
 
     def __init__(self, openai_client: AsyncOpenAI, model: str):
         self._client = openai_client
@@ -175,6 +188,31 @@ class SurveyResponseExtractor:
             return False
 
         return any(hint in low for hint in cls._USEFUL_CHAT_HINTS)
+
+    @staticmethod
+    def _normalize_token(value: str) -> str:
+        txt = unicodedata.normalize("NFKD", str(value or ""))
+        txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+        txt = re.sub(r"[^a-z0-9\s]", " ", txt.lower())
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return txt
+
+    @classmethod
+    def _extract_scale_value(cls, raw_text: str) -> Optional[int]:
+        v = (raw_text or "").strip()
+        if not v:
+            return None
+        m = re.search(r"\b(\d{1,2})\b", v)
+        if m:
+            return int(m.group(1))
+        norm = cls._normalize_token(v)
+        if not norm:
+            return None
+        for token in norm.split():
+            val = cls._NUMBER_WORDS.get(token)
+            if val is not None:
+                return val
+        return None
 
     def extract_structured(
         self,
@@ -259,11 +297,21 @@ class SurveyResponseExtractor:
                 return {"intent": "ANSWER", "value": "Si"}
             return None
 
-        if state_name.startswith("esperando_p") or state_name == "esperando_nps":
-            m = re.search(r"\b(\d{1,2})\b", v)
-            if m:
-                return {"intent": "ANSWER", "value": m.group(1)}
-            return {"intent": "ANSWER", "value": v}
+        if state_name.startswith("esperando_p"):
+            score = self._extract_scale_value(v)
+            if score is None:
+                return None
+            if 1 <= score <= 5:
+                return {"intent": "ANSWER", "value": str(score)}
+            return None
+
+        if state_name == "esperando_nps":
+            score = self._extract_scale_value(v)
+            if score is None:
+                return None
+            if 1 <= score <= 10:
+                return {"intent": "ANSWER", "value": str(score)}
+            return None
 
         if state_name == "esperando_comentario":
             if self._looks_like_useful_chat_question(vl):
@@ -1189,8 +1237,9 @@ class SurveyService:
                     return BotReply(
                         text=(
                             "Gracias 😊 Ya guardé tus respuestas actuales.\n\n"
-                            "Aún nos faltan las preguntas de audio e imagen para cerrar el formulario completo. "
-                            "Lo retomamos luego desde ahí."
+                            "Recuerda que cuando quieras puedes enviarme audios o imágenes para ayudarte mejor. Por ejemplo:\n"
+                            "🎤 Audio: Puedes enviarme un audio corto contándome qué almorzaste.\n"
+                            "📸 Imagen: Puedes enviarme una foto de la etiqueta de un producto o de tu plato de comida para que lo analice."
                         ),
                         content_type="text",
                     )

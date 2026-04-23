@@ -24,16 +24,45 @@ from application.services.conversation_state_service import ConversationStateSer
 logger = logging.getLogger(__name__)
 
 ONBOARDING_QUESTIONS: dict[str, str] = {
-    OnboardingStep.EDAD.value: "Primero, ¿cuántos años tienes? 🎂",
-    OnboardingStep.PESO.value: "¿Cuál es tu peso aproximado en kilos? (ej. 68) ⚖️",
-    OnboardingStep.ALTURA.value: "¿Cuál es tu talla? (ej. 1.70 m o 170 cm) 📐",
-    OnboardingStep.TIPO_DIETA.value: "¿Sigues algun tipo de dieta? (ej. omnivora, vegetariana o ninguna) 🥗",
-    OnboardingStep.ALERGIAS.value: "¿Tienes alergias o intolerancias alimentarias? (ej. mani, mariscos, lactosa o ninguna) 🍎",
-    OnboardingStep.ENFERMEDADES.value: "¿Tienes alguna condicion de salud relevante? (ej. diabetes, hipertension o ninguna) 🏥",
-    OnboardingStep.RESTRICCIONES.value: "¿Tienes restricciones alimentarias? (ej. no como cerdo / ninguna) 🚫",
-    OnboardingStep.OBJETIVO.value: "¿Cual es tu objetivo principal? (ej. bajar peso, ganar masa muscular o mejorar habitos) 🎯",
-    OnboardingStep.PROVINCIA.value: "¿En que provincia de Peru te encuentras? 😊",
-    OnboardingStep.DISTRITO.value: "¿En que distrito te encuentras? 🏠"
+    OnboardingStep.EDAD.value: "Para empezar, ¿cuántos años tienes? 🎂\n",
+    OnboardingStep.PESO.value: "¿Cuánto pesas aproximadamente en kilos? ⚖️\n",
+    OnboardingStep.ALTURA.value: "¿Cuánto mides? 📐\nPuedes decirme en metros o centímetros.\nEj: 1.65 m, 170 cm...",
+    OnboardingStep.TIPO_DIETA.value: (
+        "¿Sigues algún tipo de alimentación en particular? 🥗\n"
+        "Ejemplos:\n"
+        "- *Omnívora*: comes de todo (carnes, verduras, etc.)\n"
+        "- *Vegetariana*: no comes carnes pero sí huevo y lácteos\n"
+        "- *Vegana*: no consumes ningún producto animal\n"
+        "- *Ninguna en especial*\n"
+        "Si no sigues ninguna dieta específica, dime 'ninguna' 😊"
+    ),
+    OnboardingStep.ALERGIAS.value: (
+        "¿Tienes alguna alergia o intolerancia a alimentos? 🍎\n"
+        "Ejemplos: alergia al maní, intolerancia a la lactosa, alergia a los mariscos...\n"
+        "Si no tienes ninguna, dime 'ninguna'"
+    ),
+    OnboardingStep.ENFERMEDADES.value: (
+        "¿Tienes alguna enfermedad o condición médica que deba tener en cuenta? 🏥\n"
+        "Ejemplos: diabetes, hipertensión (presión alta), hipotiroidismo, anemia, gastritis...\n"
+        "Esto me ayuda a darte recomendaciones más seguras para ti.\n"
+        "Si no tienes ninguna, dime 'ninguna'"
+    ),
+    OnboardingStep.RESTRICCIONES.value: (
+        "¿Hay alimentos que prefieras evitar o no puedas comer? 🚫\n"
+        "Ejemplos: no como cerdo, evito los lácteos, no como mariscos...\n"
+        "Si no tienes ninguna restricción, dime 'ninguna'"
+    ),
+    OnboardingStep.OBJETIVO.value: (
+        "¿Cuál es tu objetivo principal con la alimentación? 🎯\n"
+        "Ejemplos:\n"
+        "- Bajar de peso\n"
+        "- Ganar masa muscular\n"
+        "- Mejorar mis hábitos alimenticios\n"
+        "- Comer más saludable\n"
+        "- Controlar mi diabetes/presión"
+    ),
+    OnboardingStep.PROVINCIA.value: "¿En qué provincia del Perú te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
+    OnboardingStep.DISTRITO.value: "¿Y en qué distrito estás? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq..."
 }
 
 class OnboardingService:
@@ -237,10 +266,16 @@ class OnboardingService:
     def _build_step_clarification_reply(self, current_step: Optional[str]) -> str:
         if not current_step:
             return "Claro 😊 dime y te explico mejor."
+            
+        question = ONBOARDING_QUESTIONS.get(current_step, "")
+        
+        if current_step in (OnboardingStep.EDAD.value, OnboardingStep.PESO.value, OnboardingStep.ALTURA.value):
+            return question
+            
         purpose = self._purpose_for_step(current_step)
         clarification = self.STEP_CLARIFICATIONS.get(current_step, "Me refiero a ese dato de tu perfil.")
         example = self.STEP_EXAMPLES.get(current_step, "un valor simple")
-        question = ONBOARDING_QUESTIONS.get(current_step, "")
+        
         return (
             f"Claro 😊 {clarification}\n"
             f"Esto me ayuda a {purpose}.\n"
@@ -395,8 +430,8 @@ class OnboardingService:
         accepted = bool(inferred_data) or self._is_invitation_accept(txt)
         if not accepted:
             return (
-                "Cuando quieras, empezamos tu perfil paso a paso 😊\n\n"
-                "Tambien puedes compartir directamente tu edad."
+                "Estoy aqui para ayudarte 😊\n\n"
+                "Preguntame lo que necesites sobre alimentacion o nutricion 🍎"
             )
 
         next_step = await self._find_next_missing_step(

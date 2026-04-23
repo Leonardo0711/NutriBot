@@ -26,6 +26,7 @@ from application.services.onboarding_service import OnboardingService
 from application.services.conversation_memory_service import ConversationMemoryService
 from application.services.conversation_state_service import ConversationStateService
 from application.services.turn_context_service import TurnContextService
+from application.services.nutritional_rules_service import NutritionalRulesService
 
 from application.services.handlers.reset_handler import ResetHandler
 from application.services.handlers.onboarding_handler import OnboardingHandler
@@ -113,9 +114,11 @@ class Container:
         self.state_service = ConversationStateService()
         
         # Application Services
+        self.nutritional_rules = NutritionalRulesService()
         self.profile_extractor = ProfileExtractionService(
             openai_client=self.openai_client, 
-            model=self.openai_model
+            model=self.openai_model,
+            nutritional_rules=self.nutritional_rules,
         )
         self.profile_reader = ProfileReadService()
         self.profile_context = ProfileContextService(
@@ -160,6 +163,7 @@ class Container:
             profile_reader=self.profile_reader,
             profile_context=self.profile_context,
             memory_service=self.memory_service,
+            nutritional_rules=self.nutritional_rules,
         )
         
         self.generic_chat_handler = GenericChatHandler(
@@ -216,7 +220,9 @@ class Container:
 
 
         self.sweeper_worker = SweeperWorker(
-            session_factory=self.session_factory
+            session_factory=self.session_factory,
+            openai_client=self.openai_client,
+            embedding_model=self.settings.openai_embedding_model,
         )
 
 _container_instance: Container | None = None

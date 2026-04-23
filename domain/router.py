@@ -509,18 +509,18 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
             if "no tengo" in clause or "ninguna" in clause or "ninguno" in clause:
                 return RouteResult(
                     Intent.PROFILE_UPDATE,
-                    0.76,
+                    0.85,
                     resolved_field="alergias",
                     resolved_value="NINGUNA",
                     reason="Texto libre: alergias negadas",
                 )
-            m = re.search(r"(?:alerg(?:ia|ias)?|alergic[oa]|intoleran(?:cia|cias)?)\s+(?:a|al|a la)?\s*(.+)", clause)
+            m = re.search(r"(?:alerg(?:ia|ias)?|alergic[oa]|intoleran(?:cia|cias)?)\s+(?:a\s+la|al|a)?\s*(.+)", clause)
             if m:
                 value = _clean_profile_value(m.group(1))
                 if value:
                     return RouteResult(
                         Intent.PROFILE_UPDATE,
-                        0.76,
+                        0.85,
                         resolved_field="alergias",
                         resolved_value=value,
                         reason="Texto libre: alergias detectadas",
@@ -534,7 +534,7 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 if value:
                     return RouteResult(
                         Intent.PROFILE_UPDATE,
-                        0.76,
+                        0.85,
                         resolved_field="restricciones_alimentarias",
                         resolved_value=value,
                         reason="Texto libre: restricciones detectadas",
@@ -545,7 +545,7 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
             if _contains_keyword(clause, diet_key) and ("soy" in clause or "dieta" in clause or "sigo" in clause):
                 return RouteResult(
                     Intent.PROFILE_UPDATE,
-                    0.76,
+                    0.85,
                     resolved_field="tipo_dieta",
                     resolved_value=canonical,
                     reason=f"Texto libre: tipo de dieta '{diet_key}'",
@@ -556,18 +556,25 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
             if "no tengo" in clause or "ninguna" in clause or "ninguno" in clause:
                 return RouteResult(
                     Intent.PROFILE_UPDATE,
-                    0.76,
+                    0.85,
                     resolved_field="enfermedades",
                     resolved_value="NINGUNA",
                     reason="Texto libre: enfermedades negadas",
                 )
-            m = re.search(r"(?:padezco|sufro(?: de)?|me diagnosticaron|tengo)\s+(.+)", clause)
+            m = re.search(
+                r"(?:padezco|sufro(?: de)?|me diagnosticaron|tengo"
+                r"|mi enfermedad es|mi condicion es)"
+                r"\s+(?:la\s+|una?\s+|de\s+)?(?:enfermedad\s+|condicion\s+)?(.+)",
+                clause,
+            )
             if m:
                 value = _clean_profile_value(m.group(1))
+                # Limpiar prefijos genéricos redundantes
+                value = re.sub(r"^(?:enfermedad|condicion|condición)\s+", "", value).strip()
                 if value:
                     return RouteResult(
                         Intent.PROFILE_UPDATE,
-                        0.76,
+                        0.85,
                         resolved_field="enfermedades",
                         resolved_value=value,
                         reason="Texto libre: enfermedades detectadas",
@@ -581,7 +588,7 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 if value and not value.startswith("que ") and not value.startswith("qué "):
                     return RouteResult(
                         Intent.PROFILE_UPDATE,
-                        0.76,
+                        0.85,
                         resolved_field="objetivo_nutricional",
                         resolved_value=value,
                         reason="Texto libre: objetivo nutricional detectado",

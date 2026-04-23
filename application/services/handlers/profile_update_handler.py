@@ -37,7 +37,7 @@ class ProfileUpdateHandler(BaseHandler):
         if (
             ctx.route.resolved_field
             and ctx.route.resolved_value
-            and ctx.route.confidence >= 0.8
+            and ctx.route.confidence >= 0.7
             and ctx.route.intent in (Intent.PROFILE_UPDATE, Intent.CORRECTION_PAST_FIELD, Intent.ANSWER_CURRENT_STEP)
         ):
             raw_extractions = {ctx.route.resolved_field: ctx.route.resolved_value}

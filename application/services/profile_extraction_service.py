@@ -9,6 +9,7 @@ import re
 import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
+from time import perf_counter
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
@@ -35,10 +36,14 @@ class ProfileExtractionService:
     MEASUREMENT_HISTORICAL_UPDATE = "HISTORICAL_UPDATE"
     SEMANTIC_SCOPE_PROFILE_FIELD = "PROFILE_FIELD"
     SEMANTIC_EMBED_MODEL = "text-embedding-3-small"
+    SEMANTIC_LLM_FALLBACK_MIN_SCORE = 0.55
     SEMANTIC_ENTITY_TYPE_BY_TABLE = {
         "mae_enfermedad_cie10": "ENFERMEDAD_CIE10",
+        "mae_grupo_nutricional": "GRUPO_NUTRICIONAL",
         "mae_restriccion_alimentaria": "RESTRICCION_ALIMENTARIA",
         "mae_patron_alimentario": "PATRON_ALIMENTARIO",
+        "mae_dieta_terapeutica": "DIETA_TERAPEUTICA",
+        "mae_textura_dieta": "TEXTURA_DIETA",
         "mae_objetivo_nutricional": "OBJETIVO_NUTRICIONAL",
         "mae_distrito": "DISTRITO",
     }
@@ -212,9 +217,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
         "ferropenica", "megaloblastica",
     ]
 
-    def __init__(self, openai_client: AsyncOpenAI, model: str):
+    def __init__(self, openai_client: AsyncOpenAI, model: str, nutritional_rules=None):
         self._openai_client = openai_client
         self._model = model
+        self._nutritional_rules = nutritional_rules
 
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
@@ -385,6 +391,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         *,
         field_code: str,
         query_normalized: str,
+        increment_hit: bool = True,
     ) -> Optional[dict[str, Any]]:
         row = (
             await session.execute(
@@ -410,20 +417,21 @@ REGLAS CRITICAS DE ROBUSTEZ:
         ).mappings().first()
         if not row:
             return None
-        try:
-            await session.execute(
-                text(
-                    """
-                    UPDATE semantic_resolution_cache
-                    SET hit_count = COALESCE(hit_count, 0) + 1,
-                        actualizado_en = :now
-                    WHERE id = :id
-                    """
-                ),
-                {"id": row.get("id"), "now": get_now_peru()},
-            )
-        except Exception:
-            logger.debug("No se pudo incrementar hit_count de semantic_resolution_cache id=%s", row.get("id"))
+        if increment_hit:
+            try:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE semantic_resolution_cache
+                        SET hit_count = COALESCE(hit_count, 0) + 1,
+                            actualizado_en = :now
+                        WHERE id = :id
+                        """
+                    ),
+                    {"id": row.get("id"), "now": get_now_peru()},
+                )
+            except Exception:
+                logger.debug("No se pudo incrementar hit_count de semantic_resolution_cache id=%s", row.get("id"))
         return dict(row)
 
     async def _semantic_cache_put(
@@ -481,6 +489,291 @@ REGLAS CRITICAS DE ROBUSTEZ:
             },
         )
 
+    async def _semantic_cache_peek(
+        self,
+        session: AsyncSession,
+        *,
+        field_code: str,
+        raw_query: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        if not raw_query:
+            return None
+        query_norm = self._normalize_text(raw_query)
+        if not query_norm:
+            return None
+        return await self._semantic_cache_get(
+            session,
+            field_code=field_code,
+            query_normalized=query_norm,
+            increment_hit=False,
+        )
+
+    async def _log_semantic_match(
+        self,
+        session: AsyncSession,
+        *,
+        usuario_id: Optional[int],
+        incoming_message_id: Optional[int],
+        field_code: str,
+        query_text: str,
+        query_normalized: str,
+        strategy: str,
+        exact_match: bool,
+        trigram_score: Optional[float],
+        vector_score: Optional[float],
+        confidence: Optional[float],
+        entity_type: Optional[str],
+        entity_code: Optional[str],
+        escalated_to_ai: bool,
+        decided_by_rule: bool,
+        latency_ms: int,
+        error_detail: Optional[str] = None,
+    ) -> None:
+        if not query_text or not query_normalized:
+            return
+        try:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO semantic_match_log (
+                        usuario_id, incoming_message_id, scope, field_code,
+                        query_texto, query_normalizada, estrategia_usada,
+                        exact_match, trigram_score, vector_score, confidence_final,
+                        entidad_tipo_resuelta, entidad_codigo_resuelto,
+                        escalado_a_ia, decidido_por_regla, latency_ms, error_detail, creado_en
+                    )
+                    VALUES (
+                        :uid, :imid, :scope, :field,
+                        :qtext, :qnorm, :strategy,
+                        :exact_match, :trgm, :vec, :confidence,
+                        :etype, :ecode,
+                        :escalado, :regla, :latency, :error, :now
+                    )
+                    """
+                ),
+                {
+                    "uid": usuario_id,
+                    "imid": incoming_message_id,
+                    "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                    "field": field_code,
+                    "qtext": query_text,
+                    "qnorm": query_normalized,
+                    "strategy": strategy[:20],
+                    "exact_match": bool(exact_match),
+                    "trgm": None if trigram_score is None else round(float(trigram_score), 4),
+                    "vec": None if vector_score is None else round(float(vector_score), 4),
+                    "confidence": None if confidence is None else round(max(0.0, min(float(confidence), 1.0)), 2),
+                    "etype": entity_type,
+                    "ecode": entity_code,
+                    "escalado": bool(escalated_to_ai),
+                    "regla": bool(decided_by_rule),
+                    "latency": int(max(0, latency_ms)),
+                    "error": (error_detail or None),
+                    "now": get_now_peru(),
+                },
+            )
+        except Exception:
+            logger.debug("No se pudo insertar semantic_match_log", exc_info=True)
+
+    async def _enqueue_semantic_review(
+        self,
+        session: AsyncSession,
+        *,
+        usuario_id: Optional[int],
+        incoming_message_id: Optional[int],
+        field_code: str,
+        query_text: str,
+        query_normalized: str,
+        reason: str,
+        top_candidates: Optional[list[dict[str, Any]]] = None,
+        observation: Optional[str] = None,
+    ) -> None:
+        if not query_text or not query_normalized:
+            return
+        payload = json.dumps(top_candidates or [], ensure_ascii=False)
+        try:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO semantic_review_queue (
+                        usuario_id, incoming_message_id, scope, field_code,
+                        query_texto, query_normalizada, top_candidates_json,
+                        razon, estado, observacion, creado_en
+                    )
+                    SELECT
+                        :uid, :imid, :scope, :field,
+                        :qtext, :qnorm, CAST(:candidates AS jsonb),
+                        :reason, 'PENDING', :obs, :now
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM semantic_review_queue q
+                        WHERE q.scope = :scope
+                          AND q.field_code = :field
+                          AND q.query_normalizada = :qnorm
+                          AND q.estado = 'PENDING'
+                    )
+                    """
+                ),
+                {
+                    "uid": usuario_id,
+                    "imid": incoming_message_id,
+                    "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                    "field": field_code,
+                    "qtext": query_text,
+                    "qnorm": query_normalized,
+                    "candidates": payload,
+                    "reason": (reason or "NO_MATCH")[:50],
+                    "obs": observation,
+                    "now": get_now_peru(),
+                },
+            )
+        except Exception:
+            logger.debug("No se pudo insertar semantic_review_queue", exc_info=True)
+
+    async def _enqueue_embedding_job(
+        self,
+        session: AsyncSession,
+        *,
+        source_table: str,
+        source_id: int,
+        source_text: str,
+        model: Optional[str] = None,
+    ) -> None:
+        if not source_table or not source_id or not source_text:
+            return
+        now_peru = get_now_peru()
+        model_name = model or self.SEMANTIC_EMBED_MODEL
+        try:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO embedding_jobs (
+                        source_table, source_id, texto_fuente, modelo,
+                        estado, retry_count, error_detail, creado_en, actualizado_en, procesado_en
+                    )
+                    VALUES (
+                        :stable, :sid, :stext, :model,
+                        'PENDING', 0, NULL, :now, :now, NULL
+                    )
+                    ON CONFLICT (source_table, source_id, modelo)
+                    DO UPDATE SET
+                        texto_fuente = EXCLUDED.texto_fuente,
+                        estado = 'PENDING',
+                        error_detail = NULL,
+                        actualizado_en = EXCLUDED.actualizado_en,
+                        procesado_en = NULL
+                    """
+                ),
+                {
+                    "stable": source_table[:50],
+                    "sid": int(source_id),
+                    "stext": str(source_text)[:5000],
+                    "model": model_name[:100],
+                    "now": now_peru,
+                },
+            )
+        except Exception:
+            logger.debug("No se pudo encolar embedding_jobs %s/%s", source_table, source_id, exc_info=True)
+
+    async def _upsert_semantic_catalog_entry(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        entity_code: Optional[str],
+        canonical_name: Optional[str],
+        search_text: Optional[str],
+        alias_semantico_id: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not entity_type or not entity_code or not canonical_name or not search_text:
+            return None
+        text_norm = self._normalize_text(search_text)[:255]
+        if not text_norm:
+            return None
+        now_peru = get_now_peru()
+        try:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO semantic_catalog (
+                            entidad_tipo, entidad_codigo, alias_semantico_id,
+                            nombre_canonico, texto_busqueda, texto_normalizado,
+                            peso_lexico, peso_semantico, activo, generado_en, actualizado_en
+                        )
+                        VALUES (
+                            :etype, :ecode, :alias_id,
+                            :cname, :stext, :snorm,
+                            1.0, 1.0, TRUE, :now, :now
+                        )
+                        ON CONFLICT (entidad_tipo, entidad_codigo, texto_normalizado)
+                        DO UPDATE SET
+                            alias_semantico_id = COALESCE(EXCLUDED.alias_semantico_id, semantic_catalog.alias_semantico_id),
+                            nombre_canonico = EXCLUDED.nombre_canonico,
+                            texto_busqueda = EXCLUDED.texto_busqueda,
+                            activo = TRUE,
+                            actualizado_en = EXCLUDED.actualizado_en
+                        RETURNING id, embedding, texto_busqueda
+                        """
+                    ),
+                    {
+                        "etype": entity_type[:30],
+                        "ecode": str(entity_code)[:60],
+                        "alias_id": alias_semantico_id,
+                        "cname": str(canonical_name)[:255],
+                        "stext": str(search_text)[:255],
+                        "snorm": text_norm,
+                        "now": now_peru,
+                    },
+                )
+            ).mappings().first()
+            return dict(row) if row else None
+        except Exception:
+            logger.debug("No se pudo upsert semantic_catalog etype=%s code=%s", entity_type, entity_code, exc_info=True)
+            return None
+
+    async def _enqueue_missing_catalog_embeddings(
+        self,
+        session: AsyncSession,
+        *,
+        entity_type: Optional[str],
+        limit: int = 12,
+    ) -> int:
+        if not entity_type:
+            return 0
+        try:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id, texto_busqueda
+                        FROM semantic_catalog
+                        WHERE entidad_tipo = :etype
+                          AND activo = TRUE
+                          AND embedding IS NULL
+                        ORDER BY id ASC
+                        LIMIT :lim
+                        """
+                    ),
+                    {"etype": entity_type, "lim": int(max(1, min(limit, 100)))},
+                )
+            ).mappings().all()
+        except Exception:
+            logger.debug("No se pudieron consultar faltantes de semantic_catalog", exc_info=True)
+            return 0
+
+        queued = 0
+        for row in rows:
+            await self._enqueue_embedding_job(
+                session,
+                source_table="semantic_catalog",
+                source_id=int(row.get("id")),
+                source_text=str(row.get("texto_busqueda") or ""),
+                model=self.SEMANTIC_EMBED_MODEL,
+            )
+            queued += 1
+        return queued
+
     @classmethod
     def _find_row_by_code(
         cls,
@@ -509,7 +802,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             await session.execute(
                 text(
                     """
-                    SELECT entidad_codigo
+                    SELECT id, entidad_codigo, alias_texto
                     FROM mae_alias_semantico
                     WHERE entidad_tipo = :etype
                       AND alias_normalizado = :alias
@@ -523,7 +816,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
         ).mappings().first()
         if not alias_row:
             return None
-        return self._find_row_by_code(rows, alias_row.get("entidad_codigo"))
+        master_row = self._find_row_by_code(rows, alias_row.get("entidad_codigo"))
+        if not master_row:
+            return None
+        return {
+            "master_row": master_row,
+            "alias_id": alias_row.get("id"),
+            "alias_texto": alias_row.get("alias_texto"),
+        }
 
     async def _resolve_trgm_match(
         self,
@@ -581,6 +881,24 @@ REGLAS CRITICAS DE ROBUSTEZ:
         rows: list[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
         if not self._openai_client or not entity_type or not query_text:
+            return None
+        await self._enqueue_missing_catalog_embeddings(session, entity_type=entity_type)
+        has_embeddings = (
+            await session.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM semantic_catalog
+                    WHERE entidad_tipo = :etype
+                      AND activo = TRUE
+                      AND embedding IS NOT NULL
+                    LIMIT 1
+                    """
+                ),
+                {"etype": entity_type},
+            )
+        ).first()
+        if not has_embeddings:
             return None
         try:
             emb_resp = await self._openai_client.embeddings.create(
@@ -673,179 +991,355 @@ REGLAS CRITICAS DE ROBUSTEZ:
         name_column: str = "nombre",
         extra_where: str = "TRUE",
         minimum_score: float = 0.9,
+        usuario_id: Optional[int] = None,
+        incoming_message_id: Optional[int] = None,
+        semantic_field_code: Optional[str] = None,
     ) -> Optional[int]:
-        if not raw_value:
+        if raw_value is None:
             return None
-        target_norm = self._normalize_text(raw_value)
-        if not target_norm or self._is_negative_value(raw_value):
+        raw_text = str(raw_value).strip()
+        if not raw_text:
             return None
-
-        cache = await self._semantic_cache_get(
-            session,
-            field_code=table_name,
-            query_normalized=target_norm,
-        )
-
-        query = text(
-            f"""
-            SELECT id, {code_column} AS codigo, {name_column} AS nombre
-            FROM {table_name}
-            WHERE activo = TRUE
-              AND {extra_where}
-            """
-        )
-        rows = [dict(r) for r in (await session.execute(query)).mappings().all()]
-        if not rows:
+        target_norm = self._normalize_text(raw_text)
+        if not target_norm or self._is_negative_value(raw_text):
             return None
 
-        if cache and cache.get("entidad_codigo_resuelto"):
-            cached_row = self._find_row_by_code(rows, cache.get("entidad_codigo_resuelto"))
-            if cached_row:
-                return int(cached_row.get("id"))
-
-        best_row: Optional[dict[str, Any]] = None
-        best_score = 0.0
-        for row in rows:
-            score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
-            if score > best_score:
-                best_score = score
-                best_row = row
-        if best_score >= minimum_score:
-            await self._semantic_cache_put(
-                session,
-                field_code=table_name,
-                raw_query=str(raw_value),
-                query_normalized=target_norm,
-                entity_type=self.SEMANTIC_ENTITY_TYPE_BY_TABLE.get(table_name),
-                entity_code=str(best_row.get("codigo")) if best_row else None,
-                strategy="EXACT",
-                confidence=best_score,
-                top_candidates=[{"codigo": best_row.get("codigo"), "nombre": best_row.get("nombre"), "score": round(best_score, 4)}] if best_row else [],
-            )
-            return int(best_row.get("id"))
-
+        field_for_log = semantic_field_code or table_name
         entity_type = self.SEMANTIC_ENTITY_TYPE_BY_TABLE.get(table_name)
-        alias_row = await self._resolve_alias_match(
-            session,
-            entity_type=entity_type,
-            query_normalized=target_norm,
-            rows=rows,
-        )
-        if alias_row:
-            await self._semantic_cache_put(
-                session,
-                field_code=table_name,
-                raw_query=str(raw_value),
-                query_normalized=target_norm,
-                entity_type=entity_type,
-                entity_code=str(alias_row.get("codigo")),
-                strategy="ALIAS",
-                confidence=0.96,
-                top_candidates=[{"codigo": alias_row.get("codigo"), "nombre": alias_row.get("nombre"), "score": 0.96}],
-            )
-            return int(alias_row.get("id"))
+        started = perf_counter()
 
-        trgm_row = await self._resolve_trgm_match(
-            session,
-            table_name=table_name,
-            code_column=code_column,
-            name_column=name_column,
-            extra_where=extra_where,
-            query_normalized=target_norm,
-        )
-        if trgm_row and float(trgm_row.get("score") or 0.0) >= max(0.78, minimum_score - 0.12):
-            await self._semantic_cache_put(
-                session,
-                field_code=table_name,
-                raw_query=str(raw_value),
-                query_normalized=target_norm,
-                entity_type=entity_type,
-                entity_code=str(trgm_row.get("codigo")),
-                strategy="TRGM",
-                confidence=float(trgm_row.get("score") or 0.0),
-                top_candidates=[{"codigo": trgm_row.get("codigo"), "nombre": trgm_row.get("nombre"), "score": round(float(trgm_row.get("score") or 0.0), 4)}],
-            )
-            return int(trgm_row.get("id"))
-
-        fuzzy_row: Optional[dict[str, Any]] = None
-        fuzzy_score = 0.0
-        for row in rows:
-            code_norm = self._normalize_text(row.get("codigo"))
-            name_norm = self._normalize_text(row.get("nombre"))
-            ratio = max(
-                SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
-                SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
-            )
-            if ratio > fuzzy_score:
-                fuzzy_score = ratio
-                fuzzy_row = row
-        if fuzzy_row and fuzzy_score >= max(0.8, minimum_score - 0.1):
-            await self._semantic_cache_put(
-                session,
-                field_code=table_name,
-                raw_query=str(raw_value),
-                query_normalized=target_norm,
-                entity_type=entity_type,
-                entity_code=str(fuzzy_row.get("codigo")),
-                strategy="FUZZY",
-                confidence=fuzzy_score,
-                top_candidates=[{"codigo": fuzzy_row.get("codigo"), "nombre": fuzzy_row.get("nombre"), "score": round(fuzzy_score, 4)}],
-            )
-            return int(fuzzy_row.get("id"))
-
-        vector_row = await self._resolve_vector_match(
-            session,
-            entity_type=entity_type,
-            query_text=str(raw_value),
-            rows=rows,
-        )
-        if vector_row and float(vector_row.get("score") or 0.0) >= max(0.78, minimum_score - 0.12):
-            await self._semantic_cache_put(
-                session,
-                field_code=table_name,
-                raw_query=str(raw_value),
-                query_normalized=target_norm,
-                entity_type=entity_type,
-                entity_code=str(vector_row.get("codigo")),
-                strategy="VECTOR",
-                confidence=float(vector_row.get("score") or 0.0),
-                top_candidates=[{"codigo": vector_row.get("codigo"), "nombre": vector_row.get("nombre"), "score": round(float(vector_row.get("score") or 0.0), 4)}],
-            )
-            return int(vector_row.get("id"))
-
+        resolved_row: Optional[dict[str, Any]] = None
+        alias_meta: Optional[dict[str, Any]] = None
+        strategy = "NO_MATCH"
+        confidence = 0.0
+        exact_match = False
+        trigram_score: Optional[float] = None
+        vector_score: Optional[float] = None
+        escalated_to_ai = False
+        decided_by_rule = False
+        cache_hit = False
+        review_reason: Optional[str] = None
+        error_detail: Optional[str] = None
         ranked_candidates: list[dict[str, Any]] = []
-        for row in rows:
-            score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
-            if score <= 0:
-                continue
-            ranked_candidates.append(
-                {
-                    "codigo": row.get("codigo"),
-                    "nombre": row.get("nombre"),
-                    "score": round(score, 4),
-                }
+
+        try:
+            cache = await self._semantic_cache_get(
+                session,
+                field_code=table_name,
+                query_normalized=target_norm,
             )
-        ranked_candidates.sort(key=lambda x: x["score"], reverse=True)
-        llm_pick = await self._resolve_llm_fallback(
-            query_text=str(raw_value),
-            candidates=ranked_candidates,
+
+            query = text(
+                f"""
+                SELECT id, {code_column} AS codigo, {name_column} AS nombre
+                FROM {table_name}
+                WHERE activo = TRUE
+                  AND {extra_where}
+                """
+            )
+            rows = [dict(r) for r in (await session.execute(query)).mappings().all()]
+            if not rows:
+                review_reason = "NO_MATCH"
+                error_detail = f"Sin filas activas en {table_name}"
+            else:
+                if cache and cache.get("entidad_codigo_resuelto"):
+                    cached_row = self._find_row_by_code(rows, cache.get("entidad_codigo_resuelto"))
+                    if cached_row:
+                        resolved_row = cached_row
+                        cache_hit = True
+                        cached_strategy = str(cache.get("estrategia_usada") or "").upper()
+                        strategy = f"CACHE_{cached_strategy}" if cached_strategy else "CACHE"
+                        confidence = float(cache.get("confidence") or 0.0)
+                        exact_match = cached_strategy == "EXACT"
+
+                if not resolved_row:
+                    best_row: Optional[dict[str, Any]] = None
+                    best_score = 0.0
+                    for row in rows:
+                        score = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
+                        if score > best_score:
+                            best_score = score
+                            best_row = row
+                    if best_row and best_score >= minimum_score:
+                        resolved_row = best_row
+                        strategy = "EXACT"
+                        confidence = float(best_score)
+                        exact_match = True
+                        await self._semantic_cache_put(
+                            session,
+                            field_code=table_name,
+                            raw_query=raw_text,
+                            query_normalized=target_norm,
+                            entity_type=entity_type,
+                            entity_code=str(best_row.get("codigo")),
+                            strategy="EXACT",
+                            confidence=best_score,
+                            top_candidates=[
+                                {
+                                    "codigo": best_row.get("codigo"),
+                                    "nombre": best_row.get("nombre"),
+                                    "score": round(best_score, 4),
+                                }
+                            ],
+                        )
+
+                if not resolved_row:
+                    alias_meta = await self._resolve_alias_match(
+                        session,
+                        entity_type=entity_type,
+                        query_normalized=target_norm,
+                        rows=rows,
+                    )
+                    if alias_meta and alias_meta.get("master_row"):
+                        resolved_row = dict(alias_meta.get("master_row"))
+                        strategy = "ALIAS"
+                        confidence = 0.96
+                        await self._semantic_cache_put(
+                            session,
+                            field_code=table_name,
+                            raw_query=raw_text,
+                            query_normalized=target_norm,
+                            entity_type=entity_type,
+                            entity_code=str(resolved_row.get("codigo")),
+                            strategy="ALIAS",
+                            confidence=confidence,
+                            top_candidates=[
+                                {
+                                    "codigo": resolved_row.get("codigo"),
+                                    "nombre": resolved_row.get("nombre"),
+                                    "score": confidence,
+                                }
+                            ],
+                        )
+
+                if not resolved_row:
+                    trgm_row = await self._resolve_trgm_match(
+                        session,
+                        table_name=table_name,
+                        code_column=code_column,
+                        name_column=name_column,
+                        extra_where=extra_where,
+                        query_normalized=target_norm,
+                    )
+                    trigram_score = float(trgm_row.get("score") or 0.0) if trgm_row else None
+                    if trgm_row and trigram_score >= max(0.78, minimum_score - 0.12):
+                        resolved_row = trgm_row
+                        strategy = "TRGM"
+                        confidence = float(trigram_score)
+                        decided_by_rule = True
+                        await self._semantic_cache_put(
+                            session,
+                            field_code=table_name,
+                            raw_query=raw_text,
+                            query_normalized=target_norm,
+                            entity_type=entity_type,
+                            entity_code=str(trgm_row.get("codigo")),
+                            strategy="TRGM",
+                            confidence=confidence,
+                            top_candidates=[
+                                {
+                                    "codigo": trgm_row.get("codigo"),
+                                    "nombre": trgm_row.get("nombre"),
+                                    "score": round(confidence, 4),
+                                }
+                            ],
+                        )
+
+                if not resolved_row:
+                    fuzzy_row: Optional[dict[str, Any]] = None
+                    fuzzy_score = 0.0
+                    for row in rows:
+                        code_norm = self._normalize_text(row.get("codigo"))
+                        name_norm = self._normalize_text(row.get("nombre"))
+                        ratio = max(
+                            SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
+                            SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
+                        )
+                        if ratio > fuzzy_score:
+                            fuzzy_score = ratio
+                            fuzzy_row = row
+                    if fuzzy_row and fuzzy_score >= max(0.8, minimum_score - 0.1):
+                        resolved_row = fuzzy_row
+                        strategy = "FUZZY"
+                        confidence = float(fuzzy_score)
+                        decided_by_rule = True
+                        await self._semantic_cache_put(
+                            session,
+                            field_code=table_name,
+                            raw_query=raw_text,
+                            query_normalized=target_norm,
+                            entity_type=entity_type,
+                            entity_code=str(fuzzy_row.get("codigo")),
+                            strategy="FUZZY",
+                            confidence=confidence,
+                            top_candidates=[
+                                {
+                                    "codigo": fuzzy_row.get("codigo"),
+                                    "nombre": fuzzy_row.get("nombre"),
+                                    "score": round(confidence, 4),
+                                }
+                            ],
+                        )
+
+                if not resolved_row:
+                    vector_row = await self._resolve_vector_match(
+                        session,
+                        entity_type=entity_type,
+                        query_text=raw_text,
+                        rows=rows,
+                    )
+                    vector_score = float(vector_row.get("score") or 0.0) if vector_row else None
+                    if vector_row and vector_score >= max(0.78, minimum_score - 0.12):
+                        resolved_row = vector_row
+                        strategy = "VECTOR"
+                        confidence = float(vector_score)
+                        await self._semantic_cache_put(
+                            session,
+                            field_code=table_name,
+                            raw_query=raw_text,
+                            query_normalized=target_norm,
+                            entity_type=entity_type,
+                            entity_code=str(vector_row.get("codigo")),
+                            strategy="VECTOR",
+                            confidence=confidence,
+                            top_candidates=[
+                                {
+                                    "codigo": vector_row.get("codigo"),
+                                    "nombre": vector_row.get("nombre"),
+                                    "score": round(confidence, 4),
+                                }
+                            ],
+                        )
+
+                if not resolved_row:
+                    for row in rows:
+                        code_norm = self._normalize_text(row.get("codigo"))
+                        name_norm = self._normalize_text(row.get("nombre"))
+                        lexical = self._score_master_candidate(target_norm, row.get("codigo"), row.get("nombre"))
+                        ratio = max(
+                            SequenceMatcher(None, target_norm, code_norm).ratio() if code_norm else 0.0,
+                            SequenceMatcher(None, target_norm, name_norm).ratio() if name_norm else 0.0,
+                        )
+                        score = max(lexical, ratio * 0.92)
+                        if score < 0.35:
+                            continue
+                        ranked_candidates.append(
+                            {
+                                "codigo": row.get("codigo"),
+                                "nombre": row.get("nombre"),
+                                "score": round(score, 4),
+                            }
+                        )
+                    ranked_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+                    if ranked_candidates and float(ranked_candidates[0]["score"]) >= self.SEMANTIC_LLM_FALLBACK_MIN_SCORE:
+                        escalated_to_ai = True
+                        llm_pick = await self._resolve_llm_fallback(
+                            query_text=raw_text,
+                            candidates=ranked_candidates,
+                        )
+                        if llm_pick and llm_pick.get("codigo"):
+                            llm_row = self._find_row_by_code(rows, llm_pick.get("codigo"))
+                            if llm_row:
+                                resolved_row = llm_row
+                                strategy = "LLM"
+                                confidence = float(llm_pick.get("score") or 0.0)
+                                await self._semantic_cache_put(
+                                    session,
+                                    field_code=table_name,
+                                    raw_query=raw_text,
+                                    query_normalized=target_norm,
+                                    entity_type=entity_type,
+                                    entity_code=str(llm_row.get("codigo")),
+                                    strategy="LLM",
+                                    confidence=confidence,
+                                    top_candidates=ranked_candidates[:5],
+                                )
+                    if not resolved_row:
+                        review_reason = "LOW_CONFIDENCE" if ranked_candidates else "NO_MATCH"
+
+                if resolved_row and entity_type:
+                    canonical_name = str(resolved_row.get("nombre") or "")
+                    canonical_entry = await self._upsert_semantic_catalog_entry(
+                        session,
+                        entity_type=entity_type,
+                        entity_code=str(resolved_row.get("codigo")),
+                        canonical_name=canonical_name,
+                        search_text=canonical_name,
+                        alias_semantico_id=int(alias_meta.get("alias_id")) if alias_meta and alias_meta.get("alias_id") else None,
+                    )
+                    if canonical_entry and not canonical_entry.get("embedding"):
+                        await self._enqueue_embedding_job(
+                            session,
+                            source_table="semantic_catalog",
+                            source_id=int(canonical_entry.get("id")),
+                            source_text=str(canonical_entry.get("texto_busqueda") or canonical_name),
+                            model=self.SEMANTIC_EMBED_MODEL,
+                        )
+
+                    canonical_norm = self._normalize_text(canonical_name)
+                    if target_norm and target_norm != canonical_norm:
+                        query_entry = await self._upsert_semantic_catalog_entry(
+                            session,
+                            entity_type=entity_type,
+                            entity_code=str(resolved_row.get("codigo")),
+                            canonical_name=canonical_name,
+                            search_text=raw_text,
+                            alias_semantico_id=int(alias_meta.get("alias_id")) if alias_meta and alias_meta.get("alias_id") else None,
+                        )
+                        if query_entry and not query_entry.get("embedding"):
+                            await self._enqueue_embedding_job(
+                                session,
+                                source_table="semantic_catalog",
+                                source_id=int(query_entry.get("id")),
+                                source_text=str(query_entry.get("texto_busqueda") or raw_text),
+                                model=self.SEMANTIC_EMBED_MODEL,
+                            )
+
+        except Exception as exc:
+            error_detail = f"{type(exc).__name__}: {exc}"
+            review_reason = review_reason or "RULE_MISMATCH"
+            logger.debug("Error en _resolve_master_id(%s, %s)", table_name, raw_text, exc_info=True)
+
+        latency_ms = int((perf_counter() - started) * 1000)
+        resolved_code = str(resolved_row.get("codigo")) if resolved_row else None
+        await self._log_semantic_match(
+            session,
+            usuario_id=usuario_id,
+            incoming_message_id=incoming_message_id,
+            field_code=field_for_log,
+            query_text=raw_text,
+            query_normalized=target_norm,
+            strategy=strategy,
+            exact_match=exact_match,
+            trigram_score=trigram_score,
+            vector_score=vector_score,
+            confidence=confidence if resolved_row else None,
+            entity_type=entity_type if resolved_row else None,
+            entity_code=resolved_code,
+            escalated_to_ai=escalated_to_ai,
+            decided_by_rule=decided_by_rule,
+            latency_ms=latency_ms,
+            error_detail=error_detail,
         )
-        if llm_pick and llm_pick.get("codigo"):
-            llm_row = self._find_row_by_code(rows, llm_pick.get("codigo"))
-            if llm_row:
-                await self._semantic_cache_put(
-                    session,
-                    field_code=table_name,
-                    raw_query=str(raw_value),
-                    query_normalized=target_norm,
-                    entity_type=entity_type,
-                    entity_code=str(llm_row.get("codigo")),
-                    strategy="LLM",
-                    confidence=float(llm_pick.get("score") or 0.0),
-                    top_candidates=ranked_candidates[:5],
-                )
-                return int(llm_row.get("id"))
-        return None
+
+        if review_reason:
+            await self._enqueue_semantic_review(
+                session,
+                usuario_id=usuario_id,
+                incoming_message_id=incoming_message_id,
+                field_code=field_for_log,
+                query_text=raw_text,
+                query_normalized=target_norm,
+                reason=review_reason,
+                top_candidates=ranked_candidates[:5],
+                observation=error_detail,
+            )
+            return None
+
+        if not resolved_row:
+            return None
+        return int(resolved_row.get("id"))
 
     async def _log_profile_extraction(
         self,
@@ -854,6 +1348,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
         field_code: str,
         raw_value: Any,
         now_peru,
+        *,
+        confidence: float = 1.0,
+        evidence_text: str = "Automatic extraction",
+        status: str = "confirmed",
+        resolved_entity_type: Optional[str] = None,
+        resolved_entity_code: Optional[str] = None,
+        resolution_strategy: Optional[str] = None,
+        semantic_cache_hit: bool = False,
     ) -> None:
         if raw_value is None:
             return
@@ -864,9 +1366,19 @@ REGLAS CRITICAS DE ROBUSTEZ:
             text(
                 """
                 INSERT INTO profile_extractions
-                    (usuario_id, field_code, raw_value, normalized_value, confidence, evidence_text, status, extracted_at)
+                    (
+                        usuario_id, field_code, raw_value, normalized_value,
+                        confidence, evidence_text, status,
+                        resolved_entity_type, resolved_entity_code, resolution_strategy, semantic_cache_hit,
+                        extracted_at
+                    )
                 VALUES
-                    (:uid, :field, :raw, :normalized, 1.0, 'Automatic extraction', 'confirmed', :now)
+                    (
+                        :uid, :field, :raw, :normalized,
+                        :confidence, :evidence, :status,
+                        :etype, :ecode, :strategy, :cache_hit,
+                        :now
+                    )
                 """
             ),
             {
@@ -874,6 +1386,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 "field": field_code,
                 "raw": raw_text,
                 "normalized": self._normalize_text(raw_text)[:500],
+                "confidence": float(max(0.0, min(confidence, 1.0))),
+                "evidence": evidence_text[:2000],
+                "status": status[:20],
+                "etype": resolved_entity_type[:30] if resolved_entity_type else None,
+                "ecode": resolved_entity_code[:60] if resolved_entity_code else None,
+                "strategy": resolution_strategy[:20] if resolution_strategy else None,
+                "cache_hit": bool(semantic_cache_hit),
                 "now": now_peru,
             },
         )
@@ -954,13 +1473,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
         clean_data, updates, meta_flags = self._apply_bulletproof_logic(raw_extractions, user_text, current_step)
         
         if clean_data:
-            await self._persist_updates(
+            unresolved_by_field = await self._persist_updates(
                 usuario_id,
                 clean_data,
                 session,
                 source_text=user_text,
                 current_step=current_step,
             )
+            self._inject_unresolved_alerts(unresolved_by_field, meta_flags)
             
         return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
 
@@ -982,13 +1502,14 @@ REGLAS CRITICAS DE ROBUSTEZ:
         clean_data, updates, meta_flags = self._apply_bulletproof_logic(raw_extractions, user_text, current_step)
         
         if clean_data:
-            await self._persist_updates(
+            unresolved_by_field = await self._persist_updates(
                 usuario_id,
                 clean_data,
                 session,
                 source_text=user_text,
                 current_step=current_step,
             )
+            self._inject_unresolved_alerts(unresolved_by_field, meta_flags)
             
         return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
 
@@ -1010,6 +1531,24 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 source_text=source_text,
                 current_step=current_step,
             )
+
+    def _inject_unresolved_alerts(self, unresolved_by_field: dict[str, list[str]], meta_flags: dict):
+        if not unresolved_by_field:
+            return
+            
+        for field, claims in unresolved_by_field.items():
+            if not claims:
+                continue
+            claims_str = ", ".join(claims)
+            meta_flags["needs_health_clarification"] = True
+            
+            if field == "enfermedades":
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. ¿Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
+            elif field in ("alergias", "restricciones_alimentarias"):
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. ¿Podrias confirmarme si esta bien escrito?"
+            else:
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. ¿Podrias aclararlo un poco?"
+            break # Ask for clarification on the first one we find
 
     async def _run_llm_extraction(self, user_text: str, current_step: Optional[str]) -> Dict[str, Any]:
         context_info = f"\nPASO ACTUAL: {current_step}" if current_step else ""
@@ -1224,7 +1763,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
         now_peru,
         *,
         operation: str,
-    ) -> None:
+        usuario_id: Optional[int] = None,
+        incoming_message_id: Optional[int] = None,
+    ) -> list[str]:
+        unresolved: list[str] = []
         today = now_peru.date()
         if operation == self.OP_CLEAR:
             await session.execute(
@@ -1238,11 +1780,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 ),
                 {"pid": perfil_id, "today": today},
             )
-            return
+            return unresolved
 
         values = self._split_values(raw_value)
         if not values:
-            return
+            return unresolved
 
         resolved_ids: list[int] = []
         for value in values:
@@ -1252,14 +1794,18 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 value,
                 code_column="codigo_cie10",
                 minimum_score=0.88,
+                usuario_id=usuario_id,
+                incoming_message_id=incoming_message_id,
+                semantic_field_code="enfermedades",
             )
             if not enfermedad_id:
                 logger.info("No se encontro enfermedad en maestro para valor='%s'", value)
+                unresolved.append(value)
                 continue
             resolved_ids.append(enfermedad_id)
 
         if not resolved_ids:
-            return
+            return unresolved
 
         if operation == self.OP_REPLACE:
             await session.execute(
@@ -1286,7 +1832,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 ),
                 {"pid": perfil_id, "today": today, "ids": resolved_ids},
             )
-            return
+            return unresolved
 
         for enfermedad_id in resolved_ids:
             await session.execute(
@@ -1306,6 +1852,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 ),
                 {"pid": perfil_id, "eid": enfermedad_id, "today": today, "now": now_peru},
             )
+        return unresolved
 
     async def _sync_restricciones(
         self,
@@ -1316,7 +1863,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
         *,
         only_alergenos: bool,
         operation: str,
-    ) -> None:
+        usuario_id: Optional[int] = None,
+        incoming_message_id: Optional[int] = None,
+    ) -> list[str]:
+        unresolved: list[str] = []
         today = now_peru.date()
         where_master = "tipo IN ('ALERGENO','INTOLERANCIA')" if only_alergenos else "TRUE"
 
@@ -1335,11 +1885,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
         if operation == self.OP_CLEAR:
             await session.execute(text(deactivate_query), {"pid": perfil_id, "today": today})
-            return
+            return unresolved
 
         values = self._split_values(raw_value)
         if not values:
-            return
+            return unresolved
 
         resolved_ids: list[int] = []
         for value in values:
@@ -1349,9 +1899,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 value,
                 extra_where=where_master,
                 minimum_score=0.88,
+                usuario_id=usuario_id,
+                incoming_message_id=incoming_message_id,
+                semantic_field_code="alergias" if only_alergenos else "restricciones_alimentarias",
             )
             if not restriccion_id:
                 logger.info("No se encontro restriccion en maestro para valor='%s'", value)
+                unresolved.append(value)
                 continue
             resolved_ids.append(restriccion_id)
 
@@ -1375,7 +1929,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                   )
                 """
             await session.execute(text(remove_query), {"pid": perfil_id, "today": today, "ids": resolved_ids})
-            return
+            return unresolved
 
         for restriccion_id in resolved_ids:
             await session.execute(
@@ -1395,6 +1949,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 ),
                 {"pid": perfil_id, "rid": restriccion_id, "today": today, "now": now_peru},
             )
+        return unresolved
 
     async def _persist_updates(
         self,
@@ -1404,7 +1959,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
         *,
         source_text: str = "",
         current_step: Optional[str] = None,
-    ):
+    ) -> dict[str, list[str]]:
+        unresolved_by_field: dict[str, list[str]] = {}
         now_peru = get_now_peru()
 
         profile_res = await session.execute(
@@ -1494,17 +2050,65 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 continue
 
             if field_code == "tipo_dieta":
-                patron_id = await self._resolve_master_id(session, "mae_patron_alimentario", str(value))
+                patron_id = await self._resolve_master_id(
+                    session,
+                    "mae_patron_alimentario",
+                    str(value),
+                    usuario_id=usuario_id,
+                    semantic_field_code="tipo_dieta",
+                )
+                cache_meta = await self._semantic_cache_peek(
+                    session,
+                    field_code="mae_patron_alimentario",
+                    raw_query=str(value),
+                )
                 if patron_id:
                     perfil_updates["patron_alimentario_id"] = patron_id
-                await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
+                await self._log_profile_extraction(
+                    session,
+                    usuario_id,
+                    field_code,
+                    value,
+                    now_peru,
+                    resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
+                    resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
+                    resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
+                    semantic_cache_hit=bool(
+                        (cache_meta or {}).get("estrategia_usada")
+                        and str((cache_meta or {}).get("estrategia_usada")).upper().startswith("CACHE")
+                    ),
+                )
                 continue
 
             if field_code == "objetivo_nutricional":
-                objetivo_id = await self._resolve_master_id(session, "mae_objetivo_nutricional", str(value))
+                objetivo_id = await self._resolve_master_id(
+                    session,
+                    "mae_objetivo_nutricional",
+                    str(value),
+                    usuario_id=usuario_id,
+                    semantic_field_code="objetivo_nutricional",
+                )
+                cache_meta = await self._semantic_cache_peek(
+                    session,
+                    field_code="mae_objetivo_nutricional",
+                    raw_query=str(value),
+                )
                 if objetivo_id:
                     perfil_updates["objetivo_nutricional_id"] = objetivo_id
-                await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
+                await self._log_profile_extraction(
+                    session,
+                    usuario_id,
+                    field_code,
+                    value,
+                    now_peru,
+                    resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
+                    resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
+                    resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
+                    semantic_cache_hit=bool(
+                        (cache_meta or {}).get("estrategia_usada")
+                        and str((cache_meta or {}).get("estrategia_usada")).upper().startswith("CACHE")
+                    ),
+                )
                 continue
 
             if field_code == "distrito":
@@ -1514,11 +2118,31 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     str(value),
                     code_column="ubigeo",
                     minimum_score=0.88,
+                    usuario_id=usuario_id,
+                    semantic_field_code="distrito",
+                )
+                cache_meta = await self._semantic_cache_peek(
+                    session,
+                    field_code="mae_distrito",
+                    raw_query=str(value),
                 )
                 if distrito_id:
                     perfil_updates["distrito_id"] = distrito_id
                     perfil_updates["fuente_ubicacion"] = "usuario"
-                await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
+                await self._log_profile_extraction(
+                    session,
+                    usuario_id,
+                    field_code,
+                    value,
+                    now_peru,
+                    resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
+                    resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
+                    resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
+                    semantic_cache_hit=bool(
+                        (cache_meta or {}).get("estrategia_usada")
+                        and str((cache_meta or {}).get("estrategia_usada")).upper().startswith("CACHE")
+                    ),
+                )
                 continue
 
             if field_code == "enfermedades":
@@ -1528,13 +2152,16 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     field_code=field_code,
                     current_step=current_step,
                 )
-                await self._sync_enfermedades(
+                unresolved = await self._sync_enfermedades(
                     session,
                     perfil_id,
                     str(value),
                     now_peru,
                     operation=op,
+                    usuario_id=usuario_id,
                 )
+                if unresolved:
+                    unresolved_by_field["enfermedades"] = unresolved
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
@@ -1545,14 +2172,17 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     field_code=field_code,
                     current_step=current_step,
                 )
-                await self._sync_restricciones(
+                unresolved = await self._sync_restricciones(
                     session,
                     perfil_id,
                     str(value),
                     now_peru,
                     only_alergenos=True,
                     operation=op,
+                    usuario_id=usuario_id,
                 )
+                if unresolved:
+                    unresolved_by_field["alergias"] = unresolved
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
@@ -1563,14 +2193,17 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     field_code=field_code,
                     current_step=current_step,
                 )
-                await self._sync_restricciones(
+                unresolved = await self._sync_restricciones(
                     session,
                     perfil_id,
                     str(value),
                     now_peru,
                     only_alergenos=False,
                     operation=op,
+                    usuario_id=usuario_id,
                 )
+                if unresolved:
+                    unresolved_by_field["restricciones_alimentarias"] = unresolved
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
@@ -1592,3 +2225,15 @@ REGLAS CRITICAS DE ROBUSTEZ:
             )
 
         logger.info("ProfileExtractionService: Data staged for user=%s in V3 schema", usuario_id)
+
+        # ── Trigger: Generar/actualizar orden dietética basada en reglas ──
+        # Solo si se actualizaron enfermedades o restricciones y el servicio está disponible.
+        _disease_or_restriction_fields = {"enfermedades", "alergias", "restricciones_alimentarias"}
+        if self._nutritional_rules and _disease_or_restriction_fields.intersection(updates.keys()):
+            try:
+                await self._nutritional_rules.generate_or_update_dietary_order(session, usuario_id)
+            except Exception as e:
+                logger.error(
+                    "ProfileExtractionService: Non-critical error generating dietary order for user=%s: %s",
+                    usuario_id, e,
+                )

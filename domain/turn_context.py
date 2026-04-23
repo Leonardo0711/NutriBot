@@ -28,6 +28,9 @@ class TurnContext:
     # Contexto RAG para consultas generales
     rag_text: Optional[str] = None
     
+    # Contexto nutricional derivado de reglas clínicas (tablas rel_*)
+    nutritional_rules_text: Optional[str] = None
+    
     # Flags precomputados por el enrutador / reglas
     looks_like_profile_update: bool = False
     is_asking_for_recommendation: bool = False

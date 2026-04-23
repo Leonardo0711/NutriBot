@@ -11,19 +11,31 @@ from domain.router import RouteResult, Intent
 from domain.turn_context import TurnContext
 from application.services.profile_read_service import ProfileReadService
 from application.services.profile_context_service import ProfileContextService
+from application.services.nutritional_rules_service import NutritionalRulesService
 from application.services.conversation_memory_service import ConversationMemoryService
 
 
 class TurnContextService:
+    # Intents que se benefician de contexto nutricional derivado de reglas
+    _NUTRITION_INTENTS = {
+        Intent.NUTRITION_QUERY,
+        Intent.RECOMMENDATION_REQUEST,
+        Intent.IMAGE,
+        Intent.AUDIO,
+        Intent.AMBIGUOUS,
+    }
+
     def __init__(
         self,
         profile_reader: ProfileReadService,
         profile_context: ProfileContextService,
         memory_service: ConversationMemoryService,
+        nutritional_rules: NutritionalRulesService | None = None,
     ):
         self._profile_reader = profile_reader
         self._profile_context = profile_context
         self._memory_service = memory_service
+        self._nutritional_rules = nutritional_rules or NutritionalRulesService()
 
     async def build(
         self,
@@ -62,6 +74,14 @@ class TurnContextService:
         is_requesting_personalization = route.intent == Intent.PERSONALIZE_REQUEST
         is_requesting_survey = route.intent == Intent.SURVEY_CONTINUE
 
+        # 5. Cargar contexto de reglas nutricionales (solo para intents relevantes)
+        nutritional_rules_text = None
+        if route.intent in self._NUTRITION_INTENTS:
+            rules_ctx = await self._nutritional_rules.resolve_nutritional_context(session, user.id)
+            nutritional_rules_text = self._nutritional_rules.build_rules_prompt_context(rules_ctx)
+            if nutritional_rules_text:
+                profile_text = f"{profile_text}\n\n{nutritional_rules_text}"
+
         return TurnContext(
             session=session,
             user=user,
@@ -74,6 +94,7 @@ class TurnContextService:
             profile_text=profile_text,
             summary=summary,
             rag_text=rag_text,
+            nutritional_rules_text=nutritional_rules_text,
             looks_like_profile_update=looks_like_profile_update,
             is_asking_for_recommendation=is_asking_for_recommendation,
             is_short_greeting=is_short_greeting,

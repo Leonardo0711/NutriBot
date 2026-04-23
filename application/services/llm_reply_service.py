@@ -35,16 +35,16 @@ class LlmReplyService:
         "distrito": ("distrito",),
     }
     _CANONICAL_PROFILE_QUESTION = {
-        "edad": "Primero, ¿cuántos años tienes?",
-        "peso_kg": "¿Cuál es tu peso aproximado en kilos? (ej. 68)",
-        "altura_cm": "¿Cuál es tu talla? (ej. 1.70 m o 170 cm)",
-        "alergias": "¿Tienes alergias o intolerancias alimentarias? (ej. mani, mariscos, lactosa o ninguna)",
-        "enfermedades": "¿Tienes alguna condicion de salud relevante? (ej. diabetes, hipertension o ninguna)",
-        "restricciones_alimentarias": "¿Tienes restricciones alimentarias? (ej. no como cerdo / ninguna)",
-        "tipo_dieta": "¿Sigues algun tipo de dieta? (ej. omnivora, vegetariana o ninguna)",
-        "objetivo_nutricional": "¿Cual es tu objetivo principal? (ej. bajar peso, ganar masa muscular o mejorar habitos)",
-        "provincia": "¿En que provincia de Peru te encuentras?",
-        "distrito": "¿En que distrito te encuentras?",
+        "edad": "¿Cuantos anos tienes? 🎂\nEj: 25, 40, 63...",
+        "peso_kg": "¿Cuanto pesas aproximadamente en kilos? ⚖️\nEj: 65, 72, 85... (solo el numero)",
+        "altura_cm": "¿Cuanto mides? 📐\nPuedes decirme en metros o centimetros.\nEj: 1.65 m, 170 cm...",
+        "alergias": "¿Tienes alguna alergia o intolerancia a alimentos? 🍎\nEjemplos: alergia al mani, intolerancia a la lactosa, alergia a los mariscos...\nSi no tienes ninguna, dime 'ninguna'",
+        "enfermedades": "¿Tienes alguna enfermedad o condicion medica que deba tener en cuenta? 🏥\nEjemplos: diabetes, hipertension (presion alta), hipotiroidismo, anemia, gastritis...\nSi no tienes ninguna, dime 'ninguna'",
+        "restricciones_alimentarias": "¿Hay alimentos que prefieras evitar o no puedas comer? 🚫\nEjemplos: no como cerdo, evito los lacteos, no como mariscos...\nSi no tienes ninguna restriccion, dime 'ninguna'",
+        "tipo_dieta": "¿Sigues algun tipo de alimentacion en particular? 🥗\nEjemplos: omnivora (de todo), vegetariana, vegana o ninguna en especial",
+        "objetivo_nutricional": "¿Cual es tu objetivo principal con la alimentacion? 🎯\nEjemplos: bajar de peso, ganar masa muscular, mejorar mis habitos, comer mas saludable",
+        "provincia": "¿En que provincia del Peru te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
+        "distrito": "¿Y en que distrito estas? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq...",
     }
     _DISCLAIMER = (
         "\n\nRecuerda: esta orientacion es referencial y no reemplaza "
