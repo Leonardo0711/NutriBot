@@ -790,6 +790,11 @@ FORMATO DE SALIDA (JSON):
                 if not self._can_try_health_rescue(current_step, user_text, is_food_request):
                     if clarification_request:
                         return self._build_step_clarification_reply(current_step)
+                    
+                    explanation = analysis.get("explanation")
+                    if explanation:
+                        return f"{explanation}\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
+
                     missing_label = self.FIELD_LABELS.get(current_step, current_step)
                     purpose = self._purpose_for_step(current_step)
                     return (

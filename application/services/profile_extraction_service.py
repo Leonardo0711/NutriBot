@@ -60,6 +60,14 @@ class ProfileExtractionService:
         "alienigena",
         "avenger",
         "pokemon",
+        "aire",
+        "piedras",
+        "tierra",
+        "nada",
+        "humo",
+        "invisible",
+        "fantasmas",
+        "mentiras",
     }
 
     NEGATIVE_MARKERS = {
