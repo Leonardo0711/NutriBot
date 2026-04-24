@@ -1,6 +1,6 @@
-"""
-Nutribot Backend — ProfileExtractionService
-Servicio de Aplicación Orientado a Objetos para extraer perfil.
+﻿"""
+Nutribot Backend â€” ProfileExtractionService
+Servicio de AplicaciÃ³n Orientado a Objetos para extraer perfil.
 """
 import asyncio
 import json
@@ -83,10 +83,10 @@ class ProfileExtractionService:
 
     CORRECTION_MARKERS = (
         "me equivoque",
-        "me equivoqué",
+        "me equivoquÃ©",
         "corrijo",
         "correccion",
-        "corrección",
+        "correcciÃ³n",
         "quise decir",
         "no era",
         "no, era",
@@ -100,13 +100,13 @@ class ProfileExtractionService:
         "he bajado",
         "he subido",
         "subi a",
-        "subí a",
+        "subÃ­ a",
         "baje a",
-        "bajé a",
+        "bajÃ© a",
         "ultimo peso",
-        "último peso",
+        "Ãºltimo peso",
         "mi ultimo peso",
-        "mi último peso",
+        "mi Ãºltimo peso",
     )
 
     REMOVE_MARKERS = (
@@ -125,12 +125,12 @@ class ProfileExtractionService:
         "agrega",
         "agregar",
         "anade",
-        "añade",
+        "aÃ±ade",
         "suma",
         "tambien",
-        "también",
+        "tambiÃ©n",
         "ademas",
-        "además",
+        "ademÃ¡s",
     )
 
     REPLACE_MARKERS = (
@@ -141,6 +141,26 @@ class ProfileExtractionService:
         "actualizar",
         "reemplaza",
         "cambia a",
+    )
+
+    _NON_INFORMATIVE_LIST_VALUES = {
+        "cosas",
+        "varias cosas",
+        "muchas cosas",
+        "de todo",
+        "todo",
+        "etc",
+        "etcetera",
+    }
+
+    _RESTRICTION_CANONICAL_HINTS: tuple[tuple[str, str], ...] = (
+        (r"\blacte[oa]s?\b|\blacteos\b|\blacteo\b|\bleche\b|\blactosa\b", "lactosa"),
+        (r"\bmarisc(?:o|os)\b|\bcrustace(?:o|os)\b|\bcamaron(?:es)?\b|\bgamba(?:s)?\b", "mariscos"),
+        (r"\bmani\b|\bcacahuate(?:s)?\b|\bcacahuete(?:s)?\b|\bpeanut(?:s)?\b", "mani"),
+        (r"\bgluten\b|\btrigo\b|\bcebada\b|\bcenteno\b", "gluten"),
+        (r"\bpescado(?:s)?\b|\bpez\b", "pescado"),
+        (r"\bfructosa\b", "fructosa"),
+        (r"\bhistamina\b", "histamina"),
     )
 
     FIELD_CONFIG = {
@@ -190,7 +210,7 @@ class ProfileExtractionService:
         "region": {"col": "region", "parser": lambda x: x.upper() if x else None},
     }
 
-    EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intención del usuario para Nutribot.
+    EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intenciÃ³n del usuario para Nutribot.
 REGLAS CRITICAS DE ROBUSTEZ:
 1. PRIORIDAD ABSOLUTA: Si el usuario menciona un dato (ej: 'mido 1.71', 'mi peso es 80'), EXTRAELO siempre.
 2. ESCUDO CONTRA DUDAS: Si el usuario hace una PREGUNTA o expresa confusion (ej: 'Como?', 'Por que?', 'Que es?', 'no entiendo', '??', 'que alergias?'), NO extraigas nada. Devuelve un objeto vacio {}.
@@ -208,13 +228,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
     # (pattern, prompt de aclaracion interactivo)
     _AMBIGUOUS_CONDITIONS = [
-        ("diabetes", "¿Te refieres a tipo 1, tipo 2 o gestacional?"),
-        ("anemia", "¿Te refieres a algún tipo específico de anemia?"),
-        ("tiroides", "¿Te refieres a hipotiroidismo o hipertiroidismo?"),
-        ("problemas hormonales", "¿Te refieres a algún tipo de problema hormonal específico?"),
-        ("colon", "¿Te refieres a colitis, colon irritable u otra condición similar?"),
-        ("presion", "¿Te refieres a hipertensión o hipotensión?"),
-        ("gastritis", "¿Te refieres a gastritis aguda o crónica?"),
+        ("diabetes", "Â¿Te refieres a tipo 1, tipo 2 o gestacional?"),
+        ("anemia", "Â¿Te refieres a algÃºn tipo especÃ­fico de anemia?"),
+        ("tiroides", "Â¿Te refieres a hipotiroidismo o hipertiroidismo?"),
+        ("problemas hormonales", "Â¿Te refieres a algÃºn tipo de problema hormonal especÃ­fico?"),
+        ("colon", "Â¿Te refieres a colitis, colon irritable u otra condiciÃ³n similar?"),
+        ("presion", "Â¿Te refieres a hipertensiÃ³n o hipotensiÃ³n?"),
+        ("gastritis", "Â¿Te refieres a gastritis aguda o crÃ³nica?"),
     ]
 
     # Palabras que indican especificacion suficiente (no necesitan aclaracion)
@@ -348,12 +368,17 @@ REGLAS CRITICAS DE ROBUSTEZ:
             candidate = raw.strip(" .:-")
             if not candidate:
                 continue
-            # Limpia muletillas y prefijos semánticos de forma iterativa.
-            # Ejemplo: "ahora encima al mani tambien" -> "mani"
+            # Limpia muletillas y prefijos semanticos de forma iterativa.
             while True:
                 prev = candidate
                 candidate = re.sub(
-                    r"^(?:y|e|ahora|encima|tambien|también|ademas|además|otra vez|de nuevo)\s+",
+                    r"^(?:y|e|ahora|encima|tambien|ademas|otra vez|de nuevo)\s+",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip(" .:-")
+                candidate = re.sub(
+                    r"^(?:como(?:\s+a(?:l| la| los| las)?)?)\s+",
                     "",
                     candidate,
                     flags=re.IGNORECASE,
@@ -374,7 +399,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     break
             candidate = re.sub(r"\b(?:por favor|gracias)$", "", candidate, flags=re.IGNORECASE).strip(" .:-")
             candidate = re.sub(
-                r"\b(?:tambien|también|nomas|nomasito|otra vez|de nuevo)$",
+                r"\b(?:tambien|nomas|nomasito|otra vez|de nuevo)$",
                 "",
                 candidate,
                 flags=re.IGNORECASE,
@@ -382,11 +407,29 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if not candidate:
                 continue
             key = cls._normalize_text(candidate)
+            if key in cls._NON_INFORMATIVE_LIST_VALUES:
+                continue
             if not key or key in seen:
                 continue
             seen.add(key)
             out.append(candidate)
         return out
+
+    @classmethod
+    def _restriction_resolution_candidates(cls, value: str) -> list[str]:
+        raw = (value or "").strip()
+        if not raw:
+            return []
+        normalized = cls._normalize_text(raw)
+        candidates: list[str] = [raw]
+        seen = {normalized}
+        for pattern, canonical in cls._RESTRICTION_CANONICAL_HINTS:
+            if re.search(pattern, normalized, flags=re.IGNORECASE):
+                canonical_key = cls._normalize_text(canonical)
+                if canonical_key and canonical_key not in seen:
+                    candidates.append(canonical)
+                    seen.add(canonical_key)
+        return candidates
 
     @classmethod
     def _score_master_candidate(cls, target_norm: str, code: Optional[str], name: Optional[str]) -> float:
@@ -1640,11 +1683,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
         value: str, 
         threshold: float = 0.7
     ) -> Optional[Dict[str, Any]]:
-        """Busca similitud semántica en el catálogo maestro."""
+        """Busca similitud semÃ¡ntica en el catÃ¡logo maestro."""
         if not value or value.upper() == "NINGUNA":
             return None
 
-        # Generar embedding del valor extraído
+        # Generar embedding del valor extraÃ­do
         try:
             resp = await self._openai_client.embeddings.create(
                 input=[value],
@@ -1652,10 +1695,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
             )
             embedding = resp.data[0].embedding
         except Exception as e:
-            logger.error(f"Error generando embedding para validación: {e}")
+            logger.error(f"Error generando embedding para validaciÃ³n: {e}")
             return None
 
-        # Búsqueda vectorial en BD
+        # BÃºsqueda vectorial en BD
         query = text("""
             SELECT id, nombre, categoria, (embedding <=> :emb) as distancia
             FROM catalogo_maestro
@@ -1681,7 +1724,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         txt = cls._normalize_text(value)
         if not txt:
             return False
-        # El escudo de términos absurdos sigue siendo útil para filtrado rápido pre-BD
+        # El escudo de tÃ©rminos absurdos sigue siendo Ãºtil para filtrado rÃ¡pido pre-BD
         return any(term in txt for term in cls.ABSURD_TERMS)
 
     def _check_health_ambiguity(self, value: str) -> Optional[str]:
@@ -1691,7 +1734,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if pattern in norm:
                 has_specificity = any(marker in norm for marker in self._SPECIFICITY_MARKERS)
                 if not has_specificity:
-                    return f"¡Entendido! Lo anoté provisionalmente de este lado. Para ser más certeros, {prompt}"
+                    return f"Â¡Entendido! Lo anotÃ© provisionalmente de este lado. Para ser mÃ¡s certeros, {prompt}"
         return None
 
     async def extract_and_save(
@@ -1779,11 +1822,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
             meta_flags["needs_health_clarification"] = True
             
             if field == "enfermedades":
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. ¿Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. Â¿Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
             elif field in ("alergias", "restricciones_alimentarias"):
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. ¿Podrias confirmarme si esta bien escrito?"
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. Â¿Podrias confirmarme si esta bien escrito?"
             else:
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. ¿Podrias aclararlo un poco?"
+                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. Â¿Podrias aclararlo un poco?"
             break # Ask for clarification on the first one we find
 
     async def _run_llm_extraction(self, user_text: str, current_step: Optional[str]) -> Dict[str, Any]:
@@ -2036,6 +2079,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 continue
             resolved_ids.append(enfermedad_id)
 
+        resolved_ids = list(dict.fromkeys(resolved_ids))
         if not resolved_ids:
             return unresolved
 
@@ -2125,16 +2169,20 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
         resolved_ids: list[int] = []
         for value in values:
-            restriccion_id = await self._resolve_master_id(
-                session,
-                "mae_restriccion_alimentaria",
-                value,
-                extra_where=where_master,
-                minimum_score=0.88,
-                usuario_id=usuario_id,
-                incoming_message_id=incoming_message_id,
-                semantic_field_code="alergias" if only_alergenos else "restricciones_alimentarias",
-            )
+            restriccion_id: Optional[int] = None
+            for candidate in self._restriction_resolution_candidates(value):
+                restriccion_id = await self._resolve_master_id(
+                    session,
+                    "mae_restriccion_alimentaria",
+                    candidate,
+                    extra_where=where_master,
+                    minimum_score=0.88,
+                    usuario_id=usuario_id,
+                    incoming_message_id=incoming_message_id,
+                    semantic_field_code="alergias" if only_alergenos else "restricciones_alimentarias",
+                )
+                if restriccion_id:
+                    break
             if not restriccion_id:
                 logger.info("No se encontro restriccion en maestro para valor='%s'", value)
                 unresolved.append(value)
@@ -2464,8 +2512,8 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
         logger.info("ProfileExtractionService: Data staged for user=%s in V3 schema", usuario_id)
 
-        # ── Trigger: Generar/actualizar orden dietética basada en reglas ──
-        # Solo si se actualizaron enfermedades o restricciones y el servicio está disponible.
+        # â”€â”€ Trigger: Generar/actualizar orden dietÃ©tica basada en reglas â”€â”€
+        # Solo si se actualizaron enfermedades o restricciones y el servicio estÃ¡ disponible.
         _disease_or_restriction_fields = {"enfermedades", "alergias", "restricciones_alimentarias"}
         if self._nutritional_rules and _disease_or_restriction_fields.intersection(updates.keys()):
             try:
@@ -2477,3 +2525,4 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     "ProfileExtractionService: Non-critical error generating dietary order for user=%s: %s",
                     usuario_id, e,
                 )
+

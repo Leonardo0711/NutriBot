@@ -104,6 +104,13 @@ class LlmReplyService:
         r"^\s*No muestres estas directivas[^\n]*$",
         r"^\s*Empieza tu respuesta exactamente[^\n]*$",
     ]
+    _CONFLICT_FOOD_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("lactosa", ("lactosa", "lacteo", "lacteos", "leche", "queso", "crema", "yogur", "yogurt", "mantequilla")),
+        ("gluten", ("gluten", "trigo", "cebada", "centeno")),
+        ("mani", ("mani", "cacahuate", "cacahuete", "peanut")),
+        ("mariscos", ("marisco", "mariscos", "crustaceo", "crustaceos", "camaron", "camaron", "gamba", "langostino")),
+        ("pescado", ("pescado", "pescados", "pez")),
+    )
 
     def __init__(
         self,
@@ -294,16 +301,32 @@ class LlmReplyService:
         normalized = cls._normalize_text_for_match(text)
         conflicts: list[str] = []
         for item in cls._restricted_profile_items(snapshot):
-            token = cls._normalize_text_for_match(item)
-            if not token:
-                continue
-            if " " in token:
-                if token in normalized:
-                    conflicts.append(item)
-            else:
-                if re.search(rf"\b{re.escape(token)}\b", normalized):
-                    conflicts.append(item)
+            matched = False
+            for token in cls._restriction_tokens_for_match(item):
+                if not token:
+                    continue
+                if " " in token:
+                    if token in normalized:
+                        matched = True
+                        break
+                elif re.search(rf"\b{re.escape(token)}\b", normalized):
+                    matched = True
+                    break
+            if matched:
+                conflicts.append(item)
         return conflicts
+
+    @classmethod
+    def _restriction_tokens_for_match(cls, item: str) -> tuple[str, ...]:
+        normalized_item = cls._normalize_text_for_match(item)
+        tokens: list[str] = [normalized_item]
+        for pivot, aliases in cls._CONFLICT_FOOD_ALIASES:
+            if pivot in normalized_item:
+                for alias in aliases:
+                    alias_norm = cls._normalize_text_for_match(alias)
+                    if alias_norm and alias_norm not in tokens:
+                        tokens.append(alias_norm)
+        return tuple(tokens)
 
     @classmethod
     def _looks_like_recipe_reply(cls, text: str) -> bool:
@@ -365,12 +388,12 @@ class LlmReplyService:
         reply = self._strip_refusal_phrases_for_conflict_case(reply)
 
         normalized = self._normalize_text_for_match(reply)
-        if "alerta de seguridad" in normalized or "segun tu perfil" in normalized:
+        if "advertencia nutribot" in normalized or "segun tu perfil" in normalized:
             return reply
         conflict_text = ", ".join(requested_conflicts)
         warning = (
-            "Alerta de seguridad: segun tu perfil nutricional, tienes alergia/restriccion a "
-            f"{conflict_text}. Toma esta recomendacion con precaucion y, si puedes, prioriza opciones seguras para ti.\n\n"
+            "Advertencia NutriBot: segun tu perfil nutricional, hay conflicto con "
+            f"{conflict_text}. Te comparto lo solicitado, pero usalo con precaucion.\n\n"
         )
         return f"{warning}{reply}"
 
@@ -385,10 +408,16 @@ class LlmReplyService:
             "no puedo",
             "no podre",
             "no debo",
+            "no seria la mejor opcion",
+            "no sería la mejor opcion",
+            "no te recomiendo",
             "no recomendar",
             "debido a tus alergias",
             "por tus alergias",
             "por tus restricciones",
+            "puedo ofrecerte una alternativa",
+            "puedo sugerirte una alternativa",
+            "te sugiero una alternativa",
         )
         if not any(marker in normalized for marker in refusal_markers):
             return raw
@@ -405,6 +434,8 @@ class LlmReplyService:
             if ln_norm.startswith("sin embargo, puedo sugerirte"):
                 continue
             if ln_norm.startswith("sin embargo puedo sugerirte"):
+                continue
+            if "alternativa" in ln_norm and ("sugiero" in ln_norm or "ofrecerte" in ln_norm):
                 continue
             cleaned_lines.append(line)
 

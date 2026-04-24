@@ -27,6 +27,8 @@ class SurveyFlowService:
         schedule_separate_message,
     ) -> tuple[BotReply, bool]:
         original_mode = state.mode
+        original_awaiting = state.awaiting_question_code
+        consent_state = "esperando_consentimiento_encuesta"
         force_survey_start = bool(
             not onboarding_interception_happened
             and original_mode == SessionMode.ACTIVE_CHAT.value
@@ -42,7 +44,11 @@ class SurveyFlowService:
         )
 
         if addon:
-            if original_mode == SessionMode.COLLECTING_USABILITY.value or is_requesting_survey:
+            if (
+                original_mode == SessionMode.COLLECTING_USABILITY.value
+                or is_requesting_survey
+                or original_awaiting == consent_state
+            ):
                 final_bot_reply = addon
             elif reply:
                 final_bot_reply = BotReply(text=reply, content_type="text")

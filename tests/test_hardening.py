@@ -4,7 +4,13 @@ import re
 
 # Monkeypatching for dbless/simple tests where possible
 from application.services.survey_service import SurveyResponseExtractor
+from application.services.survey_flow_service import SurveyFlowService
 from application.services.profile_extraction_service import ProfileExtractionService
+from application.services.llm_reply_service import LlmReplyService
+from domain.entities import ConversationState, NormalizedMessage, User
+from domain.profile_snapshot import ProfileHealth, ProfileLocation, ProfileMeasurements, ProfileSnapshot
+from domain.reply_objects import BotReply
+from domain.value_objects import MessageType, SessionMode
 
 @pytest.mark.asyncio
 class TestHardening:
@@ -73,3 +79,78 @@ class TestHardening:
         # Al perder la carrera, nested_sp.rollback() hace que los updates de memoria se deshagan
         # Este es un unit test representativo. El verdadero test es de base de datos/integracion.
         pass
+
+    def test_split_values_and_semantic_candidates_generalized(self):
+        extractor = ProfileExtractionService(None, "dummy-model")
+        values = extractor._split_values("soy alergico a muchas cosas, como a los lacteos, mariscos, gluten")
+        normalized_values = {extractor._normalize_text(v) for v in values}
+        assert "muchas cosas" not in normalized_values
+        assert "lacteos" in normalized_values
+        assert "mariscos" in normalized_values
+        assert "gluten" in normalized_values
+
+        candidates = extractor._restriction_resolution_candidates("lacteos")
+        normalized_candidates = {extractor._normalize_text(v) for v in candidates}
+        assert "lactosa" in normalized_candidates
+
+    def test_conflict_detection_uses_alias_tokens(self):
+        snapshot = ProfileSnapshot(
+            user_id=1,
+            measurements=ProfileMeasurements(),
+            health=ProfileHealth(
+                allergies=("Sin Lactosa", "Alergia al Mani (Cacahuate)"),
+                food_restrictions=(),
+            ),
+            location=ProfileLocation(),
+        )
+        conflicts = LlmReplyService._find_conflicting_items_in_text(
+            "quiero una receta con lacteos y mani",
+            snapshot,
+        )
+        normalized = {LlmReplyService._normalize_text_for_match(x) for x in conflicts}
+        assert any("lactosa" in item for item in normalized)
+        assert any("mani" in item or "cacahuate" in item for item in normalized)
+
+    @pytest.mark.asyncio
+    async def test_survey_consent_does_not_send_double_message(self):
+        class DummySurveyService:
+            async def process(self, session, state, normalized, projected_interactions_count=None):
+                return BotReply(text="Pregunta 1", content_type="text")
+
+            async def get_current_question_reply(self, session, state):
+                return None
+
+        service = SurveyFlowService(DummySurveyService())
+        state = ConversationState(
+            usuario_id=10,
+            mode=SessionMode.ACTIVE_CHAT.value,
+            awaiting_question_code="esperando_consentimiento_encuesta",
+        )
+        normalized = NormalizedMessage(
+            provider_message_id="m1",
+            phone="+51999999999",
+            content_type=MessageType.TEXT,
+            text="claro",
+        )
+        user = User(id=10, numero_whatsapp="+51999999999")
+        scheduled = {"count": 0}
+
+        async def fake_schedule(**kwargs):
+            scheduled["count"] += 1
+
+        final_reply, interrupted = await service.compose_reply_with_survey(
+            session=None,
+            state=state,
+            normalized=normalized,
+            user=user,
+            reply="mensaje general que no debe salir",
+            new_response_id=None,
+            onboarding_interception_happened=False,
+            is_requesting_survey=False,
+            projected_interactions_count=7,
+            schedule_separate_message=fake_schedule,
+        )
+
+        assert interrupted is False
+        assert final_reply.text == "Pregunta 1"
+        assert scheduled["count"] == 0
