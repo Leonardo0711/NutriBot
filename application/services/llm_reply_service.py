@@ -124,6 +124,20 @@ class LlmReplyService:
         ("mariscos", ("marisco", "mariscos", "crustaceo", "crustaceos", "camaron", "camaron", "gamba", "langostino")),
         ("pescado", ("pescado", "pescados", "pez")),
     )
+    _WELLNESS_SCOPE_TOKENS = (
+        "nutric", "aliment", "comida", "comer", "receta", "menu",
+        "desayuno", "almuerzo", "cena", "snack", "refrigerio",
+        "caloria", "calorias", "macro", "proteina", "carbohidrato", "grasa",
+        "fibra", "vitamina", "mineral", "hidrata", "agua", "salud", "bienestar",
+        "ejercicio", "actividad fisica", "entrenamiento", "sueño", "sueno", "dormir",
+        "peso", "talla", "imc", "perfil", "alergia", "alergias", "restriccion",
+        "restricciones", "diabetes", "hipertension", "hipotiroidismo",
+    )
+    _REQUEST_SHAPE_TOKENS = (
+        "resumen", "explica", "explicame", "cuentame", "dime", "informacion",
+        "que es", "quien es", "historia", "episodio", "anime", "manga",
+        "pelicula", "serie", "programacion", "codigo", "futbol", "noticia",
+    )
 
     def __init__(
         self,
@@ -165,6 +179,15 @@ class LlmReplyService:
                 route.intent.value,
             )
             return fast, new_response_id
+
+        if self._must_redirect_to_nutrition_scope(route, normalized.text):
+            return (
+                "Puedo ayudarte con nutricion y bienestar 😊\n\n"
+                "Por ejemplo: recetas saludables, menus segun tu perfil, control de porciones, "
+                "hidratacion, ejercicio y habitos.\n\n"
+                "Si quieres, te ayudo ahora con algo de eso 🍏",
+                new_response_id,
+            )
 
         extra_instr = ""
         if extracted_data:
@@ -259,6 +282,43 @@ class LlmReplyService:
                 user_request_text=normalized.text,
             )
         return reply, new_response_id
+
+    @classmethod
+    def _must_redirect_to_nutrition_scope(cls, route: RouteResult, user_text: str) -> bool:
+        # Nunca bloquear flujos claramente nutricionales o de perfil/survey.
+        in_scope_intents = {
+            "NUTRITION_QUERY",
+            "RECOMMENDATION_REQUEST",
+            "PROFILE_UPDATE",
+            "CORRECTION_PAST_FIELD",
+            "ANSWER_CURRENT_STEP",
+            "PERSONALIZE_REQUEST",
+            "SURVEY_CONTINUE",
+            "RESET",
+            "IMAGE",
+            "AUDIO",
+        }
+        if route.intent.value in in_scope_intents:
+            return False
+
+        normalized = cls._normalize_text_for_match(user_text or "")
+        if not normalized:
+            return False
+
+        # Si hay señal de alcance nutricional/bienestar, no redirigir.
+        if any(token in normalized for token in cls._WELLNESS_SCOPE_TOKENS):
+            return False
+
+        # Solo redirigir cuando parece una consulta/pedido concreto.
+        request_like = (
+            "?" in normalized
+            or any(token in normalized for token in cls._REQUEST_SHAPE_TOKENS)
+            or len((user_text or "").strip().split()) >= 4
+        )
+        if not request_like:
+            return False
+
+        return True
 
     @staticmethod
     def append_continuity_tip(

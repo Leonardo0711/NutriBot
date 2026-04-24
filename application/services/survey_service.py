@@ -98,6 +98,25 @@ class SurveyResponseExtractor:
     _YES_WORDS = re.compile(r"(?:\b|^)(si|sí|sii|sip|yes|claro|dale|ok|de acuerdo|acepto|autorizo|ya|yap|yaa)(?:\b|$)", re.IGNORECASE)
     _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nopi|noo|nooo|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(para que|por que|que uso|que finalidad)", re.IGNORECASE)
+    _YES_SHORT_EXACT = {
+        "si", "sÃ­", "sii", "sip", "yes", "claro", "dale", "ok", "okay", "de acuerdo",
+        "acepto", "autorizo", "si claro", "si normal", "si acepto", "si autorizo",
+        "ya", "yap", "yaa",
+    }
+    _NO_SHORT_EXACT = {
+        "no", "nop", "nopi", "noo", "nooo", "nel", "rechazo", "no autorizo",
+        "no gracias", "no deseo", "no quiero",
+    }
+    _ACK_TOKENS = {
+        "si", "sÃ­", "no", "ok", "okay", "dale", "claro", "gracias", "listo", "lista",
+        "perfecto", "perfecta", "entendido", "entendida", "yap", "ya", "yaa",
+        "jaja", "jajaja", "jajajaja", "de", "acuerdo",
+    }
+    _QUERY_TOKENS = {
+        "como", "que", "cual", "cuando", "donde", "por", "porque", "para", "sobre",
+        "puedo", "debo", "quiero", "seria", "mejor", "explicame", "explica", "dame",
+        "ayudame", "ayuda",
+    }
     _NUTRITION_HINTS = (
         "menu", "receta", "dieta", "imc", "calorias", "desayuno", "almuerzo",
         "cena", "peso", "talla", "proteina", "carbohidratos", "grasa",
@@ -112,6 +131,14 @@ class SurveyResponseExtractor:
     _QUESTION_STARTS = (
         "como", "que", "cual", "cuanto", "puedo", "debo", "quiero", "me ayudas",
         "podrias", "podrías", "necesito",
+    )
+    _GENERAL_CHAT_MARKERS = (
+        "sobre ",
+        "y sobre ",
+        "entonces ",
+        "por cierto ",
+        "ademas ",
+        "tambien ",
     )
     _INTERRUPTIBLE_STATES = {
         "esperando_asegurado_essalud",
@@ -179,15 +206,57 @@ class SurveyResponseExtractor:
         low = (text or "").strip().lower()
         if not low:
             return False
+        if cls._extract_binary_answer(low) is not None:
+            return False
 
         if cls._contains_nutrition_hint(low):
             return True
 
         has_question_shape = ("?" in low) or any(low.startswith(prefix + " ") for prefix in cls._QUESTION_STARTS)
-        if not has_question_shape:
-            return False
+        has_useful_hint = any(hint in low for hint in cls._USEFUL_CHAT_HINTS)
+        has_general_chat_marker = any(marker in low for marker in cls._GENERAL_CHAT_MARKERS)
 
-        return any(hint in low for hint in cls._USEFUL_CHAT_HINTS)
+        if has_question_shape and has_useful_hint:
+            return True
+        # Preguntas largas de chat (aunque no empiecen con "como/que" ni lleven signos)
+        # se tratan como interrupcion para responder primero y luego retomar encuesta.
+        if has_useful_hint and len(low.split()) >= 4:
+            return True
+        if has_question_shape and len(low.split()) >= 5:
+            return True
+        if has_general_chat_marker and len(low.split()) >= 6:
+            return True
+        if cls._looks_like_free_form_interrupt(low):
+            return True
+        return False
+
+    @classmethod
+    def _extract_binary_answer(cls, text: str) -> Optional[str]:
+        token = cls._normalize_token(text)
+        if not token:
+            return None
+        if token in cls._YES_SHORT_EXACT:
+            return "Si"
+        if token in cls._NO_SHORT_EXACT:
+            return "No"
+        return None
+
+    @classmethod
+    def _looks_like_free_form_interrupt(cls, text: str) -> bool:
+        token = cls._normalize_token(text)
+        if not token:
+            return False
+        words = token.split()
+        if len(words) < 5:
+            return False
+        meaningful = [w for w in words if w not in cls._ACK_TOKENS]
+        if len(meaningful) < 4:
+            return False
+        if "?" in text:
+            return True
+        if any(w in cls._QUERY_TOKENS for w in meaningful):
+            return True
+        return False
 
     @staticmethod
     def _normalize_token(value: str) -> str:
@@ -265,19 +334,23 @@ class SurveyResponseExtractor:
             return {"intent": "WHY", "value": None}
 
         if state_name == "esperando_correo":
+            if self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl):
+                return {"intent": "INTERRUPT", "value": None}
             if self._NO_WORDS.search(vl):
                 return {"intent": "SKIP", "value": None}
             match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", v)
             if match:
                 return {"intent": "ANSWER", "value": match.group(0)}
-            if self._looks_like_useful_chat_question(vl):
-                return {"intent": "INTERRUPT", "value": None}
             return None
 
-        if state_name == CONSENT_STATE and self._looks_like_useful_chat_question(vl):
+        if state_name == CONSENT_STATE and (
+            self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl)
+        ):
             return {"intent": "INTERRUPT", "value": None}
 
-        if state_name in self._INTERRUPTIBLE_STATES and self._looks_like_useful_chat_question(vl):
+        if state_name in self._INTERRUPTIBLE_STATES and (
+            self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl)
+        ):
             return {"intent": "INTERRUPT", "value": None}
 
         if state_name in {"esperando_audio_prueba", "esperando_imagen_prueba"}:
@@ -291,27 +364,34 @@ class SurveyResponseExtractor:
             return None
 
         if state_name in ("esperando_asegurado_essalud", "esperando_audio_optin", "esperando_imagen_optin", "esperando_autorizacion", CONSENT_STATE):
-            if self._NO_WORDS.search(vl):
+            if self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl):
+                return {"intent": "INTERRUPT", "value": None}
+            binary = self._extract_binary_answer(vl)
+            if binary == "No":
                 return {"intent": "ANSWER", "value": "No"}
-            if self._YES_WORDS.search(vl):
+            if binary == "Si":
                 return {"intent": "ANSWER", "value": "Si"}
             return None
 
         if state_name.startswith("esperando_p"):
             score = self._extract_scale_value(v)
             if score is None:
-                return None
+                if self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl):
+                    return {"intent": "INTERRUPT", "value": None}
+                return {"intent": "ANSWER", "value": v}
             if 1 <= score <= 5:
                 return {"intent": "ANSWER", "value": str(score)}
-            return None
+            return {"intent": "ANSWER", "value": v}
 
         if state_name == "esperando_nps":
             score = self._extract_scale_value(v)
             if score is None:
-                return None
+                if self._looks_like_useful_chat_question(vl) or self._looks_like_free_form_interrupt(vl):
+                    return {"intent": "INTERRUPT", "value": None}
+                return {"intent": "ANSWER", "value": v}
             if 1 <= score <= 10:
                 return {"intent": "ANSWER", "value": str(score)}
-            return None
+            return {"intent": "ANSWER", "value": v}
 
         if state_name == "esperando_comentario":
             if self._looks_like_useful_chat_question(vl):
@@ -338,6 +418,9 @@ class SurveyResponseExtractor:
             prompt = (
                 f'Respuesta usuario a estado "{state_name}": "{user_text}". '
                 'Clasifica en ANSWER, WHY, SKIP, INTERRUPT o CANCEL. '
+                'Reglas: si el estado espera numero (p1-p10/nps) y el mensaje no es claramente un numero valido, '
+                'pero contiene una consulta o pedido de ayuda, clasifica como INTERRUPT. '
+                'Si el usuario cambia de tema o pide consejo/comida/ejercicio/salud, clasifica INTERRUPT. '
                 'Retorna JSON con keys intent y value.'
             )
             resp = await self._client.chat.completions.create(

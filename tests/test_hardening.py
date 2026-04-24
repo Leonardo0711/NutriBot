@@ -10,6 +10,7 @@ from application.services.llm_reply_service import LlmReplyService
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.profile_snapshot import ProfileHealth, ProfileLocation, ProfileMeasurements, ProfileSnapshot
 from domain.reply_objects import BotReply
+from domain.router import Intent, RouteResult
 from domain.value_objects import MessageType, SessionMode
 
 @pytest.mark.asyncio
@@ -25,9 +26,22 @@ class TestHardening:
         assert extractor.try_fast_extract("esperando_nps", "1") == {"intent": "ANSWER", "value": "1"}
         
         # P1..P10 uses 1-5
-        assert extractor.try_fast_extract("esperando_p1", "10") is None
+        assert extractor.try_fast_extract("esperando_p1", "10") == {"intent": "ANSWER", "value": "10"}
         assert extractor.try_fast_extract("esperando_p1", "5") == {"intent": "ANSWER", "value": "5"}
         assert extractor.try_fast_extract("esperando_p3", " 5 ") == {"intent": "ANSWER", "value": "5"}
+
+    def test_survey_interrupts_on_free_form_question_during_scale(self):
+        extractor = SurveyResponseExtractor(None, "dummy-model")
+        msg = "jajajaj yap y sobre dormir seria mejor de costado boca arriba boca abajo en el piso"
+        assert extractor.try_fast_extract("esperando_p4", msg) == {"intent": "INTERRUPT", "value": None}
+
+    def test_survey_consent_does_not_take_long_yes_plus_question_as_yes(self):
+        extractor = SurveyResponseExtractor(None, "dummy-model")
+        msg = "yap y sobre dormir seria mejor de costado boca arriba o boca abajo"
+        assert extractor.try_fast_extract("esperando_consentimiento_encuesta", msg) == {
+            "intent": "INTERRUPT",
+            "value": None,
+        }
 
     # 10.2 Aclaracion clinica
     def test_health_clarification_flags(self):
@@ -110,6 +124,14 @@ class TestHardening:
         normalized = {LlmReplyService._normalize_text_for_match(x) for x in conflicts}
         assert any("lactosa" in item for item in normalized)
         assert any("mani" in item or "cacahuate" in item for item in normalized)
+
+    def test_scope_redirect_blocks_out_of_domain_request(self):
+        route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta genérica detectada")
+        assert LlmReplyService._must_redirect_to_nutrition_scope(route, "me puedes dar un resumen de one piece porfavor")
+
+    def test_scope_redirect_allows_nutrition_query(self):
+        route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta genérica detectada")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "me puedes dar un menu saludable para hoy")
 
     @pytest.mark.asyncio
     async def test_survey_consent_does_not_send_double_message(self):
