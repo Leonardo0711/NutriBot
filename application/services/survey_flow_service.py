@@ -44,10 +44,15 @@ class SurveyFlowService:
         )
 
         if addon:
+            survey_now_active = (
+                state.mode == SessionMode.COLLECTING_USABILITY.value
+                or bool(state.awaiting_question_code)
+            )
             if (
                 original_mode == SessionMode.COLLECTING_USABILITY.value
                 or is_requesting_survey
                 or original_awaiting == consent_state
+                or survey_now_active
             ):
                 final_bot_reply = addon
             elif reply:

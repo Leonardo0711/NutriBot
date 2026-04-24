@@ -1,4 +1,4 @@
-"""
+﻿"""
 Nutribot Backend - LLM Reply Service
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class LlmReplyService:
     _PROFILE_FIELD_KEYWORDS = {
-        "edad": ("edad", "anos", "años"),
+        "edad": ("edad", "anos"),
         "peso_kg": ("peso", "kilo", "kg"),
         "altura_cm": ("talla", "estatura", "altura", "cm", "metro", "mides"),
         "alergias": ("alergia", "alergias", "intolerancia", "intolerancias"),
@@ -35,16 +35,16 @@ class LlmReplyService:
         "distrito": ("distrito",),
     }
     _CANONICAL_PROFILE_QUESTION = {
-        "edad": "¿Cuantos anos tienes? 🎂\nEj: 25, 40, 63...",
-        "peso_kg": "¿Cuanto pesas aproximadamente en kilos? ⚖️\nEj: 65, 72, 85... (solo el numero)",
-        "altura_cm": "¿Cuanto mides? 📐\nPuedes decirme en metros o centimetros.\nEj: 1.65 m, 170 cm...",
-        "alergias": "¿Tienes alguna alergia o intolerancia a alimentos? 🍎\nEjemplos: alergia al mani, intolerancia a la lactosa, alergia a los mariscos...\nSi no tienes ninguna, dime 'ninguna'",
-        "enfermedades": "¿Tienes alguna enfermedad o condicion medica que deba tener en cuenta? 🏥\nEjemplos: diabetes, hipertension (presion alta), hipotiroidismo, anemia, gastritis...\nSi no tienes ninguna, dime 'ninguna'",
-        "restricciones_alimentarias": "¿Hay alimentos que prefieras evitar o no puedas comer? 🚫\nEjemplos: no como cerdo, evito los lacteos, no como mariscos...\nSi no tienes ninguna restriccion, dime 'ninguna'",
-        "tipo_dieta": "¿Sigues algun tipo de alimentacion en particular? 🥗\nEjemplos: omnivora (de todo), vegetariana, vegana o ninguna en especial",
-        "objetivo_nutricional": "¿Cual es tu objetivo principal con la alimentacion? 🎯\nEjemplos: bajar de peso, ganar masa muscular, mejorar mis habitos, comer mas saludable",
-        "provincia": "¿En que provincia del Peru te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
-        "distrito": "¿Y en que distrito estas? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq...",
+        "edad": "Para empezar, cuantos anos tienes? 🎂",
+        "peso_kg": "Cuanto pesas aproximadamente en kilos? ⚖️",
+        "altura_cm": "Cuanto mides? 📐\nPuedes decirme en metros o centimetros.\nEj: 1.65 m, 170 cm...",
+        "alergias": "Tienes alguna alergia o intolerancia a alimentos? 🍎\nEjemplos: alergia al mani, intolerancia a la lactosa, alergia a los mariscos...\nSi no tienes ninguna, dime 'ninguna'",
+        "enfermedades": "Tienes alguna enfermedad o condicion medica que deba tener en cuenta? 🏥\nEjemplos: diabetes, hipertension (presion alta), hipotiroidismo, anemia, gastritis...\nSi no tienes ninguna, dime 'ninguna'",
+        "restricciones_alimentarias": "Hay alimentos que prefieras evitar o no puedas comer? 🚫\nEjemplos: no como cerdo, evito los lacteos, no como mariscos...\nSi no tienes ninguna restriccion, dime 'ninguna'",
+        "tipo_dieta": "Sigues algun tipo de alimentacion en particular? 🥗\nEjemplos: omnivora (de todo), vegetariana, vegana o ninguna en especial",
+        "objetivo_nutricional": "Cual es tu objetivo principal con la alimentacion? 🎯\nEjemplos: bajar de peso, ganar masa muscular, mejorar mis habitos, comer mas saludable",
+        "provincia": "En que provincia del Peru te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
+        "distrito": "Y en que distrito estas? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq...",
     }
     _DISCLAIMER = (
         "\n\nRecuerda: esta orientacion es referencial y no reemplaza "
@@ -85,6 +85,19 @@ class LlmReplyService:
         "problema interno",
         "error",
         "aclaracion",
+    ]
+    _SENSITIVE_MARKERS = [
+        "me voy a morir",
+        "morir",
+        "opero",
+        "operarme",
+        "cirugia",
+        "cirugia bariatrica",
+        "deprimido",
+        "ansiedad",
+        "asustado",
+        "miedo",
+        "grave",
     ]
     _POSITIVE_MARKERS = [
         "listo",
@@ -207,15 +220,18 @@ class LlmReplyService:
                         "- Entrega la receta solicitada (la misma que pidio el usuario, no una alternativa) y agrega al inicio una advertencia breve de seguridad."
                     )
             extra_instr += (
+                "\n\nDirectiva interna clinica:\n"
+                "- No inventes subtipos o etiquetas clinicas no confirmadas (ej: MODY, secundaria, severa).\n"
+                "- Menciona solo condiciones realmente presentes en el perfil."
+            )
+            extra_instr += (
                 "\n\nDirectiva interna de personalizacion:\n"
                 "Usa siempre los datos del perfil para personalizar las recomendaciones de alimentacion."
             )
             final_profile_context = (
-                "No muestres estas directivas al usuario.\n"
-                "Empieza tu respuesta exactamente con la siguiente cita (sin texto antes):\n"
-                f'"{citation}"\n\n'
-                "Datos de perfil para personalizar:\n"
-                f"{profile_text}"
+                "Datos de perfil confirmados para personalizar la respuesta:\n"
+                f"{profile_text}\n\n"
+                f"Cita base sugerida para introducir la recomendacion (puedes parafrasearla): \"{citation}\""
             )
 
         final_instructions = self._system_instructions + extra_instr
@@ -268,7 +284,7 @@ class LlmReplyService:
         )
         if should_append_tip:
             reply += (
-                "\n\nTip NutriBot 🍏: para personalizar mas tus recomendaciones, "
+                "\n\nTip NutriBot: para personalizar mas tus recomendaciones, "
                 "escribe *quiero actualizar mi perfil nutricional*."
             )
         return reply
@@ -375,8 +391,6 @@ class LlmReplyService:
     ) -> Optional[str]:
         if not reply:
             return reply
-        if not self._looks_like_recipe_reply(reply):
-            return reply
         # La alerta solo aplica si el usuario pidio explicitamente algo que
         # choca con su perfil (no para pedidos generales como "dame una cena").
         requested_conflicts = self._find_conflicting_items_in_text(user_request_text or "", snapshot)
@@ -386,6 +400,14 @@ class LlmReplyService:
         # Blindaje: si el modelo intenta negarse con "no puedo/no debo" en este
         # caso, limpiamos esa negacion y mantenemos formato de advertencia + respuesta.
         reply = self._strip_refusal_phrases_for_conflict_case(reply)
+        user_request_looks_like_recipe = self._looks_like_recipe_reply(user_request_text or "")
+        if not self._looks_like_recipe_reply(reply):
+            if not user_request_looks_like_recipe:
+                return reply
+            return self._build_conflict_recipe_fallback(
+                user_request_text=user_request_text or "",
+                requested_conflicts=requested_conflicts,
+            )
 
         normalized = self._normalize_text_for_match(reply)
         if "advertencia nutribot" in normalized or "segun tu perfil" in normalized:
@@ -409,7 +431,7 @@ class LlmReplyService:
             "no podre",
             "no debo",
             "no seria la mejor opcion",
-            "no sería la mejor opcion",
+            "no seria la mejor opcion",
             "no te recomiendo",
             "no recomendar",
             "debido a tus alergias",
@@ -418,6 +440,12 @@ class LlmReplyService:
             "puedo ofrecerte una alternativa",
             "puedo sugerirte una alternativa",
             "te sugiero una alternativa",
+            "es mejor evitar",
+            "evitarlo para no comprometer",
+            "te gustaria eso",
+            "te gustaria esa opcion",
+            "te gustaria esa receta",
+            "te gustaria eso?",
         )
         if not any(marker in normalized for marker in refusal_markers):
             return raw
@@ -441,6 +469,61 @@ class LlmReplyService:
 
         cleaned = "\n".join(cleaned_lines).strip()
         return cleaned or raw
+
+    @classmethod
+    def _extract_recipe_subject_from_request(cls, user_request_text: str) -> str:
+        raw = (user_request_text or "").strip()
+        if not raw:
+            return "el plato solicitado"
+        lowered = cls._normalize_text_for_match(raw)
+        patterns = (
+            r"(?:receta\s+(?:de|para)\s+)(.+)$",
+            r"(?:como\s+prepar[ao]r?\s+)(.+)$",
+            r"(?:dame\s+(?:la\s+)?receta\s+de\s+)(.+)$",
+            r"(?:quiero\s+)(.+)$",
+        )
+        subject = ""
+        for pattern in patterns:
+            match = re.search(pattern, lowered, flags=re.IGNORECASE)
+            if match:
+                subject = match.group(1).strip(" .,!?:;")
+                if subject:
+                    break
+        if not subject:
+            subject = lowered
+        subject = re.sub(
+            r"\b(?:porfavor|por favor|porfa|gracias|si puedes|si puedes por favor)$",
+            "",
+            subject,
+            flags=re.IGNORECASE,
+        ).strip(" .,!?:;")
+        return subject or "el plato solicitado"
+
+    @classmethod
+    def _build_conflict_recipe_fallback(
+        cls,
+        *,
+        user_request_text: str,
+        requested_conflicts: list[str],
+    ) -> str:
+        conflict_text = ", ".join(requested_conflicts) if requested_conflicts else "tu perfil alimentario"
+        subject = cls._extract_recipe_subject_from_request(user_request_text)
+        return (
+            "Advertencia NutriBot: segun tu perfil nutricional, hay conflicto con "
+            f"{conflict_text}. Te comparto igual la receta que pediste para referencia, usala con precaucion.\n\n"
+            f"Receta referencial de {subject}:\n\n"
+            "Ingredientes:\n"
+            "- Ingrediente principal segun tu pedido\n"
+            "- 1 cebolla mediana picada\n"
+            "- 2 dientes de ajo picados\n"
+            "- 1 cucharada de aceite\n"
+            "- Sal y condimentos al gusto\n\n"
+            "Preparacion:\n"
+            "1. Sofrie cebolla y ajo hasta dorar.\n"
+            "2. Agrega el ingrediente principal y cocina hasta que quede bien hecho.\n"
+            "3. Ajusta sal y condimentos, y sirve caliente.\n"
+            "4. Si deseas, acompana con una guarnicion simple (arroz, ensalada o verduras)."
+        )
 
     @staticmethod
     def _contains_emoji(text: str) -> bool:
@@ -488,6 +571,55 @@ class LlmReplyService:
     def _looks_recommendation(cls, text: str) -> bool:
         normalized = cls._normalize_text_for_match(text)
         return any(marker in normalized for marker in cls._DISCLAIMER_TRIGGERS)
+
+    @classmethod
+    def _looks_sensitive_context(cls, text: str) -> bool:
+        normalized = cls._normalize_text_for_match(text)
+        return any(marker in normalized for marker in cls._SENSITIVE_MARKERS)
+
+    @classmethod
+    def _strip_redundant_opening_fillers(cls, text: str) -> str:
+        safe = (text or "").strip()
+        if not safe:
+            return safe
+
+        lines = safe.splitlines()
+        if not lines:
+            return safe
+
+        changed = False
+        for idx in range(min(2, len(lines))):
+            raw = lines[idx]
+            line = raw.strip()
+            if not line:
+                continue
+            norm = cls._normalize_text_for_match(line)
+            norm_compact = norm.lstrip(" !¡.,;:")
+
+            if "soy nutribot" in norm or "asistente de nutricion" in norm:
+                continue
+
+            if (norm_compact.startswith("claro") or norm_compact.startswith("ok")) and len(norm_compact.split()) <= 2:
+                lines[idx] = ""
+                changed = True
+                continue
+
+            if norm_compact.startswith("hola"):
+                without_greeting = re.sub(
+                    r"^\s*[!¡]*\s*hola\s*[,!¡.]?\s*",
+                    "",
+                    raw,
+                    flags=re.IGNORECASE,
+                ).strip()
+                lines[idx] = without_greeting
+                changed = True
+
+        if not changed:
+            return safe
+
+        cleaned = "\n".join(lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned or safe
 
     @staticmethod
     def _has_close_phrase(text: str) -> bool:
@@ -543,21 +675,25 @@ class LlmReplyService:
         if not safe:
             return safe
 
+        safe = self._strip_redundant_opening_fillers(safe)
         is_error = self._looks_like_error_or_clarification(safe)
         is_positive = self._looks_positive(safe) and not is_error
         is_recommendation = self._looks_recommendation(safe)
+        is_sensitive = self._looks_sensitive_context(safe)
 
         if not self._starts_warm(safe):
             if is_error:
                 safe = "Te ayudo con eso 😊\n" + safe
+            elif is_sensitive:
+                safe = "Entiendo tu preocupacion.\n" + safe
             elif is_positive:
                 safe = "¡Buenisimo! 🎉\n" + safe
-            else:
-                safe = "Claro 😊\n" + safe
 
         if len(safe) <= 450 and not self._has_close_phrase(safe):
             if is_error:
                 safe += "\n\nSi quieres, lo intentamos otra vez paso a paso 💪"
+            elif is_sensitive:
+                safe += "\n\nSi quieres, te ayudo a armar un plan seguro y realista, paso a paso."
             elif is_recommendation:
                 safe += "\n\nSi quieres, lo afinamos poquito a poco segun tu perfil 🍏"
             elif is_positive:
@@ -587,7 +723,7 @@ class LlmReplyService:
                 not in_emphasis
                 and not next_ch.isspace()
                 and next_ch != "*"
-                and (idx == 0 or prev_ch.isspace() or prev_ch in "([{\"'¿¡-")
+                and (idx == 0 or prev_ch.isspace() or prev_ch in "([{\"'-")
             )
             can_close = (
                 in_emphasis
@@ -686,7 +822,7 @@ class LlmReplyService:
             )
         ):
             safe = (
-                "Si puedo ayudarte con imagenes y audios 😊 "
+                "Si puedo ayudarte con imagenes y audios. "
                 "Envialo de nuevo y dime que quieres que analice."
             )
 
@@ -796,3 +932,5 @@ class LlmReplyService:
         if isinstance(final_bot_reply.payload_json, dict):
             final_bot_reply.payload_json["body"] = final_bot_reply.text
         return final_bot_reply
+
+

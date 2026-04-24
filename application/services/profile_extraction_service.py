@@ -83,10 +83,8 @@ class ProfileExtractionService:
 
     CORRECTION_MARKERS = (
         "me equivoque",
-        "me equivoquÃ©",
         "corrijo",
         "correccion",
-        "correcciÃ³n",
         "quise decir",
         "no era",
         "no, era",
@@ -100,13 +98,9 @@ class ProfileExtractionService:
         "he bajado",
         "he subido",
         "subi a",
-        "subÃ­ a",
         "baje a",
-        "bajÃ© a",
         "ultimo peso",
-        "Ãºltimo peso",
         "mi ultimo peso",
-        "mi Ãºltimo peso",
     )
 
     REMOVE_MARKERS = (
@@ -125,12 +119,9 @@ class ProfileExtractionService:
         "agrega",
         "agregar",
         "anade",
-        "aÃ±ade",
         "suma",
         "tambien",
-        "tambiÃ©n",
         "ademas",
-        "ademÃ¡s",
     )
 
     REPLACE_MARKERS = (
@@ -228,13 +219,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
     # (pattern, prompt de aclaracion interactivo)
     _AMBIGUOUS_CONDITIONS = [
-        ("diabetes", "Â¿Te refieres a tipo 1, tipo 2 o gestacional?"),
-        ("anemia", "Â¿Te refieres a algÃºn tipo especÃ­fico de anemia?"),
-        ("tiroides", "Â¿Te refieres a hipotiroidismo o hipertiroidismo?"),
-        ("problemas hormonales", "Â¿Te refieres a algÃºn tipo de problema hormonal especÃ­fico?"),
-        ("colon", "Â¿Te refieres a colitis, colon irritable u otra condiciÃ³n similar?"),
-        ("presion", "Â¿Te refieres a hipertensiÃ³n o hipotensiÃ³n?"),
-        ("gastritis", "Â¿Te refieres a gastritis aguda o crÃ³nica?"),
+        ("diabetes", "te refieres a tipo 1, tipo 2 o gestacional?"),
+        ("anemia", "te refieres a algun tipo especifico de anemia?"),
+        ("tiroides", "te refieres a hipotiroidismo o hipertiroidismo?"),
+        ("problemas hormonales", "te refieres a algun problema hormonal especifico?"),
+        ("colon", "te refieres a colitis, colon irritable u otra condicion similar?"),
+        ("presion", "te refieres a hipertension o hipotension?"),
+        ("gastritis", "te refieres a gastritis aguda o cronica?"),
     ]
 
     # Palabras que indican especificacion suficiente (no necesitan aclaracion)
@@ -1734,7 +1725,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             if pattern in norm:
                 has_specificity = any(marker in norm for marker in self._SPECIFICITY_MARKERS)
                 if not has_specificity:
-                    return f"Â¡Entendido! Lo anotÃ© provisionalmente de este lado. Para ser mÃ¡s certeros, {prompt}"
+                    return f"Entendido. Lo registro de forma provisional; para ser mas precisos, {prompt}"
         return None
 
     async def extract_and_save(
@@ -1822,11 +1813,20 @@ REGLAS CRITICAS DE ROBUSTEZ:
             meta_flags["needs_health_clarification"] = True
             
             if field == "enfermedades":
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. Â¿Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
+                meta_flags["clarification_prompt"] = (
+                    f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. "
+                    "Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
+                )
             elif field in ("alergias", "restricciones_alimentarias"):
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. Â¿Podrias confirmarme si esta bien escrito?"
+                meta_flags["clarification_prompt"] = (
+                    f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. "
+                    "Podrias confirmarme si esta bien escrito?"
+                )
             else:
-                meta_flags["clarification_prompt"] = f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. Â¿Podrias aclararlo un poco?"
+                meta_flags["clarification_prompt"] = (
+                    f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. "
+                    "Podrias aclararlo un poco?"
+                )
             break # Ask for clarification on the first one we find
 
     async def _run_llm_extraction(self, user_text: str, current_step: Optional[str]) -> Dict[str, Any]:
@@ -1880,6 +1880,18 @@ REGLAS CRITICAS DE ROBUSTEZ:
             
             if clean_val is not None:
                 col_name = config["col"]
+
+                if (
+                    col_name in {"alergias", "enfermedades", "restricciones_alimentarias"}
+                    and current_step
+                    and self._step_matches_field(current_step, col_name)
+                ):
+                    source_list = standardize_text_list(user_text)
+                    if source_list and str(source_list).upper() != "NINGUNA":
+                        source_items = self._split_values(str(source_list))
+                        extracted_items = self._split_values(str(clean_val))
+                        if len(source_items) > len(extracted_items):
+                            clean_val = source_list
 
                 # No bloquear por listas estaticas aqui.
                 # La resolucion final se hace contra maestro/alias/fuzzy/vector y, al final, LLM.
@@ -2493,7 +2505,47 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 
-            if field_code in {"provincia", "region"}:
+            if field_code == "provincia":
+                provincia_id = await self._resolve_master_id(
+                    session,
+                    "mae_provincia",
+                    str(value),
+                    code_column="codigo_provincia",
+                    minimum_score=0.88,
+                    usuario_id=usuario_id,
+                    semantic_field_code="provincia",
+                )
+                cache_meta = await self._semantic_cache_peek(
+                    session,
+                    field_code="provincia",
+                    raw_query=str(value),
+                )
+                canonical_value = str(value)
+                if provincia_id:
+                    prov_row = await session.execute(
+                        text("SELECT nombre FROM mae_provincia WHERE id = :pid"),
+                        {"pid": provincia_id},
+                    )
+                    canonical_value = str(prov_row.scalar() or value)
+                else:
+                    unresolved_by_field["provincia"] = [str(value)]
+                await self._log_profile_extraction(
+                    session,
+                    usuario_id,
+                    field_code,
+                    canonical_value,
+                    now_peru,
+                    resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
+                    resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
+                    resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
+                    semantic_cache_hit=bool(
+                        (cache_meta or {}).get("estrategia_usada")
+                        and str((cache_meta or {}).get("estrategia_usada")).upper().startswith("CACHE")
+                    ),
+                )
+                continue
+
+            if field_code == "region":
                 await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
                 continue
 

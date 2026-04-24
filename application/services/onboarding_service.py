@@ -309,7 +309,7 @@ class OnboardingService:
 
     def _build_step_clarification_reply(self, current_step: Optional[str]) -> str:
         if not current_step:
-            return "Claro 😊 dime y te explico mejor."
+            return "Te explico rapido 😊"
             
         question = ONBOARDING_QUESTIONS.get(current_step, "")
         
@@ -321,11 +321,27 @@ class OnboardingService:
         example = self.STEP_EXAMPLES.get(current_step, "un valor simple")
         
         return (
-            f"Claro 😊 {clarification}\n"
+            f"Te explico 😊 {clarification}\n"
             f"Esto me ayuda a {purpose}.\n"
             f"Ejemplo: {example}.\n\n"
             f"{question}"
         ).strip()
+
+    @staticmethod
+    def _build_location_retry_reply(current_step: Optional[str]) -> str:
+        if current_step == OnboardingStep.PROVINCIA.value:
+            return (
+                "Gracias por el dato 😊\n\n"
+                "No logre ubicar esa provincia en Peru. Me la repites con el nombre de una provincia?\n\n"
+                "Ej: Lima, Arequipa, Cusco, Trujillo."
+            )
+        if current_step == OnboardingStep.DISTRITO.value:
+            return (
+                "Gracias por el dato 😊\n\n"
+                "No logre ubicar ese distrito. Me lo repites con un distrito valido?\n\n"
+                "Ej: Miraflores, San Miguel, Cayma, Wanchaq."
+            )
+        return "No logre captar ese dato. Me lo repites, por favor?"
 
     def _extract_numeric_step_fallback(self, current_step: Optional[str], user_text: str) -> dict:
         """Rescate deterministico para respuestas numericas cortas durante onboarding."""
@@ -859,6 +875,11 @@ FORMATO DE SALIDA (JSON):
                 session=session,
             )
 
+        # Si el usuario pide aclaracion del dato actual, respondemos antes del
+        # Switchboard para evitar desvio al chat general.
+        if current_step and self._is_clarification_request(user_text):
+            return self._build_step_clarification_reply(current_step)
+
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
         intent = analysis["intent"]
@@ -1022,6 +1043,8 @@ FORMATO DE SALIDA (JSON):
             if intent == "ANSWER":
                 if fallback_clarification_prompt:
                     return fallback_clarification_prompt
+                if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
+                    return self._build_location_retry_reply(current_step)
                 if self._check_frustration(history, current_step):
                     return (
                         "Tranqui, lo hacemos simple 😊\n\n"

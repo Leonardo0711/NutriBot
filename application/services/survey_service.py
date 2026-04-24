@@ -482,6 +482,38 @@ class SurveyService:
             or bool(normalized.used_audio)
         )
 
+    def _is_state_answered(self, state_name: str, parciales: dict) -> bool:
+        field_key = state_name.replace("esperando_", "")
+        if state_name == "esperando_correo":
+            if parciales.get("correo"):
+                return True
+            return bool(parciales.get("correo_opt_out_final"))
+        if state_name == "esperando_asegurado_essalud":
+            return self._normalize_auth(parciales.get("asegurado_essalud")) is not None
+        if state_name == "esperando_autorizacion":
+            return self._normalize_auth(parciales.get("autorizacion")) is not None
+        if state_name.startswith("esperando_p"):
+            return self._parse_int(parciales.get(field_key), 1, 5) is not None
+        if state_name == "esperando_nps":
+            return self._parse_int(parciales.get("nps"), 1, 10) is not None
+        if state_name == "esperando_comentario":
+            return "comentario" in parciales
+        return False
+
+    def _next_unanswered_state_from(self, start_state: Optional[str], parciales: dict) -> Optional[str]:
+        if not start_state:
+            return None
+        try:
+            start_idx = FORM_STATES_ORDER.index(start_state)
+        except ValueError:
+            return start_state
+        for state_name in FORM_STATES_ORDER[start_idx:]:
+            if state_name in self._FEATURE_STATES:
+                return state_name
+            if not self._is_state_answered(state_name, parciales):
+                return state_name
+        return None
+
     def _missing_media_feedback_states(self, parciales: dict) -> list[str]:
         pending: list[str] = []
         if self._parse_int(parciales.get("p8"), 1, 5) is None:
@@ -512,30 +544,30 @@ class SurveyService:
         parciales: dict,
         uso_audio: bool,
         uso_imagen: bool,
-    ) -> tuple[str, str]:
+    ) -> tuple[Optional[str], str]:
         if current_state in {"esperando_audio_optin", "esperando_audio_prueba"}:
             if uso_audio:
                 return (
-                    "esperando_p8",
+                    self._next_unanswered_state_from("esperando_p8", parciales),
                     "Excelente 🙌 como ya usaste el modo audio, ahora si cuentame del 1 al 5 como te fue.",
                 )
             parciales["p8_no_aplica"] = True
             parciales.pop("p8", None)
             return (
-                "esperando_imagen_optin",
+                self._next_unanswered_state_from("esperando_imagen_optin", parciales),
                 "Tip NutriBot: tambien tengo modo audio 🎧. Cuando quieras probarlo, solo enviame una consulta por voz.",
             )
 
         if current_state in {"esperando_imagen_optin", "esperando_imagen_prueba"}:
             if uso_imagen:
                 return (
-                    "esperando_p9",
+                    self._next_unanswered_state_from("esperando_p9", parciales),
                     "Excelente 🙌 como ya usaste imagen, ahora si cuentame del 1 al 5 como te fue.",
                 )
             parciales["p9_no_aplica"] = True
             parciales.pop("p9", None)
             return (
-                "esperando_p10",
+                self._next_unanswered_state_from("esperando_p10", parciales),
                 "Tip NutriBot: tambien tengo reconocimiento de imagen 🖼️. Cuando quieras probarlo, enviame una foto de comida o etiqueta nutricional.",
             )
 
@@ -901,7 +933,7 @@ class SurveyService:
                     uso_audio=bool(getattr(progress, "uso_audio", False)),
                     uso_imagen=bool(getattr(progress, "uso_imagen", False)),
                 )
-                resumption_prefix = "¡Hola de nuevo! Retomemos el formulario pendiente. Empecemos por tu correo (puedes decir que no si prefieres) y luego seguimos donde nos quedamos."
+                resumption_prefix = "¡Hola de nuevo! Retomemos el formulario pendiente. Empecemos por tu correo y luego seguimos donde nos quedamos."
 
             state.mode = "collecting_usability"
             state.awaiting_question_code = resumption_state
@@ -1085,6 +1117,7 @@ class SurveyService:
                 uso_audio=uso_audio,
                 uso_imagen=uso_imagen,
             )
+            next_state = self._next_unanswered_state_from(next_state, parciales)
             transition_prefix = self._merge_prefix(transition_prefix, auto_info)
 
             await self._persist_progress(
