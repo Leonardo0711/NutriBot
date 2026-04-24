@@ -107,6 +107,27 @@ class TestHardening:
         normalized_candidates = {extractor._normalize_text(v) for v in candidates}
         assert "lactosa" in normalized_candidates
 
+    def test_step_scope_blocks_cross_field_contamination(self):
+        extractor = ProfileExtractionService(None, "dummy-model")
+        clean, updates, meta = extractor._apply_bulletproof_logic(
+            {"alergias": "bajar de peso", "objetivo_nutricional": "bajar de peso"},
+            "bajar de peso",
+            "alergias",
+        )
+        assert clean == {}
+        assert updates == {}
+        assert meta.get("clarification_prompt")
+
+    def test_step_scope_keeps_objective_even_with_typo(self):
+        extractor = ProfileExtractionService(None, "dummy-model")
+        clean, updates, _ = extractor._apply_bulletproof_logic(
+            {"objetivo_nutricional": "najar de peso"},
+            "najar de peso",
+            "objetivo_nutricional",
+        )
+        assert "objetivo_nutricional" in clean
+        assert "objetivo_nutricional" in updates
+
     def test_conflict_detection_uses_alias_tokens(self):
         snapshot = ProfileSnapshot(
             user_id=1,

@@ -78,6 +78,15 @@ class OnboardingService:
         OnboardingStep.ENFERMEDADES.value: "enfermedades",
         OnboardingStep.RESTRICCIONES.value: "restricciones_alimentarias",
     }
+    SEMANTIC_FIELD_BY_STEP = {
+        OnboardingStep.ALERGIAS.value: "alergias",
+        OnboardingStep.ENFERMEDADES.value: "enfermedades",
+        OnboardingStep.RESTRICCIONES.value: "restricciones_alimentarias",
+        OnboardingStep.TIPO_DIETA.value: "tipo_dieta",
+        OnboardingStep.OBJETIVO.value: "objetivo_nutricional",
+        OnboardingStep.PROVINCIA.value: "provincia",
+        OnboardingStep.DISTRITO.value: "distrito",
+    }
     HEALTH_FALLBACK_SKIP_MARKERS = (
         "saltar",
         "paso",
@@ -732,6 +741,69 @@ class OnboardingService:
             )
         return extracted, None
 
+    def _can_try_semantic_step_rescue(self, current_step: Optional[str], user_text: str, is_food_request: bool) -> bool:
+        if not current_step or current_step not in self.SEMANTIC_FIELD_BY_STEP:
+            return False
+        text = (user_text or "").strip().lower()
+        if not text:
+            return False
+        if "?" in text:
+            return False
+        if any(marker in text for marker in self.HEALTH_FALLBACK_SKIP_MARKERS):
+            return False
+        if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value) and is_food_request:
+            return False
+        return True
+
+    async def _extract_semantic_step_fallback(
+        self,
+        *,
+        current_step: str,
+        user_text: str,
+        session: AsyncSession,
+        usuario_id: int,
+        is_food_request: bool,
+    ) -> tuple[dict, Optional[str]]:
+        if not self._can_try_semantic_step_rescue(current_step, user_text, is_food_request):
+            return {}, None
+
+        field_code = self.SEMANTIC_FIELD_BY_STEP.get(current_step)
+        if not field_code:
+            return {}, None
+
+        raw_extractions = {field_code: user_text}
+        try:
+            ext_result = await self._profile_extractor.apply_cleaning_and_save(
+                raw_extractions=raw_extractions,
+                user_text=user_text,
+                usuario_id=usuario_id,
+                session=session,
+                current_step=current_step,
+            )
+        except Exception:
+            logger.exception(
+                "Onboarding semantic fallback persist failed user=%s step=%s value=%s",
+                usuario_id,
+                current_step,
+                user_text,
+            )
+            return {}, None
+
+        prompt = ext_result.meta_flags.get("clarification_prompt")
+        if prompt:
+            question = ONBOARDING_QUESTIONS.get(current_step, "")
+            return {}, f"{prompt}\n\n{question}"
+
+        extracted = ext_result.clean_data or {}
+        if extracted:
+            logger.info(
+                "Onboarding semantic fallback: user=%s, step=%s, value=%s",
+                usuario_id,
+                current_step,
+                user_text,
+            )
+        return extracted, None
+
     SWITCHBOARD_SYSTEM_PROMPT = """Eres el Cerebro de Nutribot (Switchboard), encargado de clasificar la intención del usuario durante el registro de perfil.
 
 REGLAS DE INTENCIÓN:
@@ -1039,8 +1111,24 @@ FORMATO DE SALIDA (JSON):
                 is_food_request=is_food_request if "is_food_request" in locals() else False,
             )
 
+        if (
+            intent == "ANSWER"
+            and not extracted
+            and not self._is_health_step(current_step)
+            and current_step in self.SEMANTIC_FIELD_BY_STEP
+        ):
+            extracted, fallback_clarification_prompt = await self._extract_semantic_step_fallback(
+                current_step=current_step,
+                user_text=user_text,
+                session=session,
+                usuario_id=state.usuario_id,
+                is_food_request=is_food_request if "is_food_request" in locals() else False,
+            )
+
         if not extracted:
             if intent == "ANSWER":
+                if meta_flags.get("clarification_prompt"):
+                    return f"{meta_flags['clarification_prompt']}\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
                 if fallback_clarification_prompt:
                     return fallback_clarification_prompt
                 if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):

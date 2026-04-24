@@ -201,6 +201,39 @@ class ProfileExtractionService:
         "region": {"col": "region", "parser": lambda x: x.upper() if x else None},
     }
 
+    ONBOARDING_STEP_TO_FIELD = {
+        "edad": "edad",
+        "peso": "peso_kg",
+        "peso_kg": "peso_kg",
+        "altura": "altura_cm",
+        "altura_cm": "altura_cm",
+        "talla": "altura_cm",
+        "alergias": "alergias",
+        "enfermedades": "enfermedades",
+        "restricciones": "restricciones_alimentarias",
+        "restricciones_alimentarias": "restricciones_alimentarias",
+        "tipo_dieta": "tipo_dieta",
+        "objetivo": "objetivo_nutricional",
+        "objetivo_nutricional": "objetivo_nutricional",
+        "provincia": "provincia",
+        "distrito": "distrito",
+        "region": "region",
+    }
+
+    FIELD_INTENT_HINTS = {
+        "edad": ("edad", "anos", "cumpli"),
+        "peso_kg": ("peso", "kilo", "kg", "libr"),
+        "altura_cm": ("talla", "altura", "estatura", "cm", "metro", "mido"),
+        "alergias": ("alerg", "intoler", "mani", "lact", "marisc", "gluten", "crustace", "fructosa", "histamina"),
+        "enfermedades": ("diabet", "hipert", "hipotiro", "gastrit", "anemia", "colesterol", "enfermedad", "condicion"),
+        "restricciones_alimentarias": ("no como", "evito", "restric", "sin ", "intoler", "alerg"),
+        "tipo_dieta": ("veg", "omniv", "keto", "carniv", "dieta", "patron aliment"),
+        "objetivo_nutricional": ("objetivo", "meta", "bajar", "subir", "ganar", "masa", "mejorar", "habito", "controlar", "mantener"),
+        "provincia": ("provincia", "lima", "arequipa", "cusco", "trujillo", "piura"),
+        "distrito": ("distrito", "miraflores", "san miguel", "surco", "cayma", "wanchaq"),
+        "region": ("region", "departamento"),
+    }
+
     EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intenciÃ³n del usuario para Nutribot.
 REGLAS CRITICAS DE ROBUSTEZ:
 1. PRIORIDAD ABSOLUTA: Si el usuario menciona un dato (ej: 'mido 1.71', 'mi peso es 80'), EXTRAELO siempre.
@@ -284,9 +317,49 @@ REGLAS CRITICAS DE ROBUSTEZ:
             "alergias": {"alergias", "alergia"},
             "enfermedades": {"enfermedades", "enfermedad", "condicion"},
             "restricciones_alimentarias": {"restricciones", "restriccion", "restricciones alimentarias"},
+            "tipo_dieta": {"tipo_dieta", "tipo dieta", "dieta", "patron alimentario"},
+            "objetivo_nutricional": {"objetivo", "meta", "objetivo_nutricional"},
+            "provincia": {"provincia"},
+            "distrito": {"distrito"},
+            "region": {"region", "departamento"},
         }
         valid = aliases.get(field, {field})
         return step in valid
+
+    @classmethod
+    def _expected_field_for_step(cls, current_step: Optional[str]) -> Optional[str]:
+        if not current_step:
+            return None
+        return cls.ONBOARDING_STEP_TO_FIELD.get(cls._normalize_text(current_step))
+
+    @classmethod
+    def _text_explicitly_mentions_field(cls, source_text: str, field_code: Optional[str]) -> bool:
+        if not source_text or not field_code:
+            return False
+        norm = cls._normalize_text(source_text)
+        if not norm:
+            return False
+        hints = cls.FIELD_INTENT_HINTS.get(field_code, ())
+        return any(h in norm for h in hints if h)
+
+    @classmethod
+    def _guess_field_from_text(cls, source_text: str) -> Optional[str]:
+        norm = cls._normalize_text(source_text)
+        if not norm:
+            return None
+        best_field: Optional[str] = None
+        best_score = 0
+        for field_code, hints in cls.FIELD_INTENT_HINTS.items():
+            score = 0
+            for hint in hints:
+                if hint and hint in norm:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_field = field_code
+        if best_score <= 0:
+            return None
+        return best_field
 
     def _classify_measurement_update(
         self,
@@ -1862,6 +1935,9 @@ REGLAS CRITICAS DE ROBUSTEZ:
         meta_flags = {"warnings": []}
         text_lower = user_text.lower()
         negation_words = ["no tengo", "ninguna", "nada", "ninguno", "sin", "no como", "no padezco", "no sufro", "no se"]
+        expected_field = self._expected_field_for_step(current_step)
+        inferred_field_from_text = self._guess_field_from_text(user_text) if expected_field else None
+        expected_field_explicit = self._text_explicitly_mentions_field(user_text, expected_field) if expected_field else False
         
         for key, raw_val in raw_extractions.items():
             key_norm = str(key).lower()
@@ -1880,6 +1956,34 @@ REGLAS CRITICAS DE ROBUSTEZ:
             
             if clean_val is not None:
                 col_name = config["col"]
+
+                # Guardia de coherencia por paso:
+                # cuando estamos en un paso concreto de onboarding, evitamos contaminar
+                # otros campos salvo que el usuario lo haya mencionado explícitamente.
+                if expected_field and col_name != expected_field:
+                    meta_flags["warnings"].append(
+                        f"Ignorado valor para '{col_name}' por no corresponder al paso '{expected_field}'."
+                    )
+                    continue
+
+                # Guardia semántica cruzada:
+                # si el texto parece corresponder a otro campo distinto al paso actual,
+                # no persistimos el valor para evitar ensuciar el perfil.
+                if (
+                    expected_field
+                    and col_name == expected_field
+                    and inferred_field_from_text
+                    and inferred_field_from_text != expected_field
+                    and not expected_field_explicit
+                ):
+                    meta_flags["clarification_prompt"] = (
+                        "Creo que ese dato parece corresponder a otro campo del perfil. "
+                        "¿Me lo confirmas para registrarlo correctamente?"
+                    )
+                    meta_flags["warnings"].append(
+                        f"Posible mismatch semántico: step={expected_field}, inferred={inferred_field_from_text}, value={clean_val}"
+                    )
+                    continue
 
                 if (
                     col_name in {"alergias", "enfermedades", "restricciones_alimentarias"}
@@ -2346,6 +2450,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     session,
                     "mae_patron_alimentario",
                     str(value),
+                    minimum_score=0.84,
                     usuario_id=usuario_id,
                     semantic_field_code="tipo_dieta",
                 )
@@ -2379,6 +2484,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     session,
                     "mae_objetivo_nutricional",
                     str(value),
+                    minimum_score=0.82,
                     usuario_id=usuario_id,
                     semantic_field_code="objetivo_nutricional",
                 )
