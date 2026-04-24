@@ -174,12 +174,3 @@ class ProfileReadService:
         if not row:
             return None
         return ProfileSnapshot.from_row(dict(row))
-
-    async def fetch_projection(self, session: AsyncSession, uid: int) -> dict:
-        """
-        Compatibility projection used by legacy callers while V3 adoption completes.
-        """
-        snapshot = await self.fetch_snapshot(session, uid)
-        if not snapshot:
-            return {}
-        return snapshot.to_legacy_dict()

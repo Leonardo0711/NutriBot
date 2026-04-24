@@ -122,20 +122,3 @@ class ProfileSnapshot:
             "distrito": self.location.district,
         }
         return mapping.get(step_code)
-
-    def to_legacy_dict(self) -> dict:
-        return {
-            "usuario_id": self.user_id,
-            "edad": self.measurements.age_years,
-            "peso_kg": self.measurements.weight_kg,
-            "altura_cm": self.measurements.height_cm,
-            "tipo_dieta": self.health.diet_type,
-            "alergias": self.health.allergies_text,
-            "enfermedades": self.health.diseases_text,
-            "restricciones_alimentarias": self.health.restrictions_text,
-            "objetivo_nutricional": self.health.nutrition_goal,
-            "region": self.location.region,
-            "provincia": self.location.province,
-            "distrito": self.location.district,
-            "skipped_fields": {field: True for field in self.skipped_fields},
-        }

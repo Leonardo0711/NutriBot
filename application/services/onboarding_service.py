@@ -17,6 +17,7 @@ from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_ST
 from domain.utils import get_now_peru
 from domain.parsers import parse_age, parse_weight, parse_height, standardize_text_list
 from domain.normalizer import normalize_text, fuzzy_match
+from domain.profile_snapshot import ProfileSnapshot
 from application.services.profile_extraction_service import ProfileExtractionService
 from application.services.profile_read_service import ProfileReadService
 from application.services.nutrition_assessment_service import NutritionAssessmentService
@@ -611,8 +612,12 @@ class OnboardingService:
     async def _build_phase1_completion_message(self, session: AsyncSession, usuario_id: int) -> str:
         completion_msg = "Listo 😊 ya tengo lo básico de tu perfil."
         try:
-            p_final_data = await self._get_profile_flat(session, usuario_id)
-            bmi_msg = self._nutrition_assessment.build_referential_message_from_flat(p_final_data)
+            snapshot = await self._get_profile_snapshot(session, usuario_id)
+            bmi_msg = (
+                self._nutrition_assessment.build_referential_message(snapshot)
+                if snapshot
+                else None
+            )
             if bmi_msg:
                 completion_msg += f"\n\n{bmi_msg}"
         except Exception as e:
@@ -825,9 +830,9 @@ FORMATO DE SALIDA (JSON):
             state.usuario_id, old_status, status.value, step
         )
 
-    async def _get_profile_flat(self, session: AsyncSession, uid: int) -> dict:
-        """Proyeccion compatible construida desde el modelo normalizado V3."""
-        return await self._profile_reader.fetch_projection(session, uid)
+    async def _get_profile_snapshot(self, session: AsyncSession, uid: int) -> Optional[ProfileSnapshot]:
+        """Lee el perfil en formato de dominio V3 (sin proyección legacy)."""
+        return await self._profile_reader.fetch_snapshot(session, uid)
 
     async def advance_flow(
         self,
@@ -1096,16 +1101,14 @@ FORMATO DE SALIDA (JSON):
         ignore_cols: Optional[list[str]] = None,
         phase: Optional[list] = None,
     ) -> Optional[str]:
-        p = await self._get_profile_flat(session, uid)
-        
-        if not p:
+        snapshot = await self._get_profile_snapshot(session, uid)
+
+        if not snapshot:
             return OnboardingStep.EDAD.value
 
-        skipped = p.get("skipped_fields", {})
-        if not isinstance(skipped, dict):
-            skipped = {}
+        skipped = snapshot.skipped_fields
 
-        col_map = {
+        step_to_field_code = {
             OnboardingStep.EDAD.value: "edad",
             OnboardingStep.ALERGIAS.value: "alergias",
             OnboardingStep.ENFERMEDADES.value: "enfermedades",
@@ -1116,7 +1119,7 @@ FORMATO DE SALIDA (JSON):
             OnboardingStep.ALTURA.value: "altura_cm",
             OnboardingStep.REGION.value: "region",
             OnboardingStep.PROVINCIA.value: "provincia",
-            OnboardingStep.DISTRITO.value: "distrito"
+            OnboardingStep.DISTRITO.value: "distrito",
         }
 
         steps_to_search = phase if phase is not None else ONBOARDING_PHASE_1
@@ -1131,19 +1134,20 @@ FORMATO DE SALIDA (JSON):
         for step in steps_to_search[base_idx:]:
             if skip_step and step.value == skip_step:
                 continue
-                
-            col = col_map.get(step.value)
-            if not col: continue
 
-            if ignore_cols and col in ignore_cols:
-                continue
-            
-            if not ignore_skips and skipped.get(step.value):
+            field_code = step_to_field_code.get(step.value)
+            if not field_code:
                 continue
 
-            val = p.get(col)
+            if ignore_cols and field_code in ignore_cols:
+                continue
+
+            if not ignore_skips and step.value in skipped:
+                continue
+
+            val = snapshot.value_for_step(field_code)
             is_empty = val is None or (isinstance(val, str) and len(val.strip()) == 0)
-            
+
             if treat_ninguna_as_missing and isinstance(val, str) and val.upper() == "NINGUNA":
                 is_empty = True
 

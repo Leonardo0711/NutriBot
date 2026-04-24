@@ -348,13 +348,37 @@ REGLAS CRITICAS DE ROBUSTEZ:
             candidate = raw.strip(" .:-")
             if not candidate:
                 continue
+            # Limpia muletillas y prefijos semánticos de forma iterativa.
+            # Ejemplo: "ahora encima al mani tambien" -> "mani"
+            while True:
+                prev = candidate
+                candidate = re.sub(
+                    r"^(?:y|e|ahora|encima|tambien|también|ademas|además|otra vez|de nuevo)\s+",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip(" .:-")
+                candidate = re.sub(
+                    r"^(?:ya no|no|tengo|padezco|sufro de|soy alergic[oa]\s+a(?:l| la| los| las)?|alergia\s+a(?:l| la| los| las)?|evito|no como|no consumo)\s+",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip(" .:-")
+                candidate = re.sub(
+                    r"^(?:a la|a los|a las|al|a|la|el|los|las)\s+",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip(" .:-")
+                if candidate == prev:
+                    break
+            candidate = re.sub(r"\b(?:por favor|gracias)$", "", candidate, flags=re.IGNORECASE).strip(" .:-")
             candidate = re.sub(
-                r"^(?:ya no|no|tengo|padezco|sufro de|soy alergic[oa] a|alergia a|evito|no como|no consumo)\s+",
+                r"\b(?:tambien|también|nomas|nomasito|otra vez|de nuevo)$",
                 "",
                 candidate,
                 flags=re.IGNORECASE,
             ).strip(" .:-")
-            candidate = re.sub(r"\b(?:por favor|gracias)$", "", candidate, flags=re.IGNORECASE).strip(" .:-")
             if not candidate:
                 continue
             key = cls._normalize_text(candidate)
@@ -609,7 +633,31 @@ REGLAS CRITICAS DE ROBUSTEZ:
         payload = json.dumps(top_candidates or [], ensure_ascii=False)
         try:
             # Cola de revision semantica no debe abortar la transaccion principal.
+            # Se usa chequeo explicito + insert para evitar edge-cases de SQL no insertado.
             async with session.begin_nested():
+                exists = (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT 1
+                            FROM semantic_review_queue q
+                            WHERE q.scope = :scope
+                              AND q.field_code = :field
+                              AND q.query_normalizada = :qnorm
+                              AND q.estado = 'PENDING'
+                            LIMIT 1
+                            """
+                        ),
+                        {
+                            "scope": self.SEMANTIC_SCOPE_PROFILE_FIELD,
+                            "field": field_code,
+                            "qnorm": query_normalized,
+                        },
+                    )
+                ).first()
+                if exists:
+                    return
+
                 await session.execute(
                     text(
                         """
@@ -618,17 +666,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             query_texto, query_normalizada, top_candidates_json,
                             razon, estado, observacion, creado_en
                         )
-                        SELECT
+                        VALUES (
                             :uid, :imid, :scope, :field,
                             :qtext, :qnorm, CAST(:candidates AS jsonb),
                             :reason, 'PENDING', :obs, :now
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM semantic_review_queue q
-                            WHERE q.scope = :scope
-                              AND q.field_code = :field
-                              AND q.query_normalizada = :qnorm
-                              AND q.estado = 'PENDING'
                         )
                         """
                     ),
@@ -1116,6 +1157,9 @@ REGLAS CRITICAS DE ROBUSTEZ:
             return None
 
         field_for_log = semantic_field_code or table_name
+        # Cache por campo semantico de dominio (alergias, enfermedades, etc.)
+        # para evitar mezclar resoluciones entre campos que comparten maestro.
+        cache_field_code = field_for_log
         entity_type = self.SEMANTIC_ENTITY_TYPE_BY_TABLE.get(table_name)
         started = perf_counter()
 
@@ -1137,7 +1181,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
             async with session.begin_nested():
                 cache = await self._semantic_cache_get(
                     session,
-                    field_code=table_name,
+                    field_code=cache_field_code,
                     query_normalized=target_norm,
                 )
 
@@ -1181,7 +1225,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                                 exact_match = True
                                 await self._semantic_cache_put(
                                     session,
-                                    field_code=table_name,
+                                    field_code=cache_field_code,
                                     raw_query=raw_text,
                                     query_normalized=target_norm,
                                     entity_type=entity_type,
@@ -1212,7 +1256,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             exact_match = True
                             await self._semantic_cache_put(
                                 session,
-                                field_code=table_name,
+                                field_code=cache_field_code,
                                 raw_query=raw_text,
                                 query_normalized=target_norm,
                                 entity_type=entity_type,
@@ -1241,7 +1285,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             confidence = 0.96
                             await self._semantic_cache_put(
                                 session,
-                                field_code=table_name,
+                                field_code=cache_field_code,
                                 raw_query=raw_text,
                                 query_normalized=target_norm,
                                 entity_type=entity_type,
@@ -1275,7 +1319,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                                 trigram_score = catalog_trgm_score
                                 await self._semantic_cache_put(
                                     session,
-                                    field_code=table_name,
+                                    field_code=cache_field_code,
                                     raw_query=raw_text,
                                     query_normalized=target_norm,
                                     entity_type=entity_type,
@@ -1308,7 +1352,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             decided_by_rule = True
                             await self._semantic_cache_put(
                                 session,
-                                field_code=table_name,
+                                field_code=cache_field_code,
                                 raw_query=raw_text,
                                 query_normalized=target_norm,
                                 entity_type=entity_type,
@@ -1344,7 +1388,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             decided_by_rule = True
                             await self._semantic_cache_put(
                                 session,
-                                field_code=table_name,
+                                field_code=cache_field_code,
                                 raw_query=raw_text,
                                 query_normalized=target_norm,
                                 entity_type=entity_type,
@@ -1374,7 +1418,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                             confidence = float(vector_score)
                             await self._semantic_cache_put(
                                 session,
-                                field_code=table_name,
+                                field_code=cache_field_code,
                                 raw_query=raw_text,
                                 query_normalized=target_norm,
                                 entity_type=entity_type,
@@ -1433,7 +1477,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                                     confidence = float(llm_pick.get("score") or 0.0)
                                     await self._semantic_cache_put(
                                         session,
-                                        field_code=table_name,
+                                        field_code=cache_field_code,
                                         raw_query=raw_text,
                                         query_normalized=target_norm,
                                         entity_type=entity_type,
@@ -2247,7 +2291,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 )
                 cache_meta = await self._semantic_cache_peek(
                     session,
-                    field_code="mae_patron_alimentario",
+                    field_code="tipo_dieta",
                     raw_query=str(value),
                 )
                 if patron_id:
@@ -2280,7 +2324,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 )
                 cache_meta = await self._semantic_cache_peek(
                     session,
-                    field_code="mae_objetivo_nutricional",
+                    field_code="objetivo_nutricional",
                     raw_query=str(value),
                 )
                 if objetivo_id:
@@ -2315,7 +2359,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 )
                 cache_meta = await self._semantic_cache_peek(
                     session,
-                    field_code="mae_distrito",
+                    field_code="distrito",
                     raw_query=str(value),
                 )
                 if distrito_id:
@@ -2425,7 +2469,9 @@ REGLAS CRITICAS DE ROBUSTEZ:
         _disease_or_restriction_fields = {"enfermedades", "alergias", "restricciones_alimentarias"}
         if self._nutritional_rules and _disease_or_restriction_fields.intersection(updates.keys()):
             try:
-                await self._nutritional_rules.generate_or_update_dietary_order(session, usuario_id)
+                # Esta generacion es aditiva; si falla no debe invalidar el turno principal.
+                async with session.begin_nested():
+                    await self._nutritional_rules.generate_or_update_dietary_order(session, usuario_id)
             except Exception as e:
                 logger.error(
                     "ProfileExtractionService: Non-critical error generating dietary order for user=%s: %s",
