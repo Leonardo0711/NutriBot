@@ -40,6 +40,11 @@ class ConversationState:
     onboarding_next_eligible_at: Optional[datetime] = None
     onboarding_skip_count: int = 0
     onboarding_updated_at: Optional[datetime] = None
+    # Survey snooze fields
+    survey_next_eligible_count: Optional[int] = None
+    survey_decline_count: int = 0
+    survey_paused_reason: Optional[str] = None
+    survey_updated_at: Optional[datetime] = None
     version: int = 1
     updated_at: Optional[datetime] = None
 

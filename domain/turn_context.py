@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain.entities import User, ConversationState, NormalizedMessage
 from domain.profile_snapshot import ProfileSnapshot
 from domain.router import RouteResult
+from domain.profile_intent import ProfileIntentResult
 
 @dataclass
 class TurnContext:
@@ -43,6 +44,11 @@ class TurnContext:
     onboarding_interception_happened: bool = False
     extracted_data: dict = field(default_factory=dict)
     
+    # ── Intent Extraction Layer ──
+    profile_intent: Optional[ProfileIntentResult] = None
+    turn_kind: Optional[str] = None  # PROFILE_MAINTENANCE, ONBOARDING_RESPONSE, CONVERSATIONAL, etc.
+    
     # Tracking de operaciones (para memoria delegada si fuera necesario)
     bot_reply_text: Optional[str] = field(default=None, init=False)
+
 

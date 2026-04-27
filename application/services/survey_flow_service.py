@@ -25,7 +25,7 @@ class SurveyFlowService:
         is_requesting_survey: bool,
         projected_interactions_count: int,
         schedule_separate_message,
-    ) -> tuple[BotReply, bool]:
+    ) -> tuple[BotReply, bool, bool]:
         original_mode = state.mode
         original_awaiting = state.awaiting_question_code
         consent_state = "esperando_consentimiento_encuesta"
@@ -41,6 +41,13 @@ class SurveyFlowService:
             state,
             normalized,
             projected_interactions_count=survey_projected_count,
+        )
+        survey_engaged_turn = bool(
+            addon
+            or original_mode == SessionMode.COLLECTING_USABILITY.value
+            or original_awaiting == consent_state
+            or state.mode == SessionMode.COLLECTING_USABILITY.value
+            or state.awaiting_question_code == consent_state
         )
 
         if addon:
@@ -103,4 +110,4 @@ class SurveyFlowService:
             low = (final_bot_reply.text or "").lower()
             if "retomamos la encuesta" not in low and "encuesta donde quedamos" not in low:
                 final_bot_reply.text = f"{final_bot_reply.text}\n\n{reminder}"
-        return final_bot_reply, survey_was_interrupted
+        return final_bot_reply, survey_was_interrupted, survey_engaged_turn

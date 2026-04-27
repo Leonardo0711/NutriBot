@@ -1,4 +1,4 @@
-﻿"""
+"""
 Nutribot Backend â€” ProfileExtractionService
 Servicio de AplicaciÃ³n Orientado a Objetos para extraer perfil.
 """
@@ -1825,6 +1825,191 @@ REGLAS CRITICAS DE ROBUSTEZ:
             )
             self._inject_unresolved_alerts(unresolved_by_field, meta_flags)
             
+        return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
+
+    async def apply_profile_intent(
+        self,
+        session: AsyncSession,
+        usuario_id: int,
+        intent,  # ProfileIntentResult
+        state=None,  # ConversationState, optional
+    ) -> ExtractionResult:
+        """
+        Aplica una intención de perfil respetando operación, entidades
+        pre-resueltas y confianza. NO re-resuelve lo que ya fue resuelto
+        por el SemanticEntityResolver.
+
+        Soporta: ADD, REMOVE, REPLACE, CLEAR, CORRECTION, HISTORICAL_UPDATE, NOOP.
+        """
+        from domain.profile_intent import ProfileIntentResult
+
+        if not intent or not isinstance(intent, ProfileIntentResult):
+            return ExtractionResult(clean_data={}, updates={}, meta_flags={})
+
+        if not intent.is_profile_update or intent.operation == "NOOP":
+            return ExtractionResult(clean_data={}, updates={}, meta_flags={})
+
+        field_code = intent.field_code
+        operation = intent.operation or "REPLACE"
+        now_peru = get_now_peru()
+        meta_flags: dict[str, Any] = {}
+        clean_data: dict[str, Any] = {}
+        updates: dict[str, Any] = {}
+
+        # ── Obtener o crear perfil_nutricional ──
+        profile_res = await session.execute(
+            text("SELECT id FROM perfil_nutricional WHERE usuario_id = :uid"),
+            {"uid": usuario_id},
+        )
+        row = profile_res.fetchone()
+        if not row:
+            insert_prof = await session.execute(
+                text("""
+                    INSERT INTO perfil_nutricional (usuario_id, creado_en, actualizado_en)
+                    VALUES (:uid, :now, :now)
+                    RETURNING id
+                """),
+                {"uid": usuario_id, "now": now_peru},
+            )
+            perfil_id = insert_prof.fetchone().id
+        else:
+            perfil_id = row.id
+
+        # ── Despachar por tipo de campo ──
+
+        # 1. Campos numéricos: edad, peso_kg, altura_cm
+        if field_code in ("edad", "peso_kg", "altura_cm"):
+            raw_val = intent.values[0].raw_value if intent.values else None
+            if raw_val is None:
+                return ExtractionResult(clean_data={}, updates={}, meta_flags={})
+
+            if field_code == "edad":
+                try:
+                    edad = int(float(raw_val))
+                    await session.execute(
+                        text("""
+                            UPDATE perfil_nutricional
+                            SET edad_reportada = :edad, fecha_referencia_edad = :fecha, actualizado_en = :now
+                            WHERE id = :pid
+                        """),
+                        {"edad": edad, "fecha": now_peru.date(), "now": now_peru, "pid": perfil_id},
+                    )
+                    clean_data["edad"] = edad
+                    updates["edad"] = edad
+                except (TypeError, ValueError):
+                    logger.info("Edad inválida desde intent: %s", raw_val)
+
+            elif field_code in ("peso_kg", "altura_cm"):
+                mtype = "PESO_KG" if field_code == "peso_kg" else "ALTURA_CM"
+                unit = "kg" if field_code == "peso_kg" else "cm"
+                try:
+                    val = float(raw_val)
+                    # CORRECTION vs HISTORICAL_UPDATE
+                    correction_mode = operation in ("CORRECTION", "REPLACE")
+                    await self._upsert_measurement_with_semantics(
+                        session, perfil_id, mtype, val, unit, now_peru,
+                        correction_mode=correction_mode,
+                    )
+                    clean_data[field_code] = val
+                    updates[field_code] = val
+                except (TypeError, ValueError):
+                    logger.info("%s inválido desde intent: %s", field_code, raw_val)
+
+            await self._log_profile_extraction(session, usuario_id, field_code, raw_val, now_peru)
+
+        # 2. Campos de lista: enfermedades, alergias, restricciones_alimentarias
+        elif field_code in ("enfermedades", "alergias", "restricciones_alimentarias"):
+            # Mapear operación del intent a constantes del servicio
+            op_map = {
+                "ADD": self.OP_ADD,
+                "REMOVE": self.OP_REMOVE,
+                "REPLACE": self.OP_REPLACE,
+                "CLEAR": self.OP_CLEAR,
+                "CORRECTION": self.OP_REPLACE,
+                "HISTORICAL_UPDATE": self.OP_ADD,
+            }
+            op = op_map.get(operation, self.OP_ADD)
+
+            if op == self.OP_CLEAR:
+                raw_value_str = "NINGUNA"
+            else:
+                # Usar raw_value de cada intent.value para la resolución downstream
+                raw_value_str = ", ".join(v.raw_value for v in intent.values if v.raw_value)
+
+            if field_code == "enfermedades":
+                unresolved = await self._sync_enfermedades(
+                    session, perfil_id, raw_value_str, now_peru,
+                    operation=op, usuario_id=usuario_id,
+                )
+            else:
+                only_alergenos = (field_code == "alergias")
+                unresolved = await self._sync_restricciones(
+                    session, perfil_id, raw_value_str, now_peru,
+                    only_alergenos=only_alergenos,
+                    operation=op, usuario_id=usuario_id,
+                )
+
+            if unresolved:
+                meta_flags[f"unresolved_{field_code}"] = unresolved
+            clean_data[field_code] = raw_value_str
+            updates[field_code] = raw_value_str
+            await self._log_profile_extraction(
+                session, usuario_id, field_code, raw_value_str, now_peru,
+                resolved_entity_type=intent.values[0].entity_type if intent.values else None,
+                resolved_entity_code=intent.values[0].entity_code if intent.values else None,
+                resolution_strategy=intent.values[0].resolution_strategy if intent.values else None,
+            )
+
+        # 3. Campos escalares: tipo_dieta, objetivo_nutricional, provincia, distrito
+        elif field_code in ("tipo_dieta", "objetivo_nutricional", "provincia", "distrito"):
+            raw_val = intent.values[0].raw_value if intent.values else None
+            if not raw_val:
+                return ExtractionResult(clean_data={}, updates={}, meta_flags={})
+
+            # Usar _persist_updates para un solo campo: reutiliza toda la lógica de resolución
+            single_update = {field_code: raw_val}
+            source_text = intent.evidence_text or raw_val
+            unresolved_by_field = await self._persist_updates(
+                usuario_id, single_update, session,
+                source_text=source_text,
+            )
+            self._inject_unresolved_alerts(unresolved_by_field, meta_flags)
+            clean_data[field_code] = raw_val
+            updates[field_code] = raw_val
+
+        else:
+            # Campo no reconocido — fallback al pipeline legacy
+            if intent.values:
+                raw_val = intent.values[0].raw_value
+                single_update = {field_code: raw_val}
+                await self._persist_updates(
+                    usuario_id, single_update, session,
+                    source_text=intent.evidence_text or raw_val,
+                )
+                clean_data[field_code] = raw_val
+
+        # ── Actualizar timestamp del perfil ──
+        if not clean_data:
+            return ExtractionResult(clean_data={}, updates={}, meta_flags=meta_flags)
+
+        await session.execute(
+            text("UPDATE perfil_nutricional SET actualizado_en = :now WHERE id = :pid"),
+            {"now": now_peru, "pid": perfil_id},
+        )
+
+        # ── Trigger: reglas nutricionales si aplica ──
+        _disease_or_restriction_fields = {"enfermedades", "alergias", "restricciones_alimentarias"}
+        if self._nutritional_rules and field_code in _disease_or_restriction_fields:
+            try:
+                async with session.begin_nested():
+                    await self._nutritional_rules.generate_or_update_dietary_order(session, usuario_id)
+            except Exception as e:
+                logger.error("apply_profile_intent: dietary order error user=%s: %s", usuario_id, e)
+
+        logger.info(
+            "apply_profile_intent: user=%s field=%s op=%s data=%s",
+            usuario_id, field_code, operation, clean_data,
+        )
         return ExtractionResult(clean_data=clean_data, updates=updates, meta_flags=meta_flags)
 
     async def apply_cleaning_and_save(

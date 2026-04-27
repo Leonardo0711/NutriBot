@@ -27,6 +27,8 @@ from application.services.conversation_memory_service import ConversationMemoryS
 from application.services.conversation_state_service import ConversationStateService
 from application.services.turn_context_service import TurnContextService
 from application.services.nutritional_rules_service import NutritionalRulesService
+from application.services.semantic_entity_resolver import SemanticEntityResolver
+from application.services.profile_intent_extractor_service import ProfileIntentExtractorService
 
 from application.services.handlers.reset_handler import ResetHandler
 from application.services.handlers.onboarding_handler import OnboardingHandler
@@ -112,6 +114,16 @@ class Container:
         self.nutrition_assessment = NutritionAssessmentService()
         self.memory_service = ConversationMemoryService()
         self.state_service = ConversationStateService()
+
+        # Semantic resolution layer
+        self.semantic_entity_resolver = SemanticEntityResolver(
+            embeddings_adapter=self.embeddings_adapter,
+        )
+        self.profile_intent_extractor = ProfileIntentExtractorService(
+            semantic_resolver=self.semantic_entity_resolver,
+            openai_client=self.openai_client,
+            model=self.settings.openai_model,
+        )
         
         # Application Services
         self.nutritional_rules = NutritionalRulesService()
@@ -198,6 +210,7 @@ class Container:
             handler_registry=self.handler_registry,
             memory_service=self.memory_service,
             state_service=self.state_service,
+            profile_intent_extractor=self.profile_intent_extractor,
         )
 
         # Workers

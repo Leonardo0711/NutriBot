@@ -98,6 +98,10 @@ class SqlAlchemyConversationRepository(ConversationRepository):
                     onboarding_next_eligible_at = :onea,
                     onboarding_skip_count = :osc,
                     onboarding_updated_at = :ouat,
+                    survey_next_eligible_count = :snec,
+                    survey_decline_count = :sdc,
+                    survey_paused_reason = :spr,
+                    survey_updated_at = :suat,
                     version = :ver,
                     updated_at = TIMEZONE('America/Lima', NOW())
                 WHERE usuario_id = :uid
@@ -119,6 +123,10 @@ class SqlAlchemyConversationRepository(ConversationRepository):
                 "onea": state.onboarding_next_eligible_at,
                 "osc": state.onboarding_skip_count,
                 "ouat": state.onboarding_updated_at,
+                "snec": state.survey_next_eligible_count,
+                "sdc": state.survey_decline_count,
+                "spr": state.survey_paused_reason,
+                "suat": state.survey_updated_at,
                 "ver": state.version,
             },
         )
@@ -146,6 +154,10 @@ class SqlAlchemyConversationRepository(ConversationRepository):
             onboarding_next_eligible_at=getattr(row, "onboarding_next_eligible_at", None),
             onboarding_skip_count=getattr(row, "onboarding_skip_count", 0),
             onboarding_updated_at=getattr(row, "onboarding_updated_at", None),
+            survey_next_eligible_count=getattr(row, "survey_next_eligible_count", None),
+            survey_decline_count=getattr(row, "survey_decline_count", 0),
+            survey_paused_reason=getattr(row, "survey_paused_reason", None),
+            survey_updated_at=getattr(row, "survey_updated_at", None),
             version=row.version,
             updated_at=row.updated_at,
         )

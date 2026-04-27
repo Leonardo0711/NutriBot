@@ -94,3 +94,35 @@ class ConversationStateService:
                 state.meaningful_interactions_count = 0
             else:
                 state.meaningful_interactions_count = projected_interactions_count
+
+    def pause_survey_for_profile_maintenance(
+        self,
+        state: ConversationState,
+        reason: str = "PROFILE_MAINTENANCE",
+        additional_valid_turns: int = 5,
+    ) -> None:
+        """
+        Pospone la encuesta de usabilidad porque el usuario está
+        actualizando su perfil en medio de una conversación.
+        """
+        now = get_now_peru()
+        state.survey_paused_reason = reason
+        state.survey_next_eligible_count = (
+            state.meaningful_interactions_count + additional_valid_turns
+        )
+        state.survey_updated_at = now
+        self.bump_version(state)
+
+    def can_offer_survey(self, state: ConversationState) -> bool:
+        """
+        Verifica si el estado permite ofrecer una encuesta ahora.
+        Si hay un snooze activo y no se ha alcanzado el umbral de interacciones, NO.
+        """
+        if state.survey_next_eligible_count is not None:
+            if state.meaningful_interactions_count < state.survey_next_eligible_count:
+                return False
+            # Umbral alcanzado → limpiar snooze
+            state.survey_next_eligible_count = None
+            state.survey_paused_reason = None
+        return True
+

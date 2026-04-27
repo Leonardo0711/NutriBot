@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import timedelta
 from typing import Optional, Any
 
 from openai import AsyncOpenAI
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities import ConversationState, NormalizedMessage
 from domain.reply_objects import BotReply
-from domain.value_objects import MessageType
+from domain.value_objects import MessageType, OnboardingStatus
 from domain.utils import get_now_peru
 
 logger = logging.getLogger(__name__)
@@ -51,23 +52,23 @@ FORM_QUESTIONS: dict[str, str] = {
         "Si te parece, comparte tu correo."
     ),
     "esperando_asegurado_essalud": "¿Se encuentra asegurado en EsSalud?",
-    "esperando_p1": "¿Considera que mi personalidad como chatbot resulta realista y atractiva?",
-    "esperando_p2": "¿Diría que la explicación sobre mi propósito y alcance fue suficiente y comprensible?",
-    "esperando_p3": "¿Le resultó sencillo navegar y utilizar mis funciones?",
-    "esperando_p4": "¿Considera que comprendí adecuadamente sus consultas?",
-    "esperando_p5": "Desde su experiencia, ¿mis respuestas le fueron útiles, apropiadas e informativas?",
-    "esperando_p6": "¿Percibió que traté de forma adecuada cualquier error o equivocación?",
-    "esperando_p7": "¿Le resultó fácil y sencillo interactuar conmigo?",
+    "esperando_p1": "En una escala del 1 al 5, ¿considera que mi personalidad como chatbot resulta realista y atractiva?",
+    "esperando_p2": "En una escala del 1 al 5, ¿diría que la explicación sobre mi propósito y alcance fue suficiente y comprensible?",
+    "esperando_p3": "En una escala del 1 al 5, ¿le resultó sencillo navegar y utilizar mis funciones?",
+    "esperando_p4": "En una escala del 1 al 5, ¿considera que comprendí adecuadamente sus consultas?",
+    "esperando_p5": "En una escala del 1 al 5, desde su experiencia, ¿mis respuestas le fueron útiles, apropiadas e informativas?",
+    "esperando_p6": "En una escala del 1 al 5, ¿percibió que traté de forma adecuada cualquier error o equivocación?",
+    "esperando_p7": "En una escala del 1 al 5, ¿le resultó fácil y sencillo interactuar conmigo?",
     "esperando_audio_optin": "Por si acaso: tambien tengo modo audio 🎧.",
     "esperando_audio_prueba": "Por si acaso: tambien tengo modo audio 🎧.",
-    "esperando_p8": "¿Considera que mis respuestas en audio fueron claras?",
+    "esperando_p8": "En una escala del 1 al 5, ¿considera que mis respuestas en audio fueron claras?",
     "esperando_imagen_optin": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
     "esperando_imagen_prueba": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
-    "esperando_p9": "¿Logré interpretar correctamente lo que muestra la imagen que me enviaste?",
-    "esperando_p10": "¿Me enfoqué únicamente en responderte preguntas sobre nutrición?",
+    "esperando_p9": "En una escala del 1 al 5, ¿logré interpretar correctamente lo que muestra la imagen que me enviaste?",
+    "esperando_p10": "En una escala del 1 al 5, ¿me enfoqué únicamente en responderte preguntas sobre nutrición?",
     "esperando_nps": "En una escala del 1 al 10, ¿qué tan probable es que me recomiendes a un amigo o familiar?",
-    "esperando_comentario": "En esta interacción, ¿qué te gustó o no te gustó de mí?",
-    "esperando_autorizacion": "Autorizas el uso anonimo y agregado de tus respuestas para investigacion? (Si autorizo / No autorizo)",
+    "esperando_comentario": "En esta primera interacción, ¿qué te gustó o no te gustó de mí?",
+    "esperando_autorizacion": "¿Autorizas el uso anónimo y agregado de tus respuestas para investigación? (Si autorizo / No autorizo)",
 }
 
 EMAIL_REASK_COPY = (
@@ -439,6 +440,7 @@ class SurveyResponseExtractor:
 
 
 class SurveyService:
+    REINVITE_COOLDOWN = timedelta(hours=6)
     _FEATURE_STATES = {
         "esperando_audio_optin",
         "esperando_audio_prueba",
@@ -520,6 +522,27 @@ class SurveyService:
         except Exception:
             return None
         return None
+
+    @classmethod
+    def _is_profile_capture_active(cls, state: ConversationState) -> bool:
+        if state.awaiting_field_code:
+            return True
+        if state.onboarding_status == OnboardingStatus.IN_PROGRESS.value:
+            return True
+        if state.onboarding_step and state.onboarding_status != OnboardingStatus.COMPLETED.value:
+            return True
+        return False
+
+    @classmethod
+    def _is_reinvite_cooldown_active(cls, state: ConversationState) -> bool:
+        if not state.last_form_prompt_at:
+            return False
+        now_peru = get_now_peru()
+        try:
+            delta = now_peru - state.last_form_prompt_at
+        except Exception:
+            return False
+        return delta < cls.REINVITE_COOLDOWN
 
     @staticmethod
     def _normalize_email(value: Any) -> Optional[str]:
@@ -691,13 +714,7 @@ class SurveyService:
             lines.append(question)
 
         has_prefix = bool(prefix and str(prefix).strip())
-        if state_name in _SCALE_PREFIX and state_name != "esperando_nps":
-            if not has_prefix:
-                lines.append("Responde con un numero del 1 al 5.")
-        elif state_name == "esperando_nps":
-            if not has_prefix:
-                lines.append("Responde con un numero del 1 al 10.")
-        elif state_name in {"esperando_asegurado_essalud", "esperando_autorizacion"}:
+        if state_name in {"esperando_asegurado_essalud", "esperando_autorizacion"}:
             if not has_prefix:
                 lines.append("Responde: Si o No.")
         elif state_name == "esperando_correo":
@@ -926,6 +943,10 @@ class SurveyService:
             return await self._process_form_response(session, state, normalized)
 
         if state.mode == "active_chat":
+            if self._is_profile_capture_active(state):
+                return None
+            if self._is_reinvite_cooldown_active(state):
+                return None
             effective = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
             if effective >= 5 and state.usability_completion_pct < 100:
                 active_form = await self._get_active_form(session)
@@ -935,6 +956,7 @@ class SurveyService:
                     return None
                 state.awaiting_question_code = CONSENT_STATE
                 state.meaningful_interactions_count = 0
+                state.last_form_prompt_at = get_now_peru()
                 return self._build_consent_reply()
         return None
 
@@ -959,6 +981,7 @@ class SurveyService:
             state.awaiting_question_code = None
             state.mode = "active_chat"
             state.meaningful_interactions_count = 0
+            state.last_form_prompt_at = get_now_peru()
             return None
 
         if value in {"si", "yes"}:
@@ -969,6 +992,7 @@ class SurveyService:
             state.awaiting_question_code = None
             state.mode = "active_chat"
             state.meaningful_interactions_count = 0
+            state.last_form_prompt_at = get_now_peru()
             return BotReply(text="Entendido, seguimos conversando sin problema.", content_type="text")
 
         return self._build_consent_reply()

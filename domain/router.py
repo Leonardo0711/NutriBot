@@ -550,6 +550,11 @@ def _try_detect_profile_update(
 
 
 def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
+    """
+    Detecta indicios textuales de actualización de perfil.
+    Retorna AMBIGUOUS (no PROFILE_UPDATE) para que el extractor LLM
+    haga la decisión final con comprensión real.
+    """
     clauses = [c.strip() for c in re.split(r"[,\.;]+", norm) if c.strip()]
     if not clauses:
         clauses = [norm]
@@ -570,11 +575,11 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 value = _clean_profile_value(m.group(1))
                 if value:
                     return RouteResult(
-                        Intent.PROFILE_UPDATE,
-                        0.85,
+                        Intent.AMBIGUOUS,
+                        0.5,
                         resolved_field="alergias",
                         resolved_value=value,
-                        reason="Texto libre: alergias detectadas",
+                        reason="Hint textual: alergias (extractor decidirá)",
                     )
 
         # Restricciones alimentarias
@@ -584,22 +589,22 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 value = _clean_profile_value(m.group(1))
                 if value:
                     return RouteResult(
-                        Intent.PROFILE_UPDATE,
-                        0.85,
+                        Intent.AMBIGUOUS,
+                        0.5,
                         resolved_field="restricciones_alimentarias",
                         resolved_value=value,
-                        reason="Texto libre: restricciones detectadas",
+                        reason="Hint textual: restricciones (extractor decidirá)",
                     )
 
         # Tipo de dieta
         for diet_key, canonical in DIET_PATTERNS.items():
             if _contains_keyword(clause, diet_key) and ("soy" in clause or "dieta" in clause or "sigo" in clause):
                 return RouteResult(
-                    Intent.PROFILE_UPDATE,
-                    0.85,
+                    Intent.AMBIGUOUS,
+                    0.5,
                     resolved_field="tipo_dieta",
                     resolved_value=canonical,
-                    reason=f"Texto libre: tipo de dieta '{diet_key}'",
+                    reason=f"Hint textual: tipo de dieta '{diet_key}' (extractor decidirá)",
                 )
 
         # Enfermedades
@@ -624,11 +629,11 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 value = re.sub(r"^(?:enfermedad|condicion|condición)\s+", "", value).strip()
                 if value:
                     return RouteResult(
-                        Intent.PROFILE_UPDATE,
-                        0.85,
+                        Intent.AMBIGUOUS,
+                        0.5,
                         resolved_field="enfermedades",
                         resolved_value=value,
-                        reason="Texto libre: enfermedades detectadas",
+                        reason="Hint textual: enfermedades (extractor decidirá)",
                     )
 
         # Objetivo nutricional
@@ -650,11 +655,11 @@ def _try_detect_textual_profile_update(norm: str) -> Optional[RouteResult]:
                 value = _clean_profile_value(m.group(1))
                 if value and not value.startswith("que ") and not value.startswith("qué "):
                     return RouteResult(
-                        Intent.PROFILE_UPDATE,
-                        0.85,
+                        Intent.AMBIGUOUS,
+                        0.5,
                         resolved_field="objetivo_nutricional",
                         resolved_value=value,
-                        reason="Texto libre: objetivo nutricional detectado",
+                        reason="Hint textual: objetivo nutricional (extractor decidirá)",
                     )
 
     return None

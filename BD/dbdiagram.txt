@@ -129,6 +129,10 @@ Table conversation_state {
   onboarding_skip_count int [not null, default: 0, note: 'Número de veces que el usuario ha omitido o rechazado el onboarding.']
   onboarding_updated_at timestamp [note: 'Última vez que cambió algo relacionado al onboarding.']
   meaningful_interactions_count int [not null, default: 0, note: 'Contador de interacciones útiles para disparar encuestas, seguimiento o milestones.']
+  survey_next_eligible_count int [note: 'Contador mínimo de interacciones significativas necesarias para volver a ofrecer encuesta.']
+  survey_decline_count int [not null, default: 0, note: 'Cantidad de veces que el usuario rechazó o pausó la encuesta.']
+  survey_paused_reason varchar(30) [note: 'Motivo de pausa de encuesta: declined, interrupted, profile_update, not_now.']
+  survey_updated_at timestamp [note: 'Última vez que cambió el control de encuesta.']
   updated_at timestamp [note: 'Última actualización global de este estado conversacional.']
 
   Note: '''

@@ -93,7 +93,8 @@ class OnboardingService:
         "omitir",
         "luego",
         "siguiente",
-        "prefiero no",
+        "prefiero no decir",
+        "prefiero no compartir",
         "por ahora no",
         "despues",
         "después",
@@ -578,6 +579,8 @@ class OnboardingService:
         txt = (user_text or "").strip().lower()
         if not txt or self._looks_like_valid_health_negative(current_step, txt):
             return "NONE"
+        if self._looks_like_step_answer_payload(current_step, user_text):
+            return "NONE"
         if txt in self.SHORT_CLARIFICATION_INPUTS:
             return "SOFT_EXPLAIN"
         if txt in {"no", "nop", "nah"}:
@@ -596,6 +599,52 @@ class OnboardingService:
         if has_soft:
             return "SOFT_EXPLAIN"
         return "NONE"
+
+    def _looks_like_step_answer_payload(self, current_step: Optional[str], user_text: str) -> bool:
+        if not current_step:
+            return False
+        txt = (user_text or "").strip()
+        if not txt:
+            return False
+        txt_low = txt.lower()
+        if "?" in txt_low:
+            return False
+
+        if current_step == OnboardingStep.EDAD.value:
+            return parse_age(txt) is not None
+        if current_step == OnboardingStep.PESO.value:
+            return parse_weight(txt) is not None
+        if current_step == OnboardingStep.ALTURA.value:
+            return parse_height(txt) is not None
+
+        if current_step in self.HEALTH_STEPS:
+            candidate_text = self._clean_health_fallback_text(txt)
+            candidate = standardize_text_list(candidate_text)
+            candidate_upper = candidate.strip().upper() if candidate else ""
+            if not candidate or candidate_upper in self.HEALTH_FALLBACK_INVALID_VALUES:
+                return False
+            candidate_norm = normalize_text(candidate)
+            if not candidate_norm or candidate_norm in {"prefiero no", "no", "ninguna", "ninguno", "nada"}:
+                return False
+            return True
+
+        if current_step == OnboardingStep.TIPO_DIETA.value:
+            norm = normalize_text(txt)
+            return any(token in norm for token in ("omniv", "veget", "vegan", "keto", "carniv", "ninguna", "de todo"))
+
+        if current_step == OnboardingStep.OBJETIVO.value:
+            norm = normalize_text(txt)
+            return any(token in norm for token in ("bajar", "subir", "ganar", "masa", "habito", "mantener", "controlar"))
+
+        if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
+            norm = normalize_text(txt)
+            if not norm or norm in {"peru", "de peru"}:
+                return False
+            if any(marker in norm for marker in ("prefiero no", "no quiero", "para que", "por que")):
+                return False
+            return len(norm.split()) <= 4
+
+        return False
 
     @classmethod
     def _is_explicit_skip_request(cls, user_text: str) -> bool:
@@ -928,7 +977,7 @@ FORMATO DE SALIDA (JSON):
         state: ConversationState,
         session: AsyncSession,
         treat_ninguna_as_missing: bool = False,
-        pre_extracted_data: Optional[dict] = None,
+        pre_extracted_intent=None,
         history: Optional[list[dict]] = None
     ) -> Optional[str]:
         if state.onboarding_status not in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
@@ -1095,6 +1144,29 @@ FORMATO DE SALIDA (JSON):
             extracted = {}
         else:
             extracted = {}
+
+        # Si el extractor de intención detectó campos adicionales que no coinciden
+        # con el paso actual, guardarlos usando apply_profile_intent para preservar
+        # la operación (ADD/REMOVE/CORRECTION etc.).
+        if (
+            pre_extracted_intent
+            and pre_extracted_intent.is_profile_update
+            and pre_extracted_intent.field_code != current_step
+        ):
+            try:
+                await self._profile_extractor.apply_profile_intent(
+                    session=session,
+                    usuario_id=state.usuario_id,
+                    intent=pre_extracted_intent,
+                    state=state,
+                )
+                logger.info(
+                    "Onboarding: applied extra profile_intent field=%s op=%s",
+                    pre_extracted_intent.field_code,
+                    pre_extracted_intent.operation,
+                )
+            except Exception as e:
+                logger.warning("Onboarding: apply_profile_intent error: %s", e)
 
         # Fallback inteligente para campos de salud (alergias/enfermedades/restricciones)
         fallback_clarification_prompt = None

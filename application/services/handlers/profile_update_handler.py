@@ -32,8 +32,48 @@ class ProfileUpdateHandler(BaseHandler):
         ctx.has_absurd_profile_claim = self._profile_extractor.contains_absurd_claim(ctx.normalized.text)
         
         extracted_data = {}
-        
-        # Fast path sin OpenAI si el router detectó un campo y valor claros
+
+        # ── Prioridad 1: profile_intent del extractor (comprensión real) ──
+        # Usa apply_profile_intent() que respeta operation, entity_code, strategy
+        if ctx.profile_intent and ctx.profile_intent.is_profile_update:
+            intent = ctx.profile_intent
+
+            # Si el resolvedor semántico detectó ambigüedad → pedir aclaración
+            if intent.needs_clarification and intent.clarification_question:
+                return BotReply(
+                    text=intent.clarification_question,
+                    content_type="text",
+                ), None
+
+            # Aplicar la intención completa respetando operación y entidades resueltas
+            ext_result = await self._profile_extractor.apply_profile_intent(
+                session=ctx.session,
+                usuario_id=ctx.user.id,
+                intent=intent,
+                state=ctx.state,
+            )
+            if ext_result:
+                extracted_data = ext_result.clean_data
+                ctx.extracted_data = extracted_data
+                if extracted_data:
+                    logger.info(
+                        "Intent-based profile update user=%s field=%s op=%s: %s",
+                        ctx.user.id, intent.field_code, intent.operation, extracted_data,
+                    )
+
+                if ext_result.meta_flags.get("needs_health_clarification"):
+                    return BotReply(
+                        text=ext_result.meta_flags.get(
+                            "clarification_prompt",
+                            "¿Podrías aclarar ese aspecto médico un poco más?",
+                        ),
+                        content_type="text",
+                    ), None
+
+            # Continuar al fallback para generar respuesta contextual
+            return await self._fallback_handler.handle(ctx)
+
+        # ── Prioridad 2: Fast path del router (campo y valor claros, sin LLM) ──
         if (
             ctx.route.resolved_field
             and ctx.route.resolved_value
@@ -76,13 +116,6 @@ class ProfileUpdateHandler(BaseHandler):
 
             if extracted_data:
                 logger.info("Real-time profile update user=%s: %s", ctx.user.id, extracted_data)
-                # Actualizamos dinámicamente el snapshot y contexto para los siguientes pasos
-                # Nota: Idealmente iteramos sobre las actualizaciones, pero como profile_reader
-                # requiere leer la BD, podemos asumirlo temporalmente o dejar que LLM Reply Service lo re-lea.
-                # Actualizamos el profile_text generado!
-                # Podríamos recargar el snapshot, pero requiere llamar a profile_reader.
-                # (Lo omitiremos y dejaremos que al final el fallback pueda tener context).
-                pass
 
             # Bloqueo interactivo si hay duda médica
             if meta_flags.get("needs_health_clarification"):

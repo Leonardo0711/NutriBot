@@ -25,7 +25,7 @@ class OnboardingHandler(BaseHandler):
             state=ctx.state,
             session=ctx.session,
             treat_ninguna_as_missing=False,
-            pre_extracted_data=None,
+            pre_extracted_intent=ctx.profile_intent,
             history=ctx.history,
         )
 
@@ -37,3 +37,4 @@ class OnboardingHandler(BaseHandler):
 
         ctx.onboarding_interception_happened = False
         return await self._fallback_handler.handle(ctx)
+

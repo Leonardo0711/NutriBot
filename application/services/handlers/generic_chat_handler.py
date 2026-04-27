@@ -12,6 +12,7 @@ from application.services.llm_reply_service import LlmReplyService
 from application.services.profile_interception_service import ProfileInterceptionService
 from application.services.survey_flow_service import SurveyFlowService
 from application.services.conversation_state_service import ConversationStateService
+from domain.value_objects import OnboardingStatus
 
 
 class GenericChatHandler(BaseHandler):
@@ -76,10 +77,20 @@ class GenericChatHandler(BaseHandler):
         )
 
         base_should_count = bool(not ctx.onboarding_interception_happened and reply)
+        # Usar turn_kind centralizado del orquestador — SOLO NUTRITION_VALUE cuenta
         should_count_before_survey = bool(
-            base_should_count and mode_before_survey != SessionMode.COLLECTING_USABILITY.value
+            base_should_count
+            and mode_before_survey != SessionMode.COLLECTING_USABILITY.value
+            and ctx.turn_kind == "NUTRITION_VALUE"
         )
         projected_interactions_count = ctx.state.meaningful_interactions_count + (1 if should_count_before_survey else 0)
+
+        # Snooze de encuesta: si el usuario está actualizando perfil, posponer
+        if ctx.turn_kind == "PROFILE_MAINTENANCE":
+            self._state_service.pause_survey_for_profile_maintenance(
+                state=ctx.state,
+                reason="PROFILE_MAINTENANCE",
+            )
 
         # 3. Profile Interception Phase 2 (sugerencias progresivas)
         if reply and not ctx.onboarding_interception_happened and not ctx.is_requesting_survey:
@@ -100,7 +111,9 @@ class GenericChatHandler(BaseHandler):
         )
 
         # 5. Inyeccion de Encuestas (Satisfaccion, etc.)
-        final_bot_reply, survey_was_interrupted = await self._survey_flow.compose_reply_with_survey(
+        # Respetar ventana de snooze antes de ofrecer encuesta
+        survey_allowed = self._state_service.can_offer_survey(ctx.state)
+        final_bot_reply, survey_was_interrupted, survey_engaged_turn = await self._survey_flow.compose_reply_with_survey(
             session=ctx.session,
             state=ctx.state,
             normalized=ctx.normalized,
@@ -108,13 +121,19 @@ class GenericChatHandler(BaseHandler):
             reply=reply,
             new_response_id=new_response_id,
             onboarding_interception_happened=ctx.onboarding_interception_happened,
-            is_requesting_survey=ctx.is_requesting_survey,
-            projected_interactions_count=projected_interactions_count,
+            is_requesting_survey=ctx.is_requesting_survey and survey_allowed,
+            projected_interactions_count=projected_interactions_count if survey_allowed else 0,
             schedule_separate_message=self._schedule_separate_message,
         )
 
         # 6. Actualizar Analytics de Estado
-        if (should_count_before_survey or survey_was_interrupted) and ctx.state.mode == SessionMode.ACTIVE_CHAT.value:
+        # Nota: should_count_before_survey ya excluye PROFILE_MAINTENANCE,
+        # ONBOARDING_RESPONSE y SURVEY_RESPONSE via ctx.turn_kind (líneas 81-85).
+        if (
+            (should_count_before_survey or survey_was_interrupted)
+            and not survey_engaged_turn
+            and ctx.state.mode == SessionMode.ACTIVE_CHAT.value
+        ):
             self._state_service.update_meaningful_interaction_count(
                 state=ctx.state,
                 survey_was_interrupted=survey_was_interrupted,
@@ -154,5 +173,4 @@ class GenericChatHandler(BaseHandler):
             logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
         except Exception as e:
             logger.error("Error scheduling separate message: %s", e)
-
 

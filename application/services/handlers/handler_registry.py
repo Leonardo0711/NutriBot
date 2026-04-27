@@ -32,10 +32,21 @@ class HandlerRegistry:
         if ctx.state.onboarding_status in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
             return self._onboarding_handler
 
-        # Si parece una actualización de datos perfil desde el chat activo
+        # ── Intent extractor: comprensión real supera al router ──
+        # Si el extractor detectó actualización de perfil con confianza alta,
+        # priorizar el ProfileUpdateHandler incluso si el router dijo AMBIGUOUS o NUTRITION_QUERY.
+        if (
+            ctx.profile_intent
+            and ctx.profile_intent.is_profile_update
+            and ctx.profile_intent.is_confident
+        ):
+            return self._profile_update_handler
+
+        # Si parece una actualización de datos perfil desde el chat activo (legacy router hint)
         if ctx.looks_like_profile_update:
             return self._profile_update_handler
 
         # Fallback de todo lo demás
         return self._generic_chat_handler
+
 
