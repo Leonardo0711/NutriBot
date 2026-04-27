@@ -129,6 +129,11 @@ class ProfileIntentExtractorService:
                     await self._resolve_values(session, fast, usuario_id)
                 return fast
 
+            # Fast-path para sexo: respuestas obvias sin LLM
+            fast_sexo = self._try_fast_sexo(text_clean, expected_field)
+            if fast_sexo:
+                return fast_sexo
+
         # ── Guard: si el router ya clasificó con alta confianza algo que
         #    NO es perfil (saludo, reset, encuesta, confirmación), no gastar tokens ──
         skip_intents = {
@@ -204,6 +209,38 @@ class ProfileIntentExtractorService:
                     source="FAST_NUMERIC",
                 )
 
+        return None
+
+    def _try_fast_sexo(self, text: str, expected_field: str) -> ProfileIntentResult | None:
+        """Fast path para campo sexo: detecta hombre/mujer sin LLM."""
+        canonical = self._canonical_field(expected_field)
+        if canonical != "sexo":
+            return None
+
+        norm = text.lower().strip()
+        male_kw = {"hombre", "masculino", "varon", "varón", "macho", "h", "m"}
+        female_kw = {"mujer", "femenino", "femenina", "dama", "f"}
+
+        value = None
+        if norm in male_kw or any(norm.startswith(k) for k in ("hombre", "masculin", "varon", "varón")):
+            value = "masculino"
+        elif norm in female_kw or any(norm.startswith(k) for k in ("mujer", "femenin", "dama")):
+            value = "femenino"
+
+        if value:
+            return ProfileIntentResult(
+                is_profile_update=True,
+                field_code="sexo",
+                operation="REPLACE",
+                values=[ProfileIntentValue(
+                    raw_value=value,
+                    normalized_value=value,
+                    confidence=1.0,
+                )],
+                confidence=1.0,
+                evidence_text=text,
+                source="FAST_SEXO",
+            )
         return None
 
     async def _extract_with_llm(

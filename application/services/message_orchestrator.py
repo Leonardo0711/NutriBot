@@ -148,8 +148,16 @@ class MessageOrchestratorService:
         if not txt:
             return False
 
-        # Siempre correr durante onboarding o si hay un campo esperado
+        # Durante onboarding: correr EXCEPTO para intents triviales que no
+        # aportan datos de perfil (saludos, confirmaciones, negaciones, skips).
+        # Esto ahorra ~1.5s de LLM por turno trivial.
         if ctx.state.awaiting_field_code or ctx.state.onboarding_step:
+            trivial_during_onboarding = {
+                Intent.GREETING, Intent.CONFIRMATION, Intent.DENIAL,
+                Intent.SKIP, Intent.SMALL_TALK,
+            }
+            if ctx.route.intent in trivial_during_onboarding and ctx.route.confidence >= 0.80:
+                return False
             return True
 
         # Correr durante encuesta si el usuario dice algo que no es respuesta numérica

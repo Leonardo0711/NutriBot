@@ -25,6 +25,7 @@ def get_engine() -> AsyncEngine:
             pool_size=10,
             max_overflow=5,
             pool_pre_ping=True,
+            pool_recycle=300,  # Reciclar conexiones cada 5 min para evitar stale/corrupted
             connect_args={
                 "server_settings": {
                     "timezone": "America/Lima",
