@@ -1148,25 +1148,56 @@ FORMATO DE SALIDA (JSON):
         # Si el extractor de intención detectó campos adicionales que no coinciden
         # con el paso actual, guardarlos usando apply_profile_intent para preservar
         # la operación (ADD/REMOVE/CORRECTION etc.).
+        # REGLA PUENTE: campos de salud compatibles se tratan como respuesta
+        # del paso actual para evitar que "no puedo comer lacteos" durante el
+        # paso alergias sea tratado como campo extra.
+        HEALTH_COMPATIBLE_FIELDS = {
+            "alergias": {"alergias", "restricciones_alimentarias"},
+            "restricciones_alimentarias": {"alergias", "restricciones_alimentarias"},
+            "enfermedades": {"enfermedades"},
+        }
         if (
             pre_extracted_intent
             and pre_extracted_intent.is_profile_update
             and pre_extracted_intent.field_code != current_step
         ):
-            try:
-                await self._profile_extractor.apply_profile_intent(
-                    session=session,
-                    usuario_id=state.usuario_id,
-                    intent=pre_extracted_intent,
-                    state=state,
-                )
-                logger.info(
-                    "Onboarding: applied extra profile_intent field=%s op=%s",
-                    pre_extracted_intent.field_code,
-                    pre_extracted_intent.operation,
-                )
-            except Exception as e:
-                logger.warning("Onboarding: apply_profile_intent error: %s", e)
+            compatible = pre_extracted_intent.field_code in HEALTH_COMPATIBLE_FIELDS.get(
+                current_step, {current_step}
+            )
+            if compatible and not extracted:
+                # Tratar como respuesta válida del paso actual
+                try:
+                    await self._profile_extractor.apply_profile_intent(
+                        session=session,
+                        usuario_id=state.usuario_id,
+                        intent=pre_extracted_intent,
+                        state=state,
+                    )
+                    # Marcar como extraído para que el paso avance
+                    extracted = {current_step: [v.raw_value for v in pre_extracted_intent.values]}
+                    logger.info(
+                        "Onboarding: applied compatible health field=%s as current_step=%s",
+                        pre_extracted_intent.field_code,
+                        current_step,
+                    )
+                except Exception as e:
+                    logger.warning("Onboarding: apply_profile_intent (compatible) error: %s", e)
+            else:
+                # Campo extra no compatible: guardar aparte
+                try:
+                    await self._profile_extractor.apply_profile_intent(
+                        session=session,
+                        usuario_id=state.usuario_id,
+                        intent=pre_extracted_intent,
+                        state=state,
+                    )
+                    logger.info(
+                        "Onboarding: applied extra profile_intent field=%s op=%s",
+                        pre_extracted_intent.field_code,
+                        pre_extracted_intent.operation,
+                    )
+                except Exception as e:
+                    logger.warning("Onboarding: apply_profile_intent error: %s", e)
 
         # Fallback inteligente para campos de salud (alergias/enfermedades/restricciones)
         fallback_clarification_prompt = None

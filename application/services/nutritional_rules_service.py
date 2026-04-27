@@ -163,77 +163,78 @@ class NutritionalRulesService:
         cruzando perfil → enfermedades → grupos → dietas/restricciones.
         """
         try:
-            # Aisla esta lectura de reglas para no contaminar la transaccion
-            # principal del turno si alguna consulta falla.
-            async with session.begin_nested():
-                # 1. Obtener grupos nutricionales del usuario
-                result = await session.execute(self._RESOLVE_GROUPS_SQL, {"uid": usuario_id})
-                group_rows = result.fetchall()
+            # NO usar begin_nested() aquí: el llamante ya proporciona
+            # aislamiento con savepoint cuando es necesario.  Anidar
+            # savepoints en asyncpg corrompe la transacción principal.
 
-                if not group_rows:
-                    return NutritionalRulesContext()
+            # 1. Obtener grupos nutricionales del usuario
+            result = await session.execute(self._RESOLVE_GROUPS_SQL, {"uid": usuario_id})
+            group_rows = result.fetchall()
 
-                group_names = tuple(r.grupo_nombre for r in group_rows)
-                group_ids = [r.grupo_id for r in group_rows]
+            if not group_rows:
+                return NutritionalRulesContext()
 
-                # 2. Obtener dietas sugeridas/obligatorias
-                result = await session.execute(self._RESOLVE_DIETS_SQL, {"group_ids": group_ids})
-                diet_rows = result.fetchall()
+            group_names = tuple(r.grupo_nombre for r in group_rows)
+            group_ids = [r.grupo_id for r in group_rows]
 
-                mandatory = []
-                suggested = []
-                contraindicated = []
-                seen_diets = set()
+            # 2. Obtener dietas sugeridas/obligatorias
+            result = await session.execute(self._RESOLVE_DIETS_SQL, {"group_ids": group_ids})
+            diet_rows = result.fetchall()
 
-                for r in diet_rows:
-                    if r.dieta_id in seen_diets:
-                        continue
-                    seen_diets.add(r.dieta_id)
-                    rule = DietRule(
-                        dieta_id=r.dieta_id,
-                        dieta_codigo=r.dieta_codigo,
-                        dieta_nombre=r.dieta_nombre,
-                        tipo_relacion=r.tipo_relacion,
-                        prioridad=r.prioridad,
-                        grupo_origen=r.grupo_origen,
-                    )
-                    if r.tipo_relacion == "OBLIGATORIA":
-                        mandatory.append(rule)
-                    elif r.tipo_relacion == "CONTRAINDICADA":
-                        contraindicated.append(rule)
-                    else:
-                        suggested.append(rule)
+            mandatory = []
+            suggested = []
+            contraindicated = []
+            seen_diets = set()
 
-                # 3. Obtener restricciones derivadas
-                result = await session.execute(self._RESOLVE_RESTRICTIONS_SQL, {"group_ids": group_ids})
-                restriction_rows = result.fetchall()
-
-                restrictions = []
-                seen_restrictions = set()
-                for r in restriction_rows:
-                    if r.restriccion_id in seen_restrictions:
-                        continue
-                    seen_restrictions.add(r.restriccion_id)
-                    restrictions.append(RestrictionRule(
-                        restriccion_id=r.restriccion_id,
-                        restriccion_codigo=r.restriccion_codigo,
-                        restriccion_nombre=r.restriccion_nombre,
-                        obligatoria=r.obligatoria,
-                        grupo_origen=r.grupo_origen,
-                    ))
-
-                # 4. Verificar si ya tiene una orden activa
-                result = await session.execute(self._CHECK_ACTIVE_ORDER_SQL, {"uid": usuario_id})
-                has_order = result.fetchone() is not None
-
-                ctx = NutritionalRulesContext(
-                    groups=group_names,
-                    mandatory_diets=tuple(mandatory),
-                    suggested_diets=tuple(suggested),
-                    contraindicated_diets=tuple(contraindicated),
-                    rule_restrictions=tuple(restrictions),
-                    has_active_order=has_order,
+            for r in diet_rows:
+                if r.dieta_id in seen_diets:
+                    continue
+                seen_diets.add(r.dieta_id)
+                rule = DietRule(
+                    dieta_id=r.dieta_id,
+                    dieta_codigo=r.dieta_codigo,
+                    dieta_nombre=r.dieta_nombre,
+                    tipo_relacion=r.tipo_relacion,
+                    prioridad=r.prioridad,
+                    grupo_origen=r.grupo_origen,
                 )
+                if r.tipo_relacion == "OBLIGATORIA":
+                    mandatory.append(rule)
+                elif r.tipo_relacion == "CONTRAINDICADA":
+                    contraindicated.append(rule)
+                else:
+                    suggested.append(rule)
+
+            # 3. Obtener restricciones derivadas
+            result = await session.execute(self._RESOLVE_RESTRICTIONS_SQL, {"group_ids": group_ids})
+            restriction_rows = result.fetchall()
+
+            restrictions = []
+            seen_restrictions = set()
+            for r in restriction_rows:
+                if r.restriccion_id in seen_restrictions:
+                    continue
+                seen_restrictions.add(r.restriccion_id)
+                restrictions.append(RestrictionRule(
+                    restriccion_id=r.restriccion_id,
+                    restriccion_codigo=r.restriccion_codigo,
+                    restriccion_nombre=r.restriccion_nombre,
+                    obligatoria=r.obligatoria,
+                    grupo_origen=r.grupo_origen,
+                ))
+
+            # 4. Verificar si ya tiene una orden activa
+            result = await session.execute(self._CHECK_ACTIVE_ORDER_SQL, {"uid": usuario_id})
+            has_order = result.fetchone() is not None
+
+            ctx = NutritionalRulesContext(
+                groups=group_names,
+                mandatory_diets=tuple(mandatory),
+                suggested_diets=tuple(suggested),
+                contraindicated_diets=tuple(contraindicated),
+                rule_restrictions=tuple(restrictions),
+                has_active_order=has_order,
+            )
 
             if ctx.has_rules:
                 logger.info(
