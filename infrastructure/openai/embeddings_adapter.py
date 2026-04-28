@@ -32,6 +32,15 @@ class OpenAIEmbeddingsAdapter:
                 model=self._model,
                 input=text,
             )
+            usage = getattr(response, "usage", None)
+            if usage:
+                logger.info(
+                    "OpenAIEmbeddingUsage model=%s prompt_tokens=%s total_tokens=%s text_chars=%d",
+                    self._model,
+                    getattr(usage, "prompt_tokens", None),
+                    getattr(usage, "total_tokens", None),
+                    len(text or ""),
+                )
             return response.data[0].embedding
         except Exception:
             logger.exception("Error generando embedding")

@@ -39,7 +39,7 @@ class OpenAIResponsesAdapter(LLMService):
         profile_context: Optional[str] = None,
         history: Optional[list[dict]] = None,
         max_tokens: Optional[int] = None,
-    ) -> tuple[str, Optional[str]]:
+        ) -> tuple[str, Optional[str]]:
         """
         Genera una respuesta del LLM.
 
@@ -52,7 +52,11 @@ class OpenAIResponsesAdapter(LLMService):
             (reply_text, new_response_id)
         """
         try:
-            has_prev_response = bool(state.last_openai_response_id)
+            settings = get_settings()
+            has_prev_response = bool(
+                settings.openai_use_previous_response
+                and state.last_openai_response_id
+            )
             # Si ya hay previous_response_id, no reenviamos historial textual para evitar duplicar tokens.
             include_history = not has_prev_response
             user_input = self._build_user_input(
@@ -80,6 +84,29 @@ class OpenAIResponsesAdapter(LLMService):
 
             reply_text = response.output_text or ""
             new_response_id = response.id
+            usage = getattr(response, "usage", None)
+            if usage:
+                input_tokens = getattr(usage, "input_tokens", None)
+                output_tokens = getattr(usage, "output_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
+                input_details = getattr(usage, "input_tokens_details", None)
+                cached_tokens = getattr(input_details, "cached_tokens", None) if input_details else None
+                logger.info(
+                    "OpenAIUsage model=%s response_id=%s input_tokens=%s output_tokens=%s total_tokens=%s cached_tokens=%s input_parts=%d has_prev=%s max_output_tokens=%s rag_chars=%d profile_chars=%d history_items=%d user_chars=%d",
+                    self._model,
+                    new_response_id,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    cached_tokens,
+                    len(user_input),
+                    has_prev_response,
+                    max_tokens,
+                    len(rag_context or ""),
+                    len(profile_context or ""),
+                    len(history or []),
+                    len(normalized.text or ""),
+                )
 
             logger.debug(
                 "LLM reply (%d chars, response_id=%s): %s...",

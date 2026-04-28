@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import random
+from time import perf_counter
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -23,6 +24,7 @@ from infrastructure.redis.client import (
 from application.services.message_orchestrator import MessageOrchestratorService
 from interface.webhook_parser import parse_evolution_webhook
 from domain.router import classify_message, Intent
+from domain.context_builder import should_fetch_rag
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,13 @@ class InboxWorker:
     })
 
     async def _process_single_message(self, inbox_msg) -> None:
+        turn_started = perf_counter()
+        media_ms = 0
+        route_ms = 0
+        rag_ms = 0
+        transact_ms = 0
+        redis_enqueue_ms = 0
+
         msg = parse_evolution_webhook(inbox_msg.webhook_payload)
         if not msg:
             async with self.session_factory() as session:
@@ -189,11 +198,14 @@ class InboxWorker:
 
         try:
             # 1. NORMALIZAR (incluye STT para audio)
+            stage_started = perf_counter()
             normalized = await self.media_service.normalize(msg)
+            media_ms = int((perf_counter() - stage_started) * 1000)
 
             # 2. RUTEAR POR TEXTO TRANSCRITO (no por content_type)
             #    Audio pasa por STT primero y se rutea como texto.
             #    used_audio es metadato, no razon para ruta cara.
+            stage_started = perf_counter()
             router_content_type = "text"
             if msg.content_type == MessageType.IMAGE:
                 router_content_type = "image"
@@ -208,6 +220,7 @@ class InboxWorker:
                 onboarding_step=state_snapshot.onboarding_step,
                 content_type=router_content_type,
             )
+            route_ms = int((perf_counter() - stage_started) * 1000)
             logger.info(
                 "Router-first: user=%s intent=%s conf=%.2f reason='%s'",
                 user.id, route.intent.value, route.confidence, route.reason,
@@ -215,7 +228,9 @@ class InboxWorker:
 
             # 3. CONDICIONAL: solo generar embedding + RAG si el intent lo requiere
             rag_text = None
-            if route.intent not in self._CHEAP_INTENTS:
+            stage_started = perf_counter()
+            use_rag = route.intent not in self._CHEAP_INTENTS and should_fetch_rag(route, normalized.text)
+            if use_rag:
                 try:
                     query_embedding = await self.embeddings.embed(normalized.text)
                     if query_embedding:
@@ -225,9 +240,17 @@ class InboxWorker:
                 except Exception:
                     logger.exception("Error en RAG pipeline, continuando sin contexto")
             else:
-                logger.debug("Skipping RAG for cheap intent %s user=%s", route.intent.value, user.id)
+                logger.info(
+                    "RAGPolicy: skipped user=%s intent=%s cheap=%s text_chars=%d",
+                    user.id,
+                    route.intent.value,
+                    route.intent in self._CHEAP_INTENTS,
+                    len(normalized.text or ""),
+                )
+            rag_ms = int((perf_counter() - stage_started) * 1000)
 
             # 4. ORQUESTAR
+            stage_started = perf_counter()
             async with self.session_factory() as session:
                 async with session.begin():
                     state = await self.conv_repo.get_state_for_update(session, user.id)
@@ -316,13 +339,29 @@ class InboxWorker:
 
                     # Persistir memoria solo despues de confirmar que el outbox gano
                     await self.orchestrator._append_to_chat_memory(session, user.id, normalized.text, safe_reply)
+            transact_ms = int((perf_counter() - stage_started) * 1000)
 
             # Publicar outbox ID en Redis para entrega instantanea
             if outbox_row:
                 try:
+                    stage_started = perf_counter()
                     await enqueue(OUTBOX_QUEUE, outbox_row.id)
+                    redis_enqueue_ms = int((perf_counter() - stage_started) * 1000)
                 except Exception:
                     pass  # OutboxWorker usara fallback SQL
+
+            logger.info(
+                "TurnLatency inbox_id=%s user=%s intent=%s total_ms=%d media_ms=%d route_ms=%d rag_ms=%d transact_ms=%d redis_enqueue_ms=%d",
+                inbox_msg.id,
+                user.id,
+                route.intent.value,
+                int((perf_counter() - turn_started) * 1000),
+                media_ms,
+                route_ms,
+                rag_ms,
+                transact_ms,
+                redis_enqueue_ms,
+            )
 
         finally:
             # Siempre liberar el lock del usuario
@@ -424,4 +463,3 @@ class InboxWorker:
         except Exception:
             # Si Redis no esta disponible, el fallback SQL lo volvera a reclamar.
             logger.exception("No se pudo reencolar recoverable inbox id=%s", msg_id)
-

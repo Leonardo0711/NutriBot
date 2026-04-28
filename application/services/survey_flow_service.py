@@ -59,7 +59,7 @@ class SurveyFlowService:
                 original_mode == SessionMode.COLLECTING_USABILITY.value
                 or is_requesting_survey
                 or original_awaiting == consent_state
-            ) and not (reply and not is_requesting_survey and original_mode != SessionMode.COLLECTING_USABILITY.value):
+            ):
                 # Si el usuario ya estaba en la encuesta o la pidió, la mostramos directo.
                 final_bot_reply = addon
             elif reply:

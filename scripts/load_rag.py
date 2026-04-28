@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import gc
+import re
 from typing import List
 from pypdf import PdfReader
 from openai import AsyncOpenAI
@@ -18,8 +19,13 @@ from config import get_settings
 import functools
 print = functools.partial(print, flush=True)
 
-def chunk_text(text_body: str, chunk_size: int = 400, overlap: int = 50) -> List[str]:
-    words = text_body.split()
+def clean_pdf_text(text_body: str) -> str:
+    text_body = re.sub(r"(\w)-\s+(\w)", r"\1\2", text_body or "")
+    return re.sub(r"\s+", " ", text_body).strip()
+
+
+def chunk_text(text_body: str, chunk_size: int = 190, overlap: int = 35) -> List[str]:
+    words = clean_pdf_text(text_body).split()
     chunks = []
     i = 0
     while i < len(words):
@@ -30,16 +36,22 @@ def chunk_text(text_body: str, chunk_size: int = 400, overlap: int = 50) -> List
     return chunks
 
 async def process_page(session, client, doc_id, page_num, page_text, settings, start_fragment_num):
-    chunks = chunk_text(page_text, chunk_size=350, overlap=50)
+    if page_num >= 52:
+        print(f"Salto pagina {page_num}: bibliografia/creditos.")
+        return 0, start_fragment_num
+
+    chunks = chunk_text(page_text, chunk_size=190, overlap=35)
     print(f"➡️ Procesando página {page_num} ({len(chunks)} fragmentos)...")
     
     current_frag_num = start_fragment_num
     added_count = 0
     for j, chunk in enumerate(chunks):
-        if len(chunk) < 40: continue
+        if len(chunk) < 40:
+            continue
+        chunk_for_rag = f"[Guia alimentaria Peru | pagina {page_num}]\n{chunk}"
         
         emb_resp = await client.embeddings.create(
-            input=chunk,
+            input=chunk_for_rag,
             model=settings.openai_embedding_model
         )
         vector = emb_resp.data[0].embedding
@@ -52,7 +64,7 @@ async def process_page(session, client, doc_id, page_num, page_text, settings, s
             """
         ), {
             "did": doc_id,
-            "content": chunk,
+            "content": chunk_for_rag,
             "v": vector_str,
             "pg": page_num,
             "num": current_frag_num + 1
@@ -87,6 +99,10 @@ async def main():
         async with factory() as session:
             res = await session.execute(text("SELECT id FROM documentos_rag WHERE nombre = :n"), {"n": doc_name})
             doc_id = res.scalar()
+            if doc_id and os.getenv("RESET_RAG", "").strip().lower() in {"1", "true", "yes", "si"}:
+                print("Reset RAG activo: eliminando fragmentos anteriores del documento...")
+                await session.execute(text("DELETE FROM fragmentos_rag WHERE documento_id = :did"), {"did": doc_id})
+                await session.execute(text("UPDATE documentos_rag SET actualizado_en = TIMEZONE('America/Lima', NOW()) WHERE id = :did"), {"did": doc_id})
             if not doc_id:
                 res = await session.execute(text("INSERT INTO documentos_rag (nombre, tipo_fuente, estado) VALUES (:n, 'pdf', 'activo') RETURNING id"), {"n": doc_name})
                 doc_id = res.scalar()

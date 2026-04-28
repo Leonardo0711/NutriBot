@@ -588,6 +588,64 @@ class SurveyService:
             or bool(normalized.used_audio)
         )
 
+    def _should_consume_pending_form_turn(
+        self,
+        current_state: str,
+        normalized: NormalizedMessage,
+    ) -> bool:
+        """Consume pending forms from active chat only on clear survey answers."""
+        if not current_state or current_state not in FORM_QUESTIONS:
+            return False
+
+        if self.extractor.extract_structured(current_state, normalized.interactive_id, normalized.text):
+            return True
+
+        if self._is_multimedia_message(normalized):
+            if current_state == "esperando_audio_prueba":
+                return self._is_audio_message(normalized)
+            if current_state == "esperando_imagen_prueba":
+                return self._is_image_message(normalized)
+            return False
+
+        text_value = (normalized.text or "").strip()
+        if not text_value:
+            return False
+        low = text_value.lower()
+        token = self._normalize_token(text_value)
+
+        if self.extractor._looks_like_useful_chat_question(low) or self.extractor._looks_like_free_form_interrupt(low):
+            return False
+
+        if current_state.startswith("esperando_p"):
+            return self._parse_int(text_value, 1, 5) is not None
+
+        if current_state == "esperando_nps":
+            return self._parse_int(text_value, 1, 10) is not None
+
+        if current_state in {
+            "esperando_asegurado_essalud",
+            "esperando_audio_optin",
+            "esperando_imagen_optin",
+            "esperando_autorizacion",
+        }:
+            return SurveyResponseExtractor._extract_binary_answer(token) is not None
+
+        if current_state == "esperando_correo":
+            if self._normalize_email(text_value):
+                return True
+            fast = self.extractor.try_fast_extract(current_state, text_value)
+            return bool(fast and str(fast.get("intent", "")).upper() in {"SKIP", "WHY"})
+
+        if current_state in {"esperando_audio_prueba", "esperando_imagen_prueba"}:
+            fast = self.extractor.try_fast_extract(current_state, text_value)
+            return bool(fast and str(fast.get("intent", "")).upper() in {"ANSWER", "SKIP"})
+
+        if current_state == "esperando_comentario":
+            normalized_text = SurveyResponseExtractor._normalize_token(text_value)
+            return normalized_text in {"no", "nada", "ninguno"}
+
+        return False
+
     def _is_state_answered(self, state_name: str, parciales: dict) -> bool:
         field_key = state_name.replace("esperando_", "")
         if state_name == "esperando_correo":
@@ -945,10 +1003,22 @@ class SurveyService:
         if state.mode == "active_chat":
             if self._is_profile_capture_active(state):
                 return None
-            if self._is_reinvite_cooldown_active(state):
-                return None
+            progress = await self._load_active_progress(session, state.usuario_id) if session is not None else None
+            if progress and progress.estado_actual != "completado":
+                if not self._should_consume_pending_form_turn(progress.estado_actual, normalized):
+                    state.mode = "active_chat"
+                    state.awaiting_question_code = None
+                    state.meaningful_interactions_count = 0
+                    return None
+                state.mode = "collecting_usability"
+                state.awaiting_question_code = progress.estado_actual
+                return await self._process_form_response(session, state, normalized)
+
             effective = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
             if effective >= 5 and state.usability_completion_pct < 100:
+                if self._is_reinvite_cooldown_active(state):
+                    return None
+
                 active_form = await self._get_active_form(session)
                 if not active_form:
                     # Evita invitar a un formulario inexistente.

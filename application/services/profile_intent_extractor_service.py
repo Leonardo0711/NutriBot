@@ -265,6 +265,17 @@ class ProfileIntentExtractorService:
                     {"role": "user", "content": f"{user_text}{context_hint}"},
                 ],
             )
+            usage = getattr(response, "usage", None)
+            if usage:
+                logger.info(
+                    "OpenAIProfileIntentUsage model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s text_chars=%d expected_field=%s",
+                    self._model,
+                    getattr(usage, "prompt_tokens", None),
+                    getattr(usage, "completion_tokens", None),
+                    getattr(usage, "total_tokens", None),
+                    len(user_text or ""),
+                    expected_field,
+                )
 
             raw = (response.choices[0].message.content or "").strip()
             data = json.loads(raw)

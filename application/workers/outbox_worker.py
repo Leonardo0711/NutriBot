@@ -75,7 +75,7 @@ class OutboxWorker:
                             attempt_count = attempt_count + 1
                         WHERE id = :id
                           AND status = 'pending'
-                          AND COALESCE(scheduled_at, TIMEZONE('America/Lima', NOW())) <= TIMEZONE('America/Lima', NOW())
+                          AND (scheduled_at IS NULL OR scheduled_at <= TIMEZONE('America/Lima', NOW()))
                         RETURNING *
                     """),
                     {"id": msg_id},
@@ -98,7 +98,7 @@ class OutboxWorker:
                             SELECT id FROM outgoing_messages
                             WHERE status IN ('pending', 'failed')
                               AND attempt_count < :max_retry
-                              AND COALESCE(scheduled_at, TIMEZONE('America/Lima', NOW())) <= TIMEZONE('America/Lima', NOW())
+                              AND (scheduled_at IS NULL OR scheduled_at <= TIMEZONE('America/Lima', NOW()))
                             ORDER BY scheduled_at ASC, created_at ASC
                             LIMIT 10
                             FOR UPDATE SKIP LOCKED

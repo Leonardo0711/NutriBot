@@ -120,7 +120,8 @@ NUTRITION_KEYWORDS = [
     "imc", "calorias", "grasa", "proteina", "carbohidratos",
     "gluten", "ayuno", "saludable", "nutricion", "alimentacion",
     "vitamina", "mineral", "fibra", "azucar", "colesterol",
-    "frutas", "verduras", "vegetales",
+    "frutas", "verduras", "vegetales", "cafe", "te", "infusion",
+    "infusiones", "mate", "bebida", "bebidas",
 ]
 
 # Verbos/frases de cocina que indican pregunta nutricional/culinaria
@@ -145,6 +146,7 @@ FOOD_NOUNS = [
     "fruta", "jugo", "batido", "smoothie",
     "mani", "cacahuate", "almendra", "nuez",
     "porcion", "porciones", "plato", "platillo",
+    "cafe", "te", "infusion", "mate",
 ]
 
 PERSONALIZATION_ACTION_ROOTS = (

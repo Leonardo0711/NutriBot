@@ -130,6 +130,63 @@ DEFAULT_RULES = {
     "max_tokens": 600,
 }
 
+RAG_TECHNICAL_MARKERS = (
+    "anemia", "hierro", "hemoglobina", "diabetes", "glucosa",
+    "hipertension", "presion", "colesterol", "trigliceridos",
+    "gastritis", "rinon", "renal", "embarazo", "lactancia",
+    "imc", "caloria", "proteina", "carbohidrato", "vitamina",
+    "mineral", "fibra", "absorcion", "absorber", "deficiencia",
+    "guia", "recomendacion", "recomendaciones", "menu", "receta",
+    "plan", "porciones", "dieta", "que comer", "alimentos",
+)
+
+RAG_EXPLANATION_SHAPES = (
+    "por que", "porque", "explicame", "dime mas", "cuanto",
+    "cuanta", "cuantas", "cuantos", "que alimentos", "que puedo",
+    "que debo", "puedo comer", "no puedo", "es malo", "es bueno",
+)
+
+
+def should_fetch_rag(route: RouteResult, user_text: str) -> bool:
+    """
+    Decide si vale la pena pagar embedding + busqueda RAG antes del LLM.
+
+    La puerta no decide si el bot entiende o responde: solo decide si conviene
+    adjuntar documento externo. Si hay duda, el LLM sigue recibiendo el turno
+    con perfil e historial compacto.
+    """
+    if route.intent in {
+        Intent.GREETING,
+        Intent.CONFIRMATION,
+        Intent.DENIAL,
+        Intent.SKIP,
+        Intent.RESET,
+        Intent.SMALL_TALK,
+        Intent.ANSWER_CURRENT_STEP,
+        Intent.PROFILE_UPDATE,
+        Intent.CORRECTION_PAST_FIELD,
+        Intent.PERSONALIZE_REQUEST,
+        Intent.SURVEY_CONTINUE,
+    }:
+        return False
+
+    if route.intent in {Intent.IMAGE, Intent.AUDIO}:
+        return True
+
+    normalized = (user_text or "").lower()
+    if not normalized.strip():
+        return False
+
+    if route.intent == Intent.RECOMMENDATION_REQUEST:
+        return True
+
+    if route.intent in {Intent.NUTRITION_QUERY, Intent.DOUBT, Intent.AMBIGUOUS}:
+        has_marker = any(marker in normalized for marker in RAG_TECHNICAL_MARKERS)
+        has_shape = any(shape in normalized for shape in RAG_EXPLANATION_SHAPES)
+        return has_marker and (has_shape or len(normalized.split()) >= 5)
+
+    return False
+
 
 def build_llm_context(
     route: RouteResult,
@@ -194,6 +251,29 @@ def build_llm_context(
 # ──────────────────────────────────────────────
 
 FAST_RESPONSES = {
+    Intent.GREETING: [
+        (
+            "Hola, soy NutriBot. Que gusto leerte. "
+            "Estoy aqui para acompanarte con nutricion, salud y bienestar: "
+            "menus, recetas, porciones, habitos y recomendaciones segun tu perfil."
+        ),
+        (
+            "Hola, soy NutriBot. Me alegra saludarte. "
+            "Puedo ayudarte con nutricion, salud y bienestar de forma simple y personalizada."
+        ),
+    ],
+    Intent.CONFIRMATION: [
+        "Listo.",
+        "Perfecto.",
+    ],
+    Intent.DENIAL: [
+        "Entendido.",
+        "Ok, lo dejamos asi.",
+    ],
+    Intent.SMALL_TALK: [
+        "Te leo. Si es sobre nutricion o bienestar, cuentame.",
+        "Dime nomas, te ayudo con nutricion y bienestar.",
+    ],
     Intent.SKIP: [
         "¡Sin problema! 😊 Lo dejamos para otro momento. Si quieres continuar después, solo dime.",
         "¡Perfecto, lo omitimos! Si cambias de opinión, avísame cuando gustes. 😊",

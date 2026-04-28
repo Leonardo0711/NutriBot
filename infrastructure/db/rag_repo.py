@@ -72,14 +72,16 @@ class RagRepository:
                 rows = result.fetchall()
 
                 if rows:
-                    logger.debug(
-                        "RAG: %d fragmentos encontrados (mejor distancia: %.3f)",
+                    logger.info(
+                        "RAGContext fragments=%d best_distance=%.3f total_chars=%d threshold=%.2f limit=%d",
                         len(rows),
                         rows[0].distance,
+                        sum(len(row.contenido or "") for row in rows),
+                        _threshold,
+                        _limit,
                     )
                 return [row.contenido for row in rows]
 
         except Exception:
             logger.exception("Error en Busqueda RAG")
             return []
-

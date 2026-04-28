@@ -1,16 +1,19 @@
 import os
 import pytest
 import re
+from types import SimpleNamespace
 
 from application.services.survey_service import SurveyResponseExtractor, SurveyService
 from application.services.survey_flow_service import SurveyFlowService
 from application.services.profile_extraction_service import ProfileExtractionService
+from application.services.conversation_memory_service import ConversationMemoryService
 from application.services.llm_reply_service import LlmReplyService
+from domain.context_builder import should_fetch_rag, try_fast_response
 from application.services.onboarding_service import OnboardingService
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.profile_snapshot import ProfileHealth, ProfileLocation, ProfileMeasurements, ProfileSnapshot
 from domain.reply_objects import BotReply
-from domain.router import Intent, RouteResult
+from domain.router import Intent, RouteResult, classify_message
 from domain.value_objects import MessageType, SessionMode, OnboardingStatus, OnboardingStep
 from domain.utils import get_now_peru
 
@@ -135,10 +138,68 @@ class TestHardening:
     def test_scope_redirect_blocks_out_of_domain_request(self):
         route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
         assert LlmReplyService._must_redirect_to_nutrition_scope(route, "me puedes dar un resumen de one piece porfavor")
+        assert LlmReplyService._must_redirect_to_nutrition_scope(route, "que fue weonazo")
+        assert LlmReplyService._must_redirect_to_nutrition_scope(route, "genial, a ver dame un resumen de dragon ball")
 
     def test_scope_redirect_allows_nutrition_query(self):
         route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
         assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "me puedes dar un menu saludable para hoy")
+
+    def test_scope_redirect_allows_coffee_nutrition_followup(self):
+        route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(
+            route,
+            "asu pero tomo cafe todas las mananas no puedo entonces?",
+        )
+
+    def test_scope_redirect_allows_ambiguous_followup_to_use_llm_context(self):
+        route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "asu no puedo entonces?")
+
+    def test_router_treats_coffee_followup_as_nutrition(self):
+        route = classify_message(
+            raw_text="asu pero tomo cafe todas las mananas no puedo entonces?",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert route.intent == Intent.NUTRITION_QUERY
+
+    def test_rag_policy_skips_ambiguous_human_followup_but_keeps_llm_available(self):
+        route = RouteResult(intent=Intent.DOUBT, confidence=0.7, reason="Pregunta generica detectada")
+        assert not should_fetch_rag(route, "asu no puedo entonces?")
+
+    def test_rag_policy_uses_rag_for_technical_nutrition_question(self):
+        route = RouteResult(intent=Intent.NUTRITION_QUERY, confidence=0.85, reason="Pregunta nutricional")
+        assert should_fetch_rag(route, "por que el cafe afecta la absorcion de hierro?")
+
+    def test_fast_response_only_applies_to_pure_greeting_route(self):
+        greeting = RouteResult(intent=Intent.GREETING, confidence=0.9, reason="Saludo detectado")
+        greeting_reply = try_fast_response(greeting)
+        assert greeting_reply
+        assert "NutriBot" in greeting_reply
+        assert "nutricion, salud y bienestar" in greeting_reply
+
+        mixed = classify_message(
+            raw_text="hola puedo comer arroz si tengo diabetes?",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert mixed.intent != Intent.GREETING
+
+    def test_compact_memory_uses_summary_plus_recent_history(self):
+        service = ConversationMemoryService()
+        item = service._build_compact_memory_item(
+            "usuario pregunto por anemia",
+            "anemia, hierro",
+            "sugerir carnes y vitamina C",
+        )
+        assert item is not None
+        assert item["role"] == "memory_summary"
+        assert "anemia" in item["content"]
 
     def test_onboarding_prefiero_no_comer_lacteos_is_treated_as_data(self):
         onboarding = OnboardingService(
@@ -200,6 +261,81 @@ class TestHardening:
             projected_interactions_count=9,
         )
         assert addon is None
+
+    @pytest.mark.asyncio
+    async def test_survey_pending_form_resumes_even_during_reinvite_cooldown(self):
+        service = SurveyService(None, "dummy-model")
+        state = ConversationState(
+            usuario_id=101,
+            mode=SessionMode.ACTIVE_CHAT.value,
+            meaningful_interactions_count=5,
+            last_form_prompt_at=get_now_peru(),
+            usability_completion_pct=0,
+        )
+        normalized = NormalizedMessage(
+            provider_message_id="m-pending-form",
+            phone="+51999999999",
+            content_type=MessageType.TEXT,
+            text="5",
+        )
+
+        async def fake_load_active_progress(session, uid):
+            return SimpleNamespace(formulario_id=1, estado_actual="esperando_p4")
+
+        async def fake_process_form_response(session, state_arg, normalized_arg):
+            assert state_arg.mode == SessionMode.COLLECTING_USABILITY.value
+            assert state_arg.awaiting_question_code == "esperando_p4"
+            return BotReply(text="Retomemos el formulario pendiente.", content_type="text")
+
+        service._load_active_progress = fake_load_active_progress
+        service._process_form_response = fake_process_form_response
+
+        addon = await service.process(
+            session=object(),
+            state=state,
+            normalized=normalized,
+            projected_interactions_count=5,
+        )
+        assert addon is not None
+        assert state.mode == SessionMode.COLLECTING_USABILITY.value
+        assert state.awaiting_question_code == "esperando_p4"
+
+    @pytest.mark.asyncio
+    async def test_pending_survey_does_not_consume_thanks_from_active_chat(self):
+        service = SurveyService(None, "dummy-model")
+        state = ConversationState(
+            usuario_id=102,
+            mode=SessionMode.ACTIVE_CHAT.value,
+            meaningful_interactions_count=4,
+            usability_completion_pct=0,
+        )
+        normalized = NormalizedMessage(
+            provider_message_id="m-thanks",
+            phone="+51999999999",
+            content_type=MessageType.TEXT,
+            text="excelente gracias",
+        )
+
+        async def fake_load_active_progress(session, uid):
+            return SimpleNamespace(formulario_id=1, estado_actual="esperando_p4")
+
+        async def fake_process_form_response(session, state_arg, normalized_arg):
+            raise AssertionError("A chat closing should not be consumed as a survey answer")
+
+        service._load_active_progress = fake_load_active_progress
+        service._process_form_response = fake_process_form_response
+
+        addon = await service.process(
+            session=object(),
+            state=state,
+            normalized=normalized,
+            projected_interactions_count=4,
+        )
+
+        assert addon is None
+        assert state.mode == SessionMode.ACTIVE_CHAT.value
+        assert state.awaiting_question_code is None
+        assert state.meaningful_interactions_count == 0
 
     @pytest.mark.asyncio
     async def test_survey_consent_does_not_send_double_message(self):

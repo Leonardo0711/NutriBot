@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_stt_model: str = "gpt-4o-mini-transcribe"
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "coral"
+    openai_use_previous_response: bool = False
 
     # --- Evolution API ---
     evolution_api_url: str = "http://localhost:8080"
@@ -26,8 +27,8 @@ class Settings(BaseSettings):
     evolution_instance: str = "nutribot"
 
     # --- Workers ---
-    inbox_poll_interval_seconds: float = 1.0
-    outbox_poll_interval_seconds: float = 1.0
+    inbox_poll_interval_seconds: float = 0.1
+    outbox_poll_interval_seconds: float = 0.1
     sweeper_interval_seconds: float = 60.0
     zombie_timeout_minutes: int = 10
     max_retry_count: int = 3
@@ -36,7 +37,7 @@ class Settings(BaseSettings):
     # --- RAG ---
     openai_embedding_model: str = "text-embedding-3-small"
     rag_threshold: float = 0.65
-    rag_limit: int = 3
+    rag_limit: int = 2
 
     # --- App ---
     log_level: str = "INFO"

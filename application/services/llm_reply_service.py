@@ -129,6 +129,7 @@ class LlmReplyService:
         "desayuno", "almuerzo", "cena", "snack", "refrigerio",
         "caloria", "calorias", "macro", "proteina", "carbohidrato", "grasa",
         "fibra", "vitamina", "mineral", "hidrata", "agua", "salud", "bienestar",
+        "hierro", "hemoglobina", "anemia", "absorcion", "absorber",
         "ejercicio", "actividad fisica", "entrenamiento", "sueño", "sueno", "dormir",
         "peso", "talla", "imc", "perfil", "alergia", "alergias", "restriccion",
         "restricciones", "diabetes", "hipertension", "hipotiroidismo",
@@ -142,11 +143,23 @@ class LlmReplyService:
         "papa", "camote", "yuca", "lentejas", "frijoles", "huevo",
         "leche", "queso", "yogurt", "pan", "torta", "fruta",
         "mani", "cacahuate", "almendra", "nuez", "porcion", "plato",
+        "cafe", "te", "infusion", "mate", "bebida",
     )
-    _REQUEST_SHAPE_TOKENS = (
-        "resumen", "explica", "explicame", "cuentame", "dime", "informacion",
-        "que es", "quien es", "historia", "episodio", "anime", "manga",
-        "pelicula", "serie", "programacion", "codigo", "futbol", "noticia",
+    _OFF_TOPIC_SCOPE_TOKENS = (
+        "one piece", "anime", "manga", "episodio", "pelicula", "serie",
+        "dragon ball", "goku", "vegeta",
+        "programacion", "codigo", "javascript", "python", "futbol",
+        "noticia", "politica", "presidente",
+    )
+    _GENERAL_KNOWLEDGE_REQUEST_TOKENS = (
+        "que es", "que fue", "que significa", "significa", "definicion",
+        "define", "explicame que es", "resumen", "resumeme", "historia de",
+        "quien es", "quien fue", "hablame de", "cuentame de", "traduce",
+        "sinonimo", "antonimo",
+    )
+    _CONTEXTUAL_FOLLOWUP_TOKENS = (
+        "entonces", "no puedo", "puedo", "debo", "eso", "ese", "esa",
+        "lo mismo", "igual", "tambien", "tmb", "asu", "ah ya", "ok pero",
     )
 
     def __init__(
@@ -189,6 +202,9 @@ class LlmReplyService:
                 route.intent.value,
             )
             return fast, new_response_id
+
+        if self._must_redirect_to_nutrition_scope(route, normalized.text):
+            return (self._scope_redirect_reply(), new_response_id)
 
         if self._must_redirect_to_nutrition_scope(route, normalized.text):
             return (
@@ -322,16 +338,37 @@ class LlmReplyService:
         if any(token in normalized for token in cls._WELLNESS_SCOPE_TOKENS):
             return False
 
-        # Solo redirigir cuando parece una consulta/pedido concreto.
-        request_like = (
-            "?" in normalized
-            or any(token in normalized for token in cls._REQUEST_SHAPE_TOKENS)
-            or len((user_text or "").strip().split()) >= 4
-        )
-        if not request_like:
+        if cls._looks_like_contextual_followup(normalized):
             return False
 
-        return True
+        if any(token in normalized for token in cls._OFF_TOPIC_SCOPE_TOKENS):
+            return True
+
+        if any(token in normalized for token in cls._GENERAL_KNOWLEDGE_REQUEST_TOKENS):
+            return True
+
+        if route.intent.value in {"DOUBT", "AMBIGUOUS"} and len(normalized.split()) >= 5:
+            return True
+
+        return False
+
+    @classmethod
+    def _looks_like_contextual_followup(cls, normalized: str) -> bool:
+        if not normalized:
+            return False
+        if any(token in normalized for token in cls._OFF_TOPIC_SCOPE_TOKENS):
+            return False
+        if any(token in normalized for token in cls._GENERAL_KNOWLEDGE_REQUEST_TOKENS):
+            return False
+        return any(token in normalized for token in cls._CONTEXTUAL_FOLLOWUP_TOKENS)
+
+    @staticmethod
+    def _scope_redirect_reply() -> str:
+        return (
+            "Me encantaria ayudarte, pero NutriBot esta enfocado en nutricion, salud y bienestar.\n\n"
+            "Si quieres, puedo ayudarte con menus, recetas saludables, porciones, hidratacion, "
+            "actividad fisica, habitos o dudas de alimentacion segun tu perfil."
+        )
 
     @staticmethod
     def append_continuity_tip(

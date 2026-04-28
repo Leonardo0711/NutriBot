@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from typing import Optional
 
 from sqlalchemy import bindparam, text
@@ -147,6 +148,20 @@ class MessageOrchestratorService:
         txt = (ctx.normalized.text or "").strip().lower()
         if not txt:
             return False
+
+        # Respuestas cortas tipo encuesta/formulario ("5", "si", "no") no
+        # deben pagar extractor de perfil. Si hay encuesta pendiente, el
+        # GenericChatHandler la procesa antes del LLM.
+        if len(txt.split()) <= 2:
+            txt_ascii = "".join(
+                ch for ch in unicodedata.normalize("NFKD", txt)
+                if not unicodedata.combining(ch)
+            )
+            compact = re.sub(r"[^a-z0-9]+", "", txt_ascii)
+            if compact.isdigit() or compact in {
+                "si", "no", "ok", "ya", "yap", "listo", "claro", "dale"
+            }:
+                return False
 
         # Durante onboarding: correr EXCEPTO para intents triviales que no
         # aportan datos de perfil (saludos, confirmaciones, negaciones, skips).

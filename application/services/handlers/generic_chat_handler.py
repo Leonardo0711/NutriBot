@@ -31,6 +31,26 @@ class GenericChatHandler(BaseHandler):
     async def handle(self, ctx: TurnContext) -> Tuple[Optional[BotReply], Optional[str]]:
         reply = None
         mode_before_survey = ctx.state.mode
+        survey_allowed = self._state_service.can_offer_survey(ctx.state)
+
+        # Si hay encuesta/formulario pendiente, intentar consumir el turno antes
+        # de pagar LLM. Si es una consulta real, SurveyService devuelve None y
+        # el chat normal continua.
+        early_survey_reply, early_survey_interrupted, early_survey_engaged = await self._survey_flow.compose_reply_with_survey(
+            session=ctx.session,
+            state=ctx.state,
+            normalized=ctx.normalized,
+            user=ctx.user,
+            reply=None,
+            new_response_id=None,
+            onboarding_interception_happened=ctx.onboarding_interception_happened,
+            is_requesting_survey=ctx.is_requesting_survey and survey_allowed,
+            projected_interactions_count=0,
+            schedule_separate_message=self._schedule_separate_message,
+        )
+        if early_survey_engaged and early_survey_reply and early_survey_reply.text:
+            final_bot_reply = self._llm_reply.sanitize_final_reply(early_survey_reply, ctx.user.id)
+            return final_bot_reply, None
 
         # 1. Profile Interception (faltan datos, quiere personalizar, etc.)
         reply, int_happened = await self._profile_interception.maybe_start_personalization_flow(
@@ -112,7 +132,6 @@ class GenericChatHandler(BaseHandler):
 
         # 5. Inyeccion de Encuestas (Satisfaccion, etc.)
         # Respetar ventana de snooze antes de ofrecer encuesta
-        survey_allowed = self._state_service.can_offer_survey(ctx.state)
         final_bot_reply, survey_was_interrupted, survey_engaged_turn = await self._survey_flow.compose_reply_with_survey(
             session=ctx.session,
             state=ctx.state,
@@ -173,4 +192,3 @@ class GenericChatHandler(BaseHandler):
             logger.info("Scheduling separate message for user %s, key=%s", uid, idemp_key)
         except Exception as e:
             logger.error("Error scheduling separate message: %s", e)
-
