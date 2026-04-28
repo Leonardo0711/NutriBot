@@ -112,7 +112,8 @@ class SemanticEntityResolver:
 
         try:
             # 1. Caché
-            cached = await self._try_cache(session, field_code, normalized)
+            async with session.begin_nested():
+                cached = await self._try_cache(session, field_code, normalized)
             if cached:
                 elapsed = int((perf_counter() - started) * 1000)
                 await self._log_match(session, usuario_id, incoming_message_id,
@@ -120,16 +121,18 @@ class SemanticEntityResolver:
                 return cached
 
             # 2. Alias exacto
-            alias = await self._try_alias_exact(session, entity_type, normalized)
-            if alias:
-                await self._save_cache(session, field_code, raw_value, normalized, entity_type, alias)
-                elapsed = int((perf_counter() - started) * 1000)
-                await self._log_match(session, usuario_id, incoming_message_id,
-                                      field_code, raw_value, normalized, alias, elapsed)
-                return alias
+            async with session.begin_nested():
+                alias = await self._try_alias_exact(session, entity_type, normalized)
+                if alias:
+                    await self._save_cache(session, field_code, raw_value, normalized, entity_type, alias)
+                    elapsed = int((perf_counter() - started) * 1000)
+                    await self._log_match(session, usuario_id, incoming_message_id,
+                                          field_code, raw_value, normalized, alias, elapsed)
+                    return alias
 
             # 3. Catálogo exacto
-            catalog_exact = await self._try_catalog_exact(session, entity_type, normalized)
+            async with session.begin_nested():
+                catalog_exact = await self._try_catalog_exact(session, entity_type, normalized)
             if catalog_exact:
                 await self._save_cache(session, field_code, raw_value, normalized, entity_type, catalog_exact)
                 elapsed = int((perf_counter() - started) * 1000)
@@ -138,33 +141,36 @@ class SemanticEntityResolver:
                 return catalog_exact
 
             # 4. Trigram (fuzzy)
-            trgm = await self._try_trgm(session, entity_type, normalized)
-            if trgm and not trgm.ambiguous and trgm.confidence >= self.MIN_TRGM_SCORE:
-                await self._save_cache(session, field_code, raw_value, normalized, entity_type, trgm)
-                elapsed = int((perf_counter() - started) * 1000)
-                await self._log_match(session, usuario_id, incoming_message_id,
-                                      field_code, raw_value, normalized, trgm, elapsed)
-                return trgm
+            async with session.begin_nested():
+                trgm = await self._try_trgm(session, entity_type, normalized)
+                if trgm and not trgm.ambiguous and trgm.confidence >= self.MIN_TRGM_SCORE:
+                    await self._save_cache(session, field_code, raw_value, normalized, entity_type, trgm)
+                    elapsed = int((perf_counter() - started) * 1000)
+                    await self._log_match(session, usuario_id, incoming_message_id,
+                                          field_code, raw_value, normalized, trgm, elapsed)
+                    return trgm
 
             # 5. Vector (pgvector)
-            vector = await self._try_vector(session, entity_type, normalized)
-            if vector and not vector.ambiguous and vector.confidence >= self.MIN_VECTOR_SCORE:
-                await self._save_cache(session, field_code, raw_value, normalized, entity_type, vector)
-                elapsed = int((perf_counter() - started) * 1000)
-                await self._log_match(session, usuario_id, incoming_message_id,
-                                      field_code, raw_value, normalized, vector, elapsed)
-                return vector
+            async with session.begin_nested():
+                vector = await self._try_vector(session, entity_type, normalized)
+                if vector and not vector.ambiguous and vector.confidence >= self.MIN_VECTOR_SCORE:
+                    await self._save_cache(session, field_code, raw_value, normalized, entity_type, vector)
+                    elapsed = int((perf_counter() - started) * 1000)
+                    await self._log_match(session, usuario_id, incoming_message_id,
+                                          field_code, raw_value, normalized, vector, elapsed)
+                    return vector
 
             # 6. Sin match claro → marcar ambiguo y encolar revisión
             best = trgm or vector
             if best:
-                best.ambiguous = True
-                elapsed = int((perf_counter() - started) * 1000)
-                await self._enqueue_review(session, usuario_id, incoming_message_id,
-                                           field_code, raw_value, normalized, best, "AMBIGUOUS_LOW_CONFIDENCE")
-                await self._log_match(session, usuario_id, incoming_message_id,
-                                      field_code, raw_value, normalized, best, elapsed)
-                return best
+                async with session.begin_nested():
+                    best.ambiguous = True
+                    elapsed = int((perf_counter() - started) * 1000)
+                    await self._enqueue_review(session, usuario_id, incoming_message_id,
+                                               field_code, raw_value, normalized, best, "AMBIGUOUS_LOW_CONFIDENCE")
+                    await self._log_match(session, usuario_id, incoming_message_id,
+                                          field_code, raw_value, normalized, best, elapsed)
+                    return best
 
             unresolved = SemanticResolution(
                 entity_type=entity_type,
@@ -174,9 +180,10 @@ class SemanticEntityResolver:
                 strategy="NO_MATCH",
                 ambiguous=True,
             )
-            elapsed = int((perf_counter() - started) * 1000)
-            await self._enqueue_review(session, usuario_id, incoming_message_id,
-                                       field_code, raw_value, normalized, unresolved, "NO_MATCH")
+            async with session.begin_nested():
+                elapsed = int((perf_counter() - started) * 1000)
+                await self._enqueue_review(session, usuario_id, incoming_message_id,
+                                           field_code, raw_value, normalized, unresolved, "NO_MATCH")
             return unresolved
 
         except Exception:

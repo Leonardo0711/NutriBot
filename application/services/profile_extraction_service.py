@@ -48,6 +48,8 @@ class ProfileExtractionService:
         "mae_textura_dieta": "TEXTURA_DIETA",
         "mae_objetivo_nutricional": "OBJETIVO_NUTRICIONAL",
         "mae_distrito": "DISTRITO",
+        "mae_provincia": "PROVINCIA",
+        "mae_departamento": "DEPARTAMENTO",
     }
 
     ABSURD_TERMS = {
@@ -252,13 +254,13 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
     # (pattern, prompt de aclaracion interactivo)
     _AMBIGUOUS_CONDITIONS = [
-        ("diabetes", "te refieres a tipo 1, tipo 2 o gestacional?"),
-        ("anemia", "te refieres a algun tipo especifico de anemia?"),
-        ("tiroides", "te refieres a hipotiroidismo o hipertiroidismo?"),
-        ("problemas hormonales", "te refieres a algun problema hormonal especifico?"),
-        ("colon", "te refieres a colitis, colon irritable u otra condicion similar?"),
-        ("presion", "te refieres a hipertension o hipotension?"),
-        ("gastritis", "te refieres a gastritis aguda o cronica?"),
+        ("diabetes", "te refieres a tipo 1, tipo 2 o gestacional? (Si no lo sabes, no te preocupes, solo dime 'no' o 'solo diabetes')"),
+        ("anemia", "te refieres a algún tipo específico de anemia (ej: ferropénica)? Si no lo sabes, no hay problema, solo dime 'no' o 'solo anemia'"),
+        ("tiroides", "te refieres a hipotiroidismo o hipertiroidismo? Si no estás seguro, solo dime 'no' o 'solo tiroides'"),
+        ("problemas hormonales", "te refieres a algún problema hormonal específico? Si no lo sabes, dime 'solo eso' o 'no se'"),
+        ("colon", "te refieres a colitis, colon irritable u otra condición? Si no sabes, solo dime 'no'"),
+        ("presion", "te refieres a hipertensión o hipotensión? Si no estás seguro, solo dime 'no'"),
+        ("gastritis", "te refieres a gastritis aguda o crónica? Si no lo sabes, solo dime 'no'"),
     ]
 
     # Palabras que indican especificacion suficiente (no necesitan aclaracion)
@@ -1791,9 +1793,16 @@ REGLAS CRITICAS DE ROBUSTEZ:
         # El escudo de tÃ©rminos absurdos sigue siendo Ãºtil para filtrado rÃ¡pido pre-BD
         return any(term in txt for term in cls.ABSURD_TERMS)
 
-    def _check_health_ambiguity(self, value: str) -> Optional[str]:
-        """Retorna un prompt de aclaracion si el valor es ambiguo, None si esta completo."""
+    def _check_health_ambiguity(self, value: str, user_text: str = "") -> Optional[str]:
+        """Retorna un prompt de aclaracion si el valor es ambiguo, None si esta completo o el usuario se rehusa."""
         norm = value.lower().strip()
+        text_norm = user_text.lower()
+
+        # Si el usuario explícitamente dice que no sabe o que solo es eso, no insistimos
+        refusal_markers = ["no se", "no lo se", "no estoy segur", "solo ", "solamente", "no hay", "no, ", "omitir", "saltar", "no importa", "ya te dije", "ya te", "asi nomas", "así nomás", "así nomas", "nada mas", "nada más"]
+        if any(marker in text_norm for marker in refusal_markers):
+            return None
+
         for pattern, prompt in self._AMBIGUOUS_CONDITIONS:
             if pattern in norm:
                 has_specificity = any(marker in norm for marker in self._SPECIFICITY_MARKERS)
@@ -2193,7 +2202,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
                 # Validacion clinica generica: detectar datos ambiguos
                 if col_name in {"enfermedades", "alergias"}:
-                    prompt = self._check_health_ambiguity(str(clean_val))
+                    prompt = self._check_health_ambiguity(str(clean_val), user_text)
                     if prompt:
                         meta_flags["needs_health_clarification"] = True
                         meta_flags["clarification_target"] = col_name
@@ -2724,6 +2733,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     field_code,
                     value,
                     now_peru,
+                    status="confirmed" if distrito_id else "unresolved",
                     resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
                     resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
                     resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
@@ -2733,6 +2743,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     ),
                 )
                 continue
+
 
             if field_code == "enfermedades":
                 op = self._infer_list_operation(
@@ -2801,7 +2812,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     session,
                     "mae_provincia",
                     str(value),
-                    code_column="codigo_provincia",
+                    code_column="codigo",
                     minimum_score=0.88,
                     usuario_id=usuario_id,
                     semantic_field_code="provincia",
@@ -2818,6 +2829,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                         {"pid": provincia_id},
                     )
                     canonical_value = str(prov_row.scalar() or value)
+                    perfil_updates["provincia_id"] = provincia_id
                 else:
                     unresolved_by_field["provincia"] = [str(value)]
                 await self._log_profile_extraction(
@@ -2826,6 +2838,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
                     field_code,
                     canonical_value,
                     now_peru,
+                    status="confirmed" if provincia_id else "unresolved",
                     resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
                     resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
                     resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
@@ -2837,7 +2850,45 @@ REGLAS CRITICAS DE ROBUSTEZ:
                 continue
 
             if field_code == "region":
-                await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)
+                region_id = await self._resolve_master_id(
+                    session,
+                    "mae_departamento",
+                    str(value),
+                    code_column="codigo",
+                    minimum_score=0.88,
+                    usuario_id=usuario_id,
+                    semantic_field_code="region",
+                )
+                cache_meta = await self._semantic_cache_peek(
+                    session,
+                    field_code="region",
+                    raw_query=str(value),
+                )
+                canonical_value = str(value)
+                if region_id:
+                    dep_row = await session.execute(
+                        text("SELECT nombre FROM mae_departamento WHERE id = :rid"),
+                        {"rid": region_id},
+                    )
+                    canonical_value = str(dep_row.scalar() or value)
+                    perfil_updates["departamento_id"] = region_id
+                else:
+                    unresolved_by_field["region"] = [str(value)]
+                await self._log_profile_extraction(
+                    session,
+                    usuario_id,
+                    field_code,
+                    canonical_value,
+                    now_peru,
+                    status="confirmed" if region_id else "unresolved",
+                    resolved_entity_type=(cache_meta or {}).get("entidad_tipo_resuelta"),
+                    resolved_entity_code=(cache_meta or {}).get("entidad_codigo_resuelto"),
+                    resolution_strategy=(cache_meta or {}).get("estrategia_usada"),
+                    semantic_cache_hit=bool(
+                        (cache_meta or {}).get("estrategia_usada")
+                        and str((cache_meta or {}).get("estrategia_usada")).upper().startswith("CACHE")
+                    ),
+                )
                 continue
 
             await self._log_profile_extraction(session, usuario_id, field_code, value, now_peru)

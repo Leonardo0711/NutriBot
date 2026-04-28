@@ -123,6 +123,30 @@ NUTRITION_KEYWORDS = [
     "frutas", "verduras", "vegetales",
 ]
 
+# Verbos/frases de cocina que indican pregunta nutricional/culinaria
+COOKING_VERB_PATTERNS = [
+    "como se prepara", "como preparo", "como se hace", "como hago",
+    "como se cocina", "como cocino", "como se hornea", "como horneo",
+    "como se frie", "como frio", "como se guisa",
+    "como preparar", "como cocinar", "como hacer",
+    "preparacion de", "preparacion del",
+    "modo de preparacion", "forma de preparar",
+    "ingredientes de", "ingredientes del", "ingredientes para",
+]
+
+# Alimentos comunes — si el texto menciona un alimento, es señal nutricional
+FOOD_NOUNS = [
+    "pollo", "carne", "res", "cerdo", "pescado", "atun", "salmon",
+    "arroz", "pasta", "fideos", "quinua", "quinoa", "avena",
+    "ensalada", "sopa", "crema", "guiso", "estofado", "ceviche",
+    "lomo", "saltado", "aji", "causa", "tamal", "humita",
+    "papa", "camote", "yuca", "platano", "lentejas", "frijoles",
+    "huevo", "leche", "queso", "yogurt", "pan", "torta",
+    "fruta", "jugo", "batido", "smoothie",
+    "mani", "cacahuate", "almendra", "nuez",
+    "porcion", "porciones", "plato", "platillo",
+]
+
 PERSONALIZATION_ACTION_ROOTS = (
     "actualiz",
     "personaliz",
@@ -308,9 +332,12 @@ def classify_message(
 
     # 10. DUDA/PREGUNTA
     if norm.endswith("?") or any(_contains_keyword(norm, dw) for dw in DOUBT_WORDS):
-        # Verificar si es pregunta nutricional
-        has_nutrition = any(_contains_keyword(norm, nk) for nk in NUTRITION_KEYWORDS)
-        if has_nutrition:
+        # Verificar si es pregunta nutricional — múltiples señales semánticas
+        has_nutrition_kw = any(_contains_keyword(norm, nk) for nk in NUTRITION_KEYWORDS)
+        has_cooking_verb = any(cv in norm for cv in COOKING_VERB_PATTERNS)
+        has_food_noun = any(_contains_keyword(norm, fn) for fn in FOOD_NOUNS)
+        # "como se prepara el pollo al mani" → cooking verb + food noun = nutricional
+        if has_nutrition_kw or has_cooking_verb or (has_food_noun and len(norm.split()) >= 4):
             return RouteResult(Intent.NUTRITION_QUERY, 0.85, reason="Pregunta nutricional detectada")
         return RouteResult(Intent.DOUBT, 0.7, reason="Pregunta genérica detectada")
 
@@ -675,12 +702,24 @@ def _clean_profile_value(value: str) -> str:
 def _detect_nutrition_intent(norm: str) -> Optional[RouteResult]:
     """Detecta si el mensaje es una consulta nutricional."""
     match_count = sum(1 for nk in NUTRITION_KEYWORDS if _contains_keyword(norm, nk))
+    has_cooking_verb = any(cv in norm for cv in COOKING_VERB_PATTERNS)
+    food_count = sum(1 for fn in FOOD_NOUNS if _contains_keyword(norm, fn))
 
-    if match_count >= 2:
+    # Patrón de cocina explícito: "como se prepara X"
+    if has_cooking_verb:
+        return RouteResult(
+            Intent.RECOMMENDATION_REQUEST,
+            0.90,
+            reason="Consulta de preparación/cocina detectada",
+        )
+
+    # Múltiples señales nutricionales (keywords o alimentos)
+    total_signals = match_count + food_count
+    if total_signals >= 2:
         return RouteResult(
             Intent.RECOMMENDATION_REQUEST,
             0.9,
-            reason=f"Múltiples keywords nutricionales ({match_count})",
+            reason=f"Múltiples señales nutricionales ({match_count} kw + {food_count} food)",
         )
     elif match_count == 1:
         short_request_markers = ("receta", "menu", "dieta", "desayuno", "almuerzo", "cena", "comida")
@@ -696,6 +735,13 @@ def _detect_nutrition_intent(norm: str) -> Optional[RouteResult]:
                 0.75,
                 reason="Keyword nutricional con contexto",
             )
+    elif food_count >= 1 and len(norm.split()) >= 3:
+        # Menciona un alimento con contexto suficiente: "dame pollo al mani"
+        return RouteResult(
+            Intent.RECOMMENDATION_REQUEST,
+            0.80,
+            reason=f"Alimento mencionado con contexto ({food_count} alimentos)",
+        )
 
     return None
 

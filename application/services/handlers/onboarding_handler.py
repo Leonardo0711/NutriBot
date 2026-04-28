@@ -26,6 +26,7 @@ class OnboardingHandler(BaseHandler):
             session=ctx.session,
             treat_ninguna_as_missing=False,
             pre_extracted_intent=ctx.profile_intent,
+            route_intent=ctx.route.intent.value if ctx.route else None,
             history=ctx.history,
         )
 

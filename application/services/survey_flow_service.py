@@ -59,10 +59,12 @@ class SurveyFlowService:
                 original_mode == SessionMode.COLLECTING_USABILITY.value
                 or is_requesting_survey
                 or original_awaiting == consent_state
-                or survey_now_active
-            ):
+            ) and not (reply and not is_requesting_survey and original_mode != SessionMode.COLLECTING_USABILITY.value):
+                # Si el usuario ya estaba en la encuesta o la pidió, la mostramos directo.
                 final_bot_reply = addon
             elif reply:
+                # Si el bot generó una respuesta útil (y la encuesta acaba de dispararse),
+                # respondemos primero a lo que el usuario preguntó, y enviamos la encuesta después.
                 final_bot_reply = BotReply(text=reply, content_type="text")
                 addon_seed = new_response_id or normalized.provider_message_id
                 await schedule_separate_message(

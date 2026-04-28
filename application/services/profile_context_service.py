@@ -91,13 +91,13 @@ class ProfileContextService:
             )
             if bmi_value:
                 if snapshot.measurements.age_years and snapshot.measurements.age_years < 18:
-                    bmi_text = f"{bmi_value} (referencial, menor de 18 anos)"
+                    bmi_text = f"{bmi_value} (referencial, menor de 18 años)"
                 else:
                     category = self._nutrition_assessment.classify_bmi_adult(bmi_value)
                     bmi_text = f"{bmi_value} ({category})"
 
         parts = [
-            f"Edad: {self._fmt(snapshot.measurements.age_years, ' anos')}",
+            f"Edad: {self._fmt(snapshot.measurements.age_years, ' años')}",
             f"Peso: {self._fmt(snapshot.measurements.weight_kg, 'kg')}",
             f"Talla: {self._fmt_height(snapshot.measurements.height_cm)}",
             f"IMC referencial: {bmi_text}",
@@ -110,13 +110,15 @@ class ProfileContextService:
         ]
         profile_text = "\n[DATOS ACTUALES DEL PERFIL DEL USUARIO]\n- " + "\n- ".join(parts)
         summary = (
-            f"- Edad: {self._fmt(snapshot.measurements.age_years, ' anos')}\n"
+            f"- Edad: {self._fmt(snapshot.measurements.age_years, ' años')}\n"
             f"- Peso: {self._fmt(snapshot.measurements.weight_kg, 'kg')}\n"
             f"- Talla: {self._fmt_height(snapshot.measurements.height_cm)}\n"
             f"- IMC referencial: {bmi_text}\n"
+            f"- Tipo de dieta: {self._fmt(snapshot.health.diet_type)}\n"
             f"- Alergias: {self._fmt_list(snapshot.health.allergies)}\n"
             f"- Enfermedades: {self._fmt_list(snapshot.health.diseases)}\n"
-            f"- Objetivo: {self._fmt(snapshot.health.nutrition_goal)}"
+            f"- Objetivo: {self._fmt(snapshot.health.nutrition_goal)}\n"
+            f"- Ubicación: {self._fmt(snapshot.location.region)}, {self._fmt(snapshot.location.province)}, {self._fmt(snapshot.location.district)}"
         )
         return profile_text, summary
 
@@ -129,7 +131,7 @@ class ProfileContextService:
             age_txt = age if age is not None else "?"
             weight_txt = weight if weight is not None else "?"
             h_str = self._fmt_height(height) if height is not None else "?"
-            citation += f" que tienes {age_txt} anos, pesas {weight_txt}kg y mides {h_str}"
+            citation += f" que tienes {age_txt} años, pesas {weight_txt}kg y mides {h_str}"
             if weight and height:
                 bmi = self._nutrition_assessment.compute_bmi(weight, height)
                 if bmi:

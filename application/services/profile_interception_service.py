@@ -25,9 +25,25 @@ class ProfileInterceptionService:
         self._state_service = state_service
 
     @staticmethod
+    def _get_field_examples(step_name: str) -> str:
+        low = (step_name or "").lower()
+        if "dieta" in low:
+            return " (ej: omnívora, vegetariana, vegana, etc.)"
+        if "objetivo" in low:
+            return " (ej: bajar de peso, ganar masa muscular, comer más sano, etc.)"
+        if "alergia" in low or "intolerancia" in low:
+            return " (ej: al maní, a la lactosa, al gluten, etc.)"
+        if "enfermedad" in low:
+            return " (ej: diabetes, hipertensión, colesterol alto, etc.)"
+        if "restriccion" in low or "restricción" in low:
+            return " (ej: no como frituras, evito el azúcar, ayuno intermitente, etc.)"
+        return ""
+
+    @staticmethod
     def _ask_single_field(step_name: str) -> str:
         clean = (step_name or "un dato de tu perfil").strip()
-        return f"Perfecto. Vamos paso a paso 😊\n\nPrimero, me compartes {clean}?"
+        examples = ProfileInterceptionService._get_field_examples(clean)
+        return f"Perfecto. Vamos paso a paso 😊\n\nPrimero, me compartes {clean}{examples}?"
 
     async def maybe_start_personalization_flow(
         self,
@@ -96,9 +112,10 @@ class ProfileInterceptionService:
                 return reply, onboarding_interception_happened
 
             step_name = self._profile_context.human_step_label(missing_step)
+            examples = self._get_field_examples(step_name)
             reply = (
                 "Claro, te ayudo con eso 😊\n\n"
-                f"Para afinar la recomendacion, primero me compartes {step_name}?"
+                f"Para afinar la recomendacion, primero me compartes {step_name}{examples}?"
             )
             self._state_service.set_onboarding_in_progress(state, missing_step)
             return reply, True

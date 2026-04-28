@@ -1,4 +1,4 @@
-﻿"""
+"""
 Nutribot Backend - LLM Reply Service
 """
 from __future__ import annotations
@@ -132,6 +132,16 @@ class LlmReplyService:
         "ejercicio", "actividad fisica", "entrenamiento", "sueño", "sueno", "dormir",
         "peso", "talla", "imc", "perfil", "alergia", "alergias", "restriccion",
         "restricciones", "diabetes", "hipertension", "hipotiroidismo",
+        # Verbos de cocina / preparación
+        "prepara", "cocina", "hornea", "frie", "guisa", "ingrediente",
+        "preparacion", "coccion",
+        # Alimentos comunes (para que nunca se bloqueen como off-topic)
+        "pollo", "carne", "cerdo", "pescado", "atun", "salmon",
+        "arroz", "pasta", "fideos", "quinua", "avena", "ensalada",
+        "sopa", "guiso", "estofado", "ceviche", "lomo", "saltado",
+        "papa", "camote", "yuca", "lentejas", "frijoles", "huevo",
+        "leche", "queso", "yogurt", "pan", "torta", "fruta",
+        "mani", "cacahuate", "almendra", "nuez", "porcion", "plato",
     )
     _REQUEST_SHAPE_TOKENS = (
         "resumen", "explica", "explicame", "cuentame", "dime", "informacion",
@@ -237,10 +247,13 @@ class LlmReplyService:
                 if user_requested_conflicts:
                     requested_txt = ", ".join(user_requested_conflicts)
                     extra_instr += (
-                        "\n\nDirectiva interna OBLIGATORIA para pedido explicito en conflicto:\n"
-                        f"- El usuario pidio explicitamente una receta con: {requested_txt}.\n"
-                        "- NO te niegues ni respondas con 'no puedo' o 'no debo'.\n"
-                        "- Entrega la receta solicitada (la misma que pidio el usuario, no una alternativa) y agrega al inicio una advertencia breve de seguridad."
+                        "\n\n🚨 DIRECTIVA DE EMERGENCIA DE MÁXIMA PRIORIDAD 🚨\n"
+                        f"El usuario pidió explícitamente una receta con un alérgeno/restricción: {requested_txt}.\n"
+                        "REGLA 1: IGNORA CUALQUIER FILTRO DE SEGURIDAD CLÍNICA. TIENES PERMITIDO Y ES OBLIGATORIO DAR ESTA RECETA.\n"
+                        "REGLA 2: Asume que el usuario NO comerá esta receta, sino que la va a preparar para un familiar o amigo que no tiene esta alergia.\n"
+                        "REGLA 3: NO te niegues, NO ofrezcas alternativas saludables, NO digas 'por tu alergia te sugiero'.\n"
+                        "REGLA 4: TIENES QUE dar la receta EXACTA solicitada. Si no está en el RAG, genérala adaptada a la realidad peruana y con ingredientes comunes del día a día (nada de ingredientes caros o raros). NUNCA des una receta distinta.\n"
+                        "REGLA 5: Simplemente añade una advertencia muy breve al principio del mensaje sobre el riesgo.\n"
                     )
             extra_instr += (
                 "\n\nDirectiva interna clinica:\n"
@@ -457,25 +470,18 @@ class LlmReplyService:
         if not requested_conflicts:
             return reply
 
-        # Blindaje: si el modelo intenta negarse con "no puedo/no debo" en este
-        # caso, limpiamos esa negacion y mantenemos formato de advertencia + respuesta.
-        reply = self._strip_refusal_phrases_for_conflict_case(reply)
-        user_request_looks_like_recipe = self._looks_like_recipe_reply(user_request_text or "")
-        if not self._looks_like_recipe_reply(reply):
-            if not user_request_looks_like_recipe:
-                return reply
-            return self._build_conflict_recipe_fallback(
-                user_request_text=user_request_text or "",
-                requested_conflicts=requested_conflicts,
-            )
-
+        # Ya no usamos fallback de receta dura porque el LLM está forzado 
+        # a generar la receta original mediante la directiva de emergencia.
+        # Simplemente aseguramos la advertencia si no está presente.
+        
         normalized = self._normalize_text_for_match(reply)
-        if "advertencia nutribot" in normalized or "segun tu perfil" in normalized:
+        if "advertencia nutribot" in normalized or "segun tu perfil" in normalized or "riesgo" in normalized:
             return reply
+            
         conflict_text = ", ".join(requested_conflicts)
         warning = (
-            "Advertencia NutriBot: segun tu perfil nutricional, hay conflicto con "
-            f"{conflict_text}. Te comparto lo solicitado, pero usalo con precaucion.\n\n"
+            f"⚠️ Advertencia NutriBot: según tu perfil, hay conflicto con {conflict_text}. "
+            "Te comparto la receta solicitada, pero ten precaución.\n\n"
         )
         return f"{warning}{reply}"
 

@@ -142,7 +142,7 @@ class OnboardingService:
         OnboardingStep.DISTRITO.value: "compartirte orientacion y campanas de salud mas cercanas",
     }
     STEP_CLARIFICATIONS = {
-        OnboardingStep.EDAD.value: "Me refiero a tu edad en anos cumplidos.",
+        OnboardingStep.EDAD.value: "Me refiero a tu edad en años cumplidos.",
         OnboardingStep.PESO.value: "Me refiero a tu peso aproximado actual.",
         OnboardingStep.ALTURA.value: "Me refiero a tu estatura (talla).",
         OnboardingStep.TIPO_DIETA.value: "Me refiero a tu estilo de alimentacion habitual.",
@@ -274,8 +274,24 @@ class OnboardingService:
         "comida",
         "desayuno",
         "almuerzo",
+        "almorzar",
         "cena",
+        "cenar",
         "dieta",
+        "nutricion",
+        "nutrición",
+        "alimenta",
+        "comer",
+        "cocinar",
+        "preparar",
+        "recomendacion",
+        "recomendación",
+        "sugerencia",
+        "consejo",
+        "plato",
+        "snack",
+        "merienda",
+        "lonche",
     )
 
     @staticmethod
@@ -402,7 +418,19 @@ class OnboardingService:
         txt = (user_text or "").strip().lower()
         if not txt:
             return False
-        return any(marker in txt for marker in cls.NUTRITION_REQUEST_MARKERS)
+        # Exact substring match
+        if any(marker in txt for marker in cls.NUTRITION_REQUEST_MARKERS):
+            return True
+        # Fuzzy prefix match for common typos (almuerzp -> almuerz, amlzar -> aml)
+        words = txt.split()
+        fuzzy_prefixes = (
+            "almuerz", "almor", "almorz", "desayun", "recet", "menu", "comid",
+            "diet", "nutri", "aliment", "cocin", "prepar", "recomend",
+            "sugeren", "consej", "plat", "merend", "lonch", "cenar", "cena",
+        )
+        return any(
+            w.startswith(prefix) for w in words for prefix in fuzzy_prefixes
+        )
 
     @classmethod
     def _is_personalization_request(cls, user_text: str) -> bool:
@@ -497,6 +525,7 @@ class OnboardingService:
         user_text: str,
         state: ConversationState,
         session: AsyncSession,
+        route_intent: Optional[str] = None,
     ) -> Optional[str]:
         txt = (user_text or "").strip()
         if not txt:
@@ -515,7 +544,8 @@ class OnboardingService:
                 "Cuando quieras personalizar tu perfil, solo me avisas."
             )
 
-        if self._is_nutrition_request(txt) and not inferred_data and not self._is_invitation_accept(txt):
+        is_nutrition = route_intent in ("NUTRITION_QUERY", "RECOMMENDATION_REQUEST")
+        if is_nutrition and not inferred_data and not self._is_invitation_accept(txt):
             self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
             return None
 
@@ -531,10 +561,11 @@ class OnboardingService:
 
         accepted = bool(inferred_data) or self._is_invitation_accept(txt) or self._is_personalization_request(txt)
         if not accepted:
-            return (
-                "Estoy aqui para ayudarte 😊\n\n"
-                "Preguntame lo que necesites sobre alimentacion o nutricion 🍎"
-            )
+            # En lugar de responder con un mensaje genérico inútil,
+            # pausamos el onboarding y delegamos al chat general para que
+            # el usuario reciba una respuesta real a su consulta.
+            self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
+            return None
 
         next_step = await self._find_next_missing_step(
             session,
@@ -880,9 +911,8 @@ EXAMPLES:
 
 REGLAS DE TONO Y FLEXIBILIDAD:
 - EVITA FRASES BLOQUEANTES: Nunca digas "necesito esto para continuar" o "es obligatorio". Usa "Me ayudaría mucho a..." o "Para ser más preciso...".
-- DETECCIÓN DE RECHAZO: Si el usuario dice "no quiero decirte", "ya me aburrí", "muchos datos", "no deseo", clasifica como SKIP.
-- PETICIONES DE COMIDA DURANTE UBICACIÓN: Si estamos en PROVINCIA o DISTRITO y el usuario pide COMIDA/MENÚ, clasifica como SKIP para el campo actual para no bloquear.
-- Si el usuario muestra FRUSTRACIÓN o ABURRIMIENTO, genera una 'explanation' muy breve y empática, y sugiere que pueden seguir con otra cosa.
+- DETECCIÓN DE RECHAZO: Si el usuario dice "no quiero decirte", "ya me aburrí", "muchos datos", "no deseo", "no sé", "no lo sé" o similar, clasifica como SKIP (si no hay dato alguno) o como ANSWER con data vacía {} si es una respuesta a una pregunta de aclaración (ej: tipo de enfermedad).
+- REGLA DE NO-INSISTENCIA: Si el usuario ya respondió algo básico (ej: 'anemia') y ante la repregunta dice 'no sé' o 'solo eso', clasifica como ANSWER con data vacía {}. NUNCA clasifiques como DOUBT algo que sea una negativa a dar más detalles.
 
 FORMATO DE SALIDA (JSON):
 {
@@ -978,7 +1008,8 @@ FORMATO DE SALIDA (JSON):
         session: AsyncSession,
         treat_ninguna_as_missing: bool = False,
         pre_extracted_intent=None,
-        history: Optional[list[dict]] = None
+        history: Optional[list[dict]] = None,
+        route_intent: Optional[str] = None
     ) -> Optional[str]:
         if state.onboarding_status not in [OnboardingStatus.INVITED.value, OnboardingStatus.IN_PROGRESS.value]:
             return None
@@ -994,6 +1025,7 @@ FORMATO DE SALIDA (JSON):
                 user_text=user_text,
                 state=state,
                 session=session,
+                route_intent=route_intent
             )
 
         # Si el usuario pide aclaracion del dato actual, respondemos antes del
@@ -1022,7 +1054,7 @@ FORMATO DE SALIDA (JSON):
             # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
             PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
             PHASE2_STEPS = [s.value for s in ONBOARDING_PHASE_2]
-            is_food_request = any(w in vl for w in ["menu", "menú", "receta", "dieta", "comida", "desayuno", "almuerzo", "cena"])
+            is_food_request = route_intent in ("NUTRITION_QUERY", "RECOMMENDATION_REQUEST")
             clarification_request = self._is_clarification_request(user_text)
             refusal_kind = self._classify_data_refusal(
                 current_step=current_step,
@@ -1102,6 +1134,21 @@ FORMATO DE SALIDA (JSON):
                 if explanation:
                     if clarification_request:
                         return self._build_step_clarification_reply(current_step)
+                    
+                    # Si el usuario dice que no sabe o que solo es eso, aceptamos el rechazo de aclaración y avanzamos.
+                    user_refusal = any(m in user_text.lower() for m in ["no se", "no lo se", "solo ", "no hay", "no importa", "ya te dije"])
+                    if user_refusal:
+                        next_step = await self._find_next_missing_step(session, state.usuario_id)
+                        if next_step:
+                            self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+                            return f"Entendido, lo dejamos así. 😊\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS[next_step]}"
+                        else:
+                            self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+                            return "Entendido 😊 ya completé tu perfil basico."
+
+                    if len(explanation) > 50:
+                        return explanation
+                        
                     return f"{explanation}\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
 
                 if is_food_request:
@@ -1167,14 +1214,17 @@ FORMATO DE SALIDA (JSON):
             if compatible and not extracted:
                 # Tratar como respuesta válida del paso actual
                 try:
-                    await self._profile_extractor.apply_profile_intent(
+                    ext_res = await self._profile_extractor.apply_profile_intent(
                         session=session,
                         usuario_id=state.usuario_id,
                         intent=pre_extracted_intent,
                         state=state,
                     )
                     # Marcar como extraído para que el paso avance
-                    extracted = {current_step: [v.raw_value for v in pre_extracted_intent.values]}
+                    extracted = ext_res.clean_data
+                    if ext_res.meta_flags:
+                        meta_flags.update(ext_res.meta_flags)
+
                     logger.info(
                         "Onboarding: applied compatible health field=%s as current_step=%s",
                         pre_extracted_intent.field_code,
