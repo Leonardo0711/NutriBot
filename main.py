@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from infrastructure.db.connection import dispose_engine
 from infrastructure.redis.client import close_redis
 from interface.webhook_controller import router as webhook_router
+from interface.meta_webhook_controller import router as meta_webhook_router
 from di import container
 
 logging.basicConfig(
@@ -118,6 +119,7 @@ app = FastAPI(
 )
 
 app.include_router(webhook_router)
+app.include_router(meta_webhook_router)
 
 
 @app.get("/health")

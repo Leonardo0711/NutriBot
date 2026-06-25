@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     evolution_api_key: str = ""
     evolution_instance: str = "nutribot"
 
+    # --- Meta WhatsApp Cloud API ---
+    meta_verify_token: str = ""
+    meta_app_secret: str = ""
+
     # --- Workers ---
     inbox_poll_interval_seconds: float = 0.1
     outbox_poll_interval_seconds: float = 0.1

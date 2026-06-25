@@ -51,39 +51,8 @@ def _extract_message_fields(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.post("/webhook")
-async def receive_webhook(request: Request):
-    """
-    Ingestion ultra-rapida:
-    - autentica origen por secreto compartido
-    - valida forma minima del payload
-    - rate limit por IP y telefono
-    - persiste en incoming_messages con barrera UNIQUE final
-    """
+async def ingest_evolution_payload(payload: dict[str, Any], client_ip: str) -> dict[str, str]:
     settings = get_settings()
-    client_ip = request.client.host if request.client else "unknown"
-
-    if settings.webhook_secret:
-        incoming_secret = request.headers.get("X-Webhook-Secret", "")
-        if not compare_digest(incoming_secret, settings.webhook_secret):
-            logger.warning("Webhook rechazado por secret invalido ip=%s", client_ip)
-            raise HTTPException(status_code=401, detail="unauthorized")
-    else:
-        logger.warning(
-            "WEBHOOK_SECRET vacio: aceptando webhook sin autenticacion (modo temporal) ip=%s",
-            client_ip,
-        )
-
-    try:
-        payload = await request.json()
-    except Exception:
-        logger.warning("Webhook rechazado: JSON invalido ip=%s", client_ip)
-        raise HTTPException(status_code=400, detail="invalid_json")
-
-    if not isinstance(payload, dict):
-        logger.warning("Webhook rechazado: payload no es objeto ip=%s", client_ip)
-        raise HTTPException(status_code=400, detail="invalid_payload")
-
     fields = _extract_message_fields(payload)
     event = fields["event"]
     provider_message_id = fields["provider_message_id"]
@@ -193,3 +162,38 @@ async def receive_webhook(request: Request):
     )
     return {"status": "rate_limited" if rate_limited else "ok"}
 
+
+@router.post("/webhook")
+async def receive_webhook(request: Request):
+    """
+    Ingestion ultra-rapida:
+    - autentica origen por secreto compartido
+    - valida forma minima del payload
+    - rate limit por IP y telefono
+    - persiste en incoming_messages con barrera UNIQUE final
+    """
+    settings = get_settings()
+    client_ip = request.client.host if request.client else "unknown"
+
+    if settings.webhook_secret:
+        incoming_secret = request.headers.get("X-Webhook-Secret", "")
+        if not compare_digest(incoming_secret, settings.webhook_secret):
+            logger.warning("Webhook rechazado por secret invalido ip=%s", client_ip)
+            raise HTTPException(status_code=401, detail="unauthorized")
+    else:
+        logger.warning(
+            "WEBHOOK_SECRET vacio: aceptando webhook sin autenticacion (modo temporal) ip=%s",
+            client_ip,
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        logger.warning("Webhook rechazado: JSON invalido ip=%s", client_ip)
+        raise HTTPException(status_code=400, detail="invalid_json")
+
+    if not isinstance(payload, dict):
+        logger.warning("Webhook rechazado: payload no es objeto ip=%s", client_ip)
+        raise HTTPException(status_code=400, detail="invalid_payload")
+
+    return await ingest_evolution_payload(payload, client_ip)
