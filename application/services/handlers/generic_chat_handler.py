@@ -31,11 +31,11 @@ class GenericChatHandler(BaseHandler):
     async def handle(self, ctx: TurnContext) -> Tuple[Optional[BotReply], Optional[str]]:
         reply = None
         mode_before_survey = ctx.state.mode
-        survey_allowed = self._state_service.can_offer_survey(ctx.state)
 
         # Si hay encuesta/formulario pendiente, intentar consumir el turno antes
         # de pagar LLM. Si es una consulta real, SurveyService devuelve None y
         # el chat normal continua.
+        early_survey_allowed = self._state_service.can_offer_survey(ctx.state)
         early_survey_reply, early_survey_interrupted, early_survey_engaged = await self._survey_flow.compose_reply_with_survey(
             session=ctx.session,
             state=ctx.state,
@@ -44,7 +44,7 @@ class GenericChatHandler(BaseHandler):
             reply=None,
             new_response_id=None,
             onboarding_interception_happened=ctx.onboarding_interception_happened,
-            is_requesting_survey=ctx.is_requesting_survey and survey_allowed,
+            is_requesting_survey=ctx.is_requesting_survey and early_survey_allowed,
             projected_interactions_count=0,
             schedule_separate_message=self._schedule_separate_message,
         )
@@ -104,6 +104,10 @@ class GenericChatHandler(BaseHandler):
             and ctx.turn_kind == "NUTRITION_VALUE"
         )
         projected_interactions_count = ctx.state.meaningful_interactions_count + (1 if should_count_before_survey else 0)
+        survey_allowed = self._state_service.can_offer_survey(
+            ctx.state,
+            projected_interactions_count=projected_interactions_count,
+        )
 
         # Snooze de encuesta: si el usuario está actualizando perfil, posponer
         if ctx.turn_kind == "PROFILE_MAINTENANCE":

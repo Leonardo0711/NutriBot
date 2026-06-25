@@ -115,7 +115,7 @@ class ProfileInterceptionService:
             examples = self._get_field_examples(step_name)
             reply = (
                 "Claro, te ayudo con eso 😊\n\n"
-                f"Para afinar la recomendacion, primero me compartes {step_name}{examples}?"
+                f"Para afinar la recomendación, primero me compartes {step_name}{examples}?"
             )
             self._state_service.set_onboarding_in_progress(state, missing_step)
             return reply, True
@@ -123,14 +123,14 @@ class ProfileInterceptionService:
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola 😊 Soy NutriBot, tu asistente de nutricion de EsSalud.\n\n"
-                    "Estoy aqui para ayudarte con orientacion y recomendaciones de alimentacion saludable.\n\n"
-                    "Preguntame lo que necesites, estoy para ayudarte 🍎"
+                    "Hola 😊 Soy NutriBot, tu asistente de nutrición de EsSalud.\n\n"
+                    "Estoy aquí para ayudarte con orientación y recomendaciones de alimentación saludable.\n\n"
+                    "Pregúntame lo que necesites, estoy para ayudarte 🍎"
                 )
             else:
                 reply = (
                     "Hola de nuevo 😊\n\n"
-                    "Que gusto verte por aqui. ¿En que te puedo ayudar hoy? 🍏"
+                    "Qué gusto verte por aquí. ¿En qué te puedo ayudar hoy? 🍏"
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True

@@ -7,6 +7,7 @@ from datetime import timedelta
 from domain.entities import ConversationState
 from domain.value_objects import OnboardingStatus, OnboardingStep, SessionMode
 from domain.utils import get_now_peru
+from application.services.survey_policy import VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
 
 
 class ConversationStateService:
@@ -99,7 +100,7 @@ class ConversationStateService:
         self,
         state: ConversationState,
         reason: str = "PROFILE_MAINTENANCE",
-        additional_valid_turns: int = 5,
+        additional_valid_turns: int = VALID_NUTRITION_INTERACTIONS_FOR_SURVEY,
     ) -> None:
         """
         Pospone la encuesta de usabilidad porque el usuario está
@@ -113,13 +114,32 @@ class ConversationStateService:
         state.survey_updated_at = now
         self.bump_version(state)
 
-    def can_offer_survey(self, state: ConversationState) -> bool:
+    def can_offer_survey(
+        self,
+        state: ConversationState,
+        projected_interactions_count: int | None = None,
+    ) -> bool:
         """
         Verifica si el estado permite ofrecer una encuesta ahora.
         Si hay un snooze activo y no se ha alcanzado el umbral de interacciones, NO.
         """
+        effective_count = (
+            projected_interactions_count
+            if projected_interactions_count is not None
+            else state.meaningful_interactions_count
+        )
         if state.survey_next_eligible_count is not None:
-            if state.meaningful_interactions_count < state.survey_next_eligible_count:
+            stale_profile_snooze = (
+                state.survey_paused_reason == "PROFILE_MAINTENANCE"
+                and (
+                    state.survey_next_eligible_count - state.meaningful_interactions_count
+                    > VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
+                )
+            )
+            if effective_count < state.survey_next_eligible_count and not (
+                stale_profile_snooze
+                and effective_count >= VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
+            ):
                 return False
             # Umbral alcanzado → limpiar snooze
             state.survey_next_eligible_count = None

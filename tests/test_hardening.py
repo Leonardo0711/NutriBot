@@ -10,6 +10,7 @@ from application.services.conversation_memory_service import ConversationMemoryS
 from application.services.llm_reply_service import LlmReplyService
 from domain.context_builder import should_fetch_rag, try_fast_response
 from application.services.onboarding_service import OnboardingService
+from application.services.profile_intent_extractor_service import ProfileIntentExtractorService
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.profile_snapshot import ProfileHealth, ProfileLocation, ProfileMeasurements, ProfileSnapshot
 from domain.reply_objects import BotReply
@@ -54,6 +55,26 @@ class TestHardening:
         assert extractor._check_health_ambiguity("diabetes tipo 1") is None
         assert extractor._check_health_ambiguity("hipertension") is None
         assert extractor._check_health_ambiguity("hipotiroidismo") is None
+
+    def test_initial_diet_guidance_uses_basic_profile(self):
+        from application.services.nutrition_assessment_service import NutritionAssessmentService
+
+        snapshot = ProfileSnapshot(
+            user_id=1,
+            measurements=ProfileMeasurements(age_years=23, weight_kg=78, height_cm=171),
+            health=ProfileHealth(
+                diseases=("Anemia por deficiencia de hierro",),
+                nutrition_goal="BAJAR DE PESO",
+            ),
+            location=ProfileLocation(),
+        )
+
+        guidance = NutritionAssessmentService.build_initial_diet_guidance(snapshot)
+
+        assert guidance is not None
+        assert "Dieta sugerida" in guidance
+        assert "hipocalórica moderada" in guidance
+        assert "hierro" in guidance
 
     def test_encoding_no_mojibake(self):
         check_patterns = []
@@ -156,6 +177,19 @@ class TestHardening:
         route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
         assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "asu no puedo entonces?")
 
+    def test_location_helpers_reject_country_but_clean_callao(self):
+        assert OnboardingService._clean_location_candidate("mi ubicacion soy del callao") == "callao"
+        assert OnboardingService._clean_location_candidate("de peru") == "peru"
+        assert OnboardingService._is_country_level_location("Perú")
+        assert OnboardingService._looks_like_location_candidate("mi ubicacion soy del callao")
+
+    def test_profile_intent_fast_skips_health_detail_refusal(self):
+        extractor = ProfileIntentExtractorService.__new__(ProfileIntentExtractorService)
+        result = extractor._try_fast_numeric_or_clear("ahh no se que tipo de anemia sera", "enfermedades")
+        assert result is not None
+        assert not result.is_profile_update
+        assert result.source == "FAST_HEALTH_DETAIL_REFUSAL"
+
     def test_router_treats_coffee_followup_as_nutrition(self):
         route = classify_message(
             raw_text="asu pero tomo cafe todas las mananas no puedo entonces?",
@@ -179,7 +213,7 @@ class TestHardening:
         greeting_reply = try_fast_response(greeting)
         assert greeting_reply
         assert "NutriBot" in greeting_reply
-        assert "nutricion, salud y bienestar" in greeting_reply
+        assert "nutrición, salud y bienestar" in greeting_reply
 
         mixed = classify_message(
             raw_text="hola puedo comer arroz si tengo diabetes?",
@@ -189,6 +223,43 @@ class TestHardening:
             content_type="text",
         )
         assert mixed.intent != Intent.GREETING
+
+    @pytest.mark.asyncio
+    async def test_profile_update_data_bypasses_scope_redirect(self):
+        class DummyLLM:
+            async def generate_reply(self, **kwargs):
+                return "Listo, actualice tu provincia a Callao.", "resp-1"
+
+        service = LlmReplyService(
+            llm_service=DummyLLM(),
+            system_instructions="",
+            profile_context=SimpleNamespace(),
+        )
+        reply, _ = await service.generate_reply(
+            onboarding_interception_happened=False,
+            reply=None,
+            state_snapshot=ConversationState(usuario_id=1),
+            normalized=NormalizedMessage(
+                provider_message_id="m-location",
+                phone="+51999999999",
+                content_type=MessageType.TEXT,
+                text="mi ubicacion soy del callao",
+            ),
+            route=RouteResult(intent=Intent.AMBIGUOUS, confidence=0.3, reason="No se pudo clasificar"),
+            rag_text=None,
+            history=[],
+            profile_text="",
+            snapshot=ProfileSnapshot(
+                user_id=1,
+                measurements=ProfileMeasurements(),
+                health=ProfileHealth(),
+                location=ProfileLocation(),
+            ),
+            extracted_data={"provincia": "Callao"},
+            has_absurd_profile_claim=False,
+            is_asking_for_recommendation=False,
+        )
+        assert reply == "Listo, actualice tu provincia a Callao."
 
     def test_compact_memory_uses_summary_plus_recent_history(self):
         service = ConversationMemoryService()
@@ -306,7 +377,7 @@ class TestHardening:
         state = ConversationState(
             usuario_id=102,
             mode=SessionMode.ACTIVE_CHAT.value,
-            meaningful_interactions_count=4,
+            meaningful_interactions_count=0,
             usability_completion_pct=0,
         )
         normalized = NormalizedMessage(
@@ -329,12 +400,47 @@ class TestHardening:
             session=object(),
             state=state,
             normalized=normalized,
-            projected_interactions_count=4,
+            projected_interactions_count=1,
         )
 
         assert addon is None
         assert state.mode == SessionMode.ACTIVE_CHAT.value
         assert state.awaiting_question_code is None
+        assert state.meaningful_interactions_count == 0
+
+    @pytest.mark.asyncio
+    async def test_pending_survey_reprompts_after_valid_chat_threshold(self):
+        service = SurveyService(None, "dummy-model")
+        state = ConversationState(
+            usuario_id=103,
+            mode=SessionMode.ACTIVE_CHAT.value,
+            meaningful_interactions_count=1,
+            usability_completion_pct=0,
+        )
+        normalized = NormalizedMessage(
+            provider_message_id="m-menu",
+            phone="+51999999999",
+            content_type=MessageType.TEXT,
+            text="dame un menu saludable",
+        )
+
+        async def fake_load_active_progress(session, uid):
+            return SimpleNamespace(formulario_id=1, estado_actual="esperando_p6")
+
+        service._load_active_progress = fake_load_active_progress
+
+        addon = await service.process(
+            session=object(),
+            state=state,
+            normalized=normalized,
+            projected_interactions_count=2,
+        )
+
+        assert addon is not None
+        assert "retomamos la encuesta" in addon.text
+        assert "En una escala del 1 al 5" in addon.text
+        assert state.mode == SessionMode.COLLECTING_USABILITY.value
+        assert state.awaiting_question_code == "esperando_p6"
         assert state.meaningful_interactions_count == 0
 
     @pytest.mark.asyncio

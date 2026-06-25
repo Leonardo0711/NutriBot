@@ -87,6 +87,11 @@ class OnboardingService:
         OnboardingStep.PROVINCIA.value: "provincia",
         OnboardingStep.DISTRITO.value: "distrito",
     }
+    NUMERIC_FIELD_BY_STEP = {
+        OnboardingStep.EDAD.value: "edad",
+        OnboardingStep.PESO.value: "peso_kg",
+        OnboardingStep.ALTURA.value: "altura_cm",
+    }
     HEALTH_FALLBACK_SKIP_MARKERS = (
         "saltar",
         "paso",
@@ -121,35 +126,35 @@ class OnboardingService:
         OnboardingStep.EDAD.value: "tu edad",
         OnboardingStep.PESO.value: "tu peso",
         OnboardingStep.ALTURA.value: "tu talla (estatura)",
-        OnboardingStep.ALERGIAS.value: "si tienes alguna alergia o restriccion",
-        OnboardingStep.TIPO_DIETA.value: "si sigues algun tipo de dieta",
-        OnboardingStep.ENFERMEDADES.value: "si padeces alguna condicion de salud",
-        OnboardingStep.RESTRICCIONES.value: "si tienes alguna restriccion alimentaria",
+        OnboardingStep.ALERGIAS.value: "si tienes alguna alergia o restricción",
+        OnboardingStep.TIPO_DIETA.value: "si sigues algún tipo de dieta",
+        OnboardingStep.ENFERMEDADES.value: "si padeces alguna condición de salud",
+        OnboardingStep.RESTRICCIONES.value: "si tienes alguna restricción alimentaria",
         OnboardingStep.OBJETIVO.value: "tu objetivo nutricional",
         OnboardingStep.PROVINCIA.value: "la provincia donde te encuentras",
         OnboardingStep.DISTRITO.value: "tu distrito",
     }
     STEP_PURPOSES = {
-        OnboardingStep.EDAD.value: "ajustar recomendaciones segun tu etapa de vida",
-        OnboardingStep.PESO.value: "estimar porciones y energia diaria de forma mas precisa",
+        OnboardingStep.EDAD.value: "ajustar recomendaciones según tu etapa de vida",
+        OnboardingStep.PESO.value: "estimar porciones y energía diaria de forma más precisa",
         OnboardingStep.ALTURA.value: "calcular tu IMC referencial",
-        OnboardingStep.TIPO_DIETA.value: "sugerirte opciones que se adapten a tu estilo de alimentacion",
-        OnboardingStep.ALERGIAS.value: "evitar alimentos que te puedan hacer dano",
+        OnboardingStep.TIPO_DIETA.value: "sugerirte opciones que se adapten a tu estilo de alimentación",
+        OnboardingStep.ALERGIAS.value: "evitar alimentos que te puedan hacer daño",
         OnboardingStep.ENFERMEDADES.value: "adaptar recomendaciones con mayor seguridad",
         OnboardingStep.RESTRICCIONES.value: "respetar lo que prefieres evitar al comer",
-        OnboardingStep.OBJETIVO.value: "enfocar la orientacion en tu meta principal",
-        OnboardingStep.PROVINCIA.value: "compartirte orientacion y campanas de salud mas cercanas",
-        OnboardingStep.DISTRITO.value: "compartirte orientacion y campanas de salud mas cercanas",
+        OnboardingStep.OBJETIVO.value: "enfocar la orientación en tu meta principal",
+        OnboardingStep.PROVINCIA.value: "compartirte orientación y campañas de salud más cercanas",
+        OnboardingStep.DISTRITO.value: "compartirte orientación y campañas de salud más cercanas",
     }
     STEP_CLARIFICATIONS = {
         OnboardingStep.EDAD.value: "Me refiero a tu edad en años cumplidos.",
         OnboardingStep.PESO.value: "Me refiero a tu peso aproximado actual.",
         OnboardingStep.ALTURA.value: "Me refiero a tu estatura (talla).",
-        OnboardingStep.TIPO_DIETA.value: "Me refiero a tu estilo de alimentacion habitual.",
+        OnboardingStep.TIPO_DIETA.value: "Me refiero a tu estilo de alimentación habitual.",
         OnboardingStep.ALERGIAS.value: "Me refiero a alergias o intolerancias a alimentos.",
-        OnboardingStep.ENFERMEDADES.value: "Me refiero a condiciones de salud que influyen en tu alimentacion.",
-        OnboardingStep.RESTRICCIONES.value: "Me refiero a alimentos que evitas por salud, preferencia o religion.",
-        OnboardingStep.OBJETIVO.value: "Me refiero a tu meta principal con la alimentacion.",
+        OnboardingStep.ENFERMEDADES.value: "Me refiero a condiciones de salud que influyen en tu alimentación.",
+        OnboardingStep.RESTRICCIONES.value: "Me refiero a alimentos que evitas por salud, preferencia o religión.",
+        OnboardingStep.OBJETIVO.value: "Me refiero a tu meta principal con la alimentación.",
         OnboardingStep.PROVINCIA.value: "Me refiero a la provincia donde vives actualmente.",
         OnboardingStep.DISTRITO.value: "Me refiero al distrito donde vives actualmente.",
     }
@@ -157,11 +162,11 @@ class OnboardingService:
         OnboardingStep.EDAD.value: "23",
         OnboardingStep.PESO.value: "68 kg",
         OnboardingStep.ALTURA.value: "1.70 m o 170 cm",
-        OnboardingStep.TIPO_DIETA.value: "omnivora (comes de todo), vegetariana, vegana o ninguna",
-        OnboardingStep.ALERGIAS.value: "mani, mariscos, lactosa o ninguna",
-        OnboardingStep.ENFERMEDADES.value: "diabetes, hipertension, hipotiroidismo o ninguna",
+        OnboardingStep.TIPO_DIETA.value: "omnívora (comes de todo), vegetariana, vegana o ninguna",
+        OnboardingStep.ALERGIAS.value: "maní, mariscos, lactosa o ninguna",
+        OnboardingStep.ENFERMEDADES.value: "diabetes, hipertensión, hipotiroidismo o ninguna",
         OnboardingStep.RESTRICCIONES.value: "no como cerdo, sin gluten o ninguna",
-        OnboardingStep.OBJETIVO.value: "bajar peso, ganar masa muscular o mejorar habitos",
+        OnboardingStep.OBJETIVO.value: "bajar peso, ganar masa muscular o mejorar hábitos",
         OnboardingStep.PROVINCIA.value: "Lima",
         OnboardingStep.DISTRITO.value: "Miraflores",
     }
@@ -358,16 +363,115 @@ class OnboardingService:
         if current_step == OnboardingStep.PROVINCIA.value:
             return (
                 "Gracias por el dato 😊\n\n"
-                "No logre ubicar esa provincia en Peru. Me la repites con el nombre de una provincia?\n\n"
+                "No logré ubicar esa provincia en Perú. ¿Me la repites con el nombre de una provincia?\n\n"
                 "Ej: Lima, Arequipa, Cusco, Trujillo."
             )
         if current_step == OnboardingStep.DISTRITO.value:
             return (
                 "Gracias por el dato 😊\n\n"
-                "No logre ubicar ese distrito. Me lo repites con un distrito valido?\n\n"
+                "No logré ubicar ese distrito. ¿Me lo repites con un distrito válido?\n\n"
                 "Ej: Miraflores, San Miguel, Cayma, Wanchaq."
             )
-        return "No logre captar ese dato. Me lo repites, por favor?"
+        return "No logré captar ese dato. ¿Me lo repites, por favor?"
+
+    @classmethod
+    def _is_health_detail_refusal(cls, user_text: str) -> bool:
+        text = normalize_text(user_text or "")
+        if not text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "no se",
+                "no lo se",
+                "no se que tipo",
+                "no se cual",
+                "solo anemia",
+                "solo eso",
+                "eso nomas",
+                "nada mas",
+                "asi nomas",
+            )
+        )
+
+    @classmethod
+    def _clean_location_candidate(cls, user_text: str) -> str:
+        text = normalize_text(user_text or "")
+        text = re.sub(r"^(?:mi\s+)?ubicacion\s+(?:es|soy|estoy|queda|esta)?\s*", "", text).strip()
+        text = re.sub(r"^(?:yo\s+)?(?:soy|vivo|estoy|resido)\s+(?:en|de|del|la|el)?\s*", "", text).strip()
+        text = re.sub(r"^(?:de|del|en|la|el)\s+", "", text).strip()
+        text = re.sub(r"\s+", " ", text).strip(" .,:;")
+        return text
+
+    @classmethod
+    def _looks_like_location_candidate(cls, user_text: str) -> bool:
+        candidate = cls._clean_location_candidate(user_text)
+        if not candidate:
+            return False
+        if len(candidate.split()) > 5:
+            return False
+        text = normalize_text(user_text or "")
+        return bool(
+            text == candidate
+            or text.startswith(("de ", "del ", "en "))
+            or any(marker in text for marker in ("ubicacion", "vivo", "resido", "soy de", "soy del", "estoy en"))
+        )
+
+    @staticmethod
+    def _is_country_level_location(candidate: str) -> bool:
+        return normalize_text(candidate or "") in {"peru", "republica del peru"}
+
+    async def _try_handle_location_value(
+        self,
+        *,
+        current_step: str,
+        user_text: str,
+        session: AsyncSession,
+        state: ConversationState,
+        is_food_request: bool,
+    ) -> Optional[str]:
+        if current_step not in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value):
+            return None
+        if is_food_request or not self._looks_like_location_candidate(user_text):
+            return None
+
+        candidate = self._clean_location_candidate(user_text)
+        if self._is_country_level_location(candidate):
+            return self._build_location_retry_reply(current_step)
+
+        extracted, fallback_prompt = await self._extract_semantic_step_fallback(
+            current_step=current_step,
+            user_text=candidate,
+            session=session,
+            usuario_id=state.usuario_id,
+            is_food_request=False,
+        )
+        if fallback_prompt:
+            return fallback_prompt
+        if not extracted:
+            return self._build_location_retry_reply(current_step)
+
+        active_phase = self._phase_for_step(current_step)
+        phase_steps = [s for s in active_phase if s != OnboardingStep.INVITACION]
+        current_idx = -1
+        for i, step in enumerate(phase_steps):
+            if step.value == current_step:
+                current_idx = i
+                break
+        updated_cols = list(extracted.keys())
+        next_step = await self._find_next_missing_step(
+            session,
+            state.usuario_id,
+            start_from_idx=current_idx + 1,
+            ignore_cols=updated_cols,
+            phase=phase_steps,
+        )
+        if next_step:
+            self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+            return f"¡Perfecto! Ya anoté esos detalles. ✍️\n\n{ONBOARDING_QUESTIONS[next_step]}"
+
+        self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+        return await self._build_phase1_completion_message(session, state.usuario_id)
 
     def _extract_numeric_step_fallback(self, current_step: Optional[str], user_text: str) -> dict:
         """Rescate deterministico para respuestas numericas cortas durante onboarding."""
@@ -574,11 +678,11 @@ class OnboardingService:
         )
         if next_step is None:
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-            return "Ya tengo tu perfil basico completo 😊 ¿En que te ayudo hoy?"
+            return "Ya tengo tu perfil básico completo 😊 ¿En qué te ayudo hoy?"
 
         self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
         if inferred_data:
-            return f"Perfecto, ya registre ese dato.\n\n{ONBOARDING_QUESTIONS[next_step]}"
+            return f"Perfecto, ya registré ese dato.\n\n{ONBOARDING_QUESTIONS[next_step]}"
         return f"Genial 😊 vamos paso a paso.\n\n{ONBOARDING_QUESTIONS[next_step]}"
 
     def _looks_like_valid_health_negative(self, step: Optional[str], user_text: str) -> bool:
@@ -725,8 +829,15 @@ class OnboardingService:
             )
             if bmi_msg:
                 completion_msg += f"\n\n{bmi_msg}"
+            diet_msg = (
+                self._nutrition_assessment.build_initial_diet_guidance(snapshot)
+                if snapshot
+                else None
+            )
+            if diet_msg:
+                completion_msg += f"\n\n{diet_msg}"
         except Exception as e:
-            logger.warning("No se pudo calcular IMC al completar Phase 1: %s", e)
+            logger.warning("No se pudo armar orientacion inicial al completar Phase 1: %s", e)
         completion_msg += (
             "\n\nSi quieres, luego completamos más datos poquito a poco para personalizar aún más tus orientaciones 🍏."
         )
@@ -780,8 +891,8 @@ class OnboardingService:
             question = ONBOARDING_QUESTIONS.get(current_step, "")
             return (
                 {},
-                "Gracias por contarmelo 😊 Ese dato no parece una alergia o intolerancia alimentaria valida.\n\n"
-                "¿Podrias indicarme una alergia/intolerancia real (por ejemplo: mani, lactosa, mariscos) o decir *ninguna*?"
+                "Gracias por contármelo 😊 Ese dato no parece una alergia o intolerancia alimentaria válida.\n\n"
+                "¿Podrías indicarme una alergia/intolerancia real (por ejemplo: maní, lactosa, mariscos) o decir *ninguna*?"
                 f"\n\n{question}",
             )
 
@@ -1001,6 +1112,61 @@ FORMATO DE SALIDA (JSON):
         """Lee el perfil en formato de dominio V3 (sin proyección legacy)."""
         return await self._profile_reader.fetch_snapshot(session, uid)
 
+    async def _advance_if_numeric_step_already_completed(
+        self,
+        session: AsyncSession,
+        state: ConversationState,
+        current_step: Optional[str],
+        *,
+        treat_ninguna_as_missing: bool = False,
+    ) -> Optional[str]:
+        field_code = self.NUMERIC_FIELD_BY_STEP.get(current_step or "")
+        if not field_code:
+            return current_step
+
+        snapshot = await self._get_profile_snapshot(session, state.usuario_id)
+        if not snapshot:
+            return current_step
+
+        value = snapshot.value_for_step(field_code)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return current_step
+
+        active_phase = self._phase_for_step(current_step)
+        phase_steps = [s for s in active_phase if s != OnboardingStep.INVITACION]
+        current_idx = next(
+            (i for i, step in enumerate(phase_steps) if step.value == current_step),
+            -1,
+        )
+        if current_idx < 0:
+            return current_step
+
+        next_step = await self._find_next_missing_step(
+            session,
+            state.usuario_id,
+            treat_ninguna_as_missing=treat_ninguna_as_missing,
+            start_from_idx=current_idx + 1,
+            phase=phase_steps,
+        )
+        if next_step:
+            logger.info(
+                "Onboarding self-heal: user=%s step=%s already has %s; advancing to %s",
+                state.usuario_id,
+                current_step,
+                field_code,
+                next_step,
+            )
+            self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+            return next_step
+
+        logger.info(
+            "Onboarding self-heal: user=%s step=%s already completed; closing onboarding",
+            state.usuario_id,
+            current_step,
+        )
+        self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+        return None
+
     async def advance_flow(
         self,
         user_text: str,
@@ -1028,10 +1194,40 @@ FORMATO DE SALIDA (JSON):
                 route_intent=route_intent
             )
 
+        current_step = await self._advance_if_numeric_step_already_completed(
+            session,
+            state,
+            current_step,
+            treat_ninguna_as_missing=treat_ninguna_as_missing,
+        )
+        if not current_step:
+            return None
+
         # Si el usuario pide aclaracion del dato actual, respondemos antes del
         # Switchboard para evitar desvio al chat general.
         if current_step and self._is_clarification_request(user_text):
             return self._build_step_clarification_reply(current_step)
+
+        if current_step == OnboardingStep.ENFERMEDADES.value and self._is_health_detail_refusal(user_text):
+            snapshot = await self._get_profile_snapshot(session, state.usuario_id)
+            existing_health = snapshot.value_for_step("enfermedades") if snapshot else None
+            if existing_health:
+                phase_steps = [s for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
+                current_idx = next(
+                    (i for i, step in enumerate(phase_steps) if step.value == current_step),
+                    -1,
+                )
+                next_step = await self._find_next_missing_step(
+                    session,
+                    state.usuario_id,
+                    start_from_idx=current_idx + 1,
+                    phase=phase_steps,
+                )
+                if next_step:
+                    self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
+                    return f"Entendido, lo dejamos como anemia general por ahora. 😊\n\n{ONBOARDING_QUESTIONS[next_step]}"
+                self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+                return await self._build_phase1_completion_message(session, state.usuario_id)
 
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
@@ -1077,6 +1273,16 @@ FORMATO DE SALIDA (JSON):
             
             # REGLA DE ORO PARA UBICACIÓN (Provincia/Distrito):
             # Si en esta etapa cambia de tema o no desea compartir ubicación, NO bloquear el chat.
+            location_reply = await self._try_handle_location_value(
+                current_step=current_step,
+                user_text=user_text,
+                session=session,
+                state=state,
+                is_food_request=is_food_request,
+            )
+            if location_reply is not None:
+                return location_reply
+
             if current_step in (OnboardingStep.PROVINCIA.value, OnboardingStep.DISTRITO.value) and (
                 intent in ("DOUBT", "SKIP") or is_food_request
             ):
@@ -1105,7 +1311,7 @@ FORMATO DE SALIDA (JSON):
                     purpose = self._purpose_for_step(current_step)
                     return (
                         "Te ayudo con eso 🍏\n\n"
-                        f"Para afinar la recomendacion, me ayuda confirmar {missing_label} para {purpose}.\n\n"
+                        f"Para afinar la recomendación, me ayuda confirmar {missing_label} para {purpose}.\n\n"
                         f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
                     )
                 intent = "ANSWER"
@@ -1144,7 +1350,7 @@ FORMATO DE SALIDA (JSON):
                             return f"Entendido, lo dejamos así. 😊\n\nSigamos con este dato:\n\n{ONBOARDING_QUESTIONS[next_step]}"
                         else:
                             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-                            return "Entendido 😊 ya completé tu perfil basico."
+                            return "Entendido 😊 ya completé tu perfil básico."
 
                     if len(explanation) > 50:
                         return explanation
@@ -1154,7 +1360,7 @@ FORMATO DE SALIDA (JSON):
                 if is_food_request:
                     campo_lindo = self.FIELD_LABELS.get(current_step, f"tu {current_step}")
                     return (
-                        f"Para darte una recomendacion mas precisa, primero confirmame {campo_lindo}.\n\n"
+                        f"Para darte una recomendación más precisa, primero confírmame {campo_lindo}.\n\n"
                         f"{ONBOARDING_QUESTIONS.get(current_step, '')}"
                     ).strip()
 
@@ -1293,8 +1499,8 @@ FORMATO DE SALIDA (JSON):
                     )
 
                 return (
-                    "No logre captar ese dato 😅\n\n"
-                    f"Me lo repites asi de simple:\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
+                    "No logré captar ese dato 😅\n\n"
+                    f"¿Me lo repites así de simple?\n\n{ONBOARDING_QUESTIONS.get(current_step, '')}"
                 )
             elif intent == "SKIP" and not skip_already_applied:
                 await self._mark_field_as_skipped(session, state.usuario_id, current_step)

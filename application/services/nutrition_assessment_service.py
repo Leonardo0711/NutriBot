@@ -69,6 +69,61 @@ class NutritionAssessmentService:
         )
 
     @staticmethod
+    def build_initial_diet_guidance(snapshot: ProfileSnapshot) -> Optional[str]:
+        """Orientación breve de dieta al completar el perfil básico."""
+        if not snapshot:
+            return None
+
+        age = snapshot.measurements.age_years
+        weight = snapshot.measurements.weight_kg
+        height = snapshot.measurements.height_cm
+        goal = (snapshot.health.nutrition_goal or "").lower()
+        diseases_text = " ".join(snapshot.health.diseases).lower()
+        restrictions = tuple(snapshot.health.allergies) + tuple(snapshot.health.food_restrictions)
+
+        focus = (
+            "una alimentación equilibrada tipo plato saludable: "
+            "1/2 plato de verduras, 1/4 de proteína magra y 1/4 de carbohidrato saludable"
+        )
+
+        bmi = NutritionAssessmentService.compute_bmi(weight, height) if weight and height else None
+        if age is not None and age < 18:
+            focus = (
+                "una alimentación variada y suficiente para tu etapa de crecimiento, "
+                "con evaluación personalizada si deseas ajustar peso o composición corporal"
+            )
+        elif "bajar" in goal or "perder" in goal or (bmi is not None and bmi >= 25):
+            focus = (
+                "una dieta hipocalórica moderada y equilibrada, con porciones controladas, "
+                "más verduras, proteína magra y carbohidratos integrales en cantidades medidas"
+            )
+        elif "ganar" in goal or "masa" in goal or (bmi is not None and bmi < 18.5):
+            focus = (
+                "una dieta con suficiente energía y proteína, repartida en comidas completas, "
+                "para favorecer ganancia de masa de forma progresiva"
+            )
+        elif "diabetes" in diseases_text:
+            focus = (
+                "una dieta equilibrada con control de carbohidratos, evitando bebidas azucaradas "
+                "y priorizando menestras, verduras y granos integrales"
+            )
+
+        notes: list[str] = []
+        if "diabetes" in diseases_text and "carbohidratos" not in focus:
+            notes.append("controlar carbohidratos y evitar bebidas azucaradas")
+        if "hipertension" in diseases_text or "hipertensión" in diseases_text or "presion" in diseases_text or "presión" in diseases_text:
+            notes.append("reducir sal y productos ultraprocesados")
+        if "anemia" in diseases_text:
+            notes.append("incluir alimentos ricos en hierro junto con vitamina C")
+        if restrictions:
+            notes.append("evitar tus alergias o restricciones registradas")
+
+        guidance = f"🍽️ *Dieta sugerida*: por ahora te conviene seguir {focus}."
+        if notes:
+            guidance += "\nAdemás, considera: " + "; ".join(notes[:3]) + "."
+        return guidance
+
+    @staticmethod
     def build_referential_message_from_flat(profile_flat: dict) -> Optional[str]:
         """Construye mensaje referencial directamente desde un dict de perfil plano."""
         weight = profile_flat.get("peso_kg")

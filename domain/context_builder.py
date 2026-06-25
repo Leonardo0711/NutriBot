@@ -253,13 +253,13 @@ def build_llm_context(
 FAST_RESPONSES = {
     Intent.GREETING: [
         (
-            "Hola, soy NutriBot. Que gusto leerte. "
-            "Estoy aqui para acompanarte con nutricion, salud y bienestar: "
-            "menus, recetas, porciones, habitos y recomendaciones segun tu perfil."
+            "Hola, soy NutriBot. Qué gusto leerte. "
+            "Estoy aquí para acompañarte con nutrición, salud y bienestar: "
+            "menús, recetas, porciones, hábitos y recomendaciones según tu perfil."
         ),
         (
             "Hola, soy NutriBot. Me alegra saludarte. "
-            "Puedo ayudarte con nutricion, salud y bienestar de forma simple y personalizada."
+            "Puedo ayudarte con nutrición, salud y bienestar de forma simple y personalizada."
         ),
     ],
     Intent.CONFIRMATION: [
@@ -268,11 +268,11 @@ FAST_RESPONSES = {
     ],
     Intent.DENIAL: [
         "Entendido.",
-        "Ok, lo dejamos asi.",
+        "Ok, lo dejamos así.",
     ],
     Intent.SMALL_TALK: [
-        "Te leo. Si es sobre nutricion o bienestar, cuentame.",
-        "Dime nomas, te ayudo con nutricion y bienestar.",
+        "Te leo. Si es sobre nutrición o bienestar, cuéntame.",
+        "Dime nomás, te ayudo con nutrición y bienestar.",
     ],
     Intent.SKIP: [
         "¡Sin problema! 😊 Lo dejamos para otro momento. Si quieres continuar después, solo dime.",

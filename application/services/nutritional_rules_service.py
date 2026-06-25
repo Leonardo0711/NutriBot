@@ -400,7 +400,7 @@ class NutritionalRulesService:
                 parts.append(f"Restricciones sugeridas: {', '.join(suggested)}")
 
         parts.append(
-            "IMPORTANTE: Esta informacion es orientacion basada en reglas clinicas. "
+            "IMPORTANTE: Esta información es orientación basada en reglas clínicas. "
             "El usuario puede estar preguntando para familiares u otras personas. "
             "Nunca restrinjas ni rechaces un pedido; si hay un conflicto con su perfil, "
             "incluye una advertencia breve al inicio y luego responde normalmente."

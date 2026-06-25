@@ -11,6 +11,7 @@ from domain.router import Intent
 from application.services.handlers.base_handler import BaseHandler
 from application.services.profile_extraction_service import ProfileExtractionService
 from application.services.profile_context_service import ProfileContextService
+from application.services.profile_read_service import ProfileReadService
 
 
 logger = logging.getLogger(__name__)
@@ -22,10 +23,32 @@ class ProfileUpdateHandler(BaseHandler):
         profile_extractor: ProfileExtractionService,
         profile_context: ProfileContextService,
         fallback_handler: BaseHandler,
+        profile_reader: ProfileReadService | None = None,
     ):
         self._profile_extractor = profile_extractor
         self._profile_context = profile_context
         self._fallback_handler = fallback_handler
+        self._profile_reader = profile_reader or ProfileReadService()
+
+    async def _refresh_profile_context(self, ctx: TurnContext) -> None:
+        """Mantiene el turno alineado con los datos recién guardados."""
+        try:
+            snapshot = await self._profile_reader.fetch_snapshot(ctx.session, ctx.user.id)
+        except Exception:
+            logger.warning("ProfileUpdateHandler: no se pudo refrescar el perfil del turno", exc_info=True)
+            return
+
+        if not snapshot:
+            return
+
+        profile_text, summary = self._profile_context.build_prompt_and_summary(snapshot)
+        nutritional_rules = getattr(ctx, "nutritional_rules_text", None)
+        if nutritional_rules:
+            profile_text = f"{profile_text}\n\n{nutritional_rules}"
+
+        ctx.snapshot = snapshot
+        ctx.profile_text = profile_text
+        ctx.summary = summary
 
     async def handle(self, ctx: TurnContext) -> Tuple[Optional[BotReply], Optional[str]]:
         # Detector de absurdos para bloquear cosas locas
@@ -69,6 +92,9 @@ class ProfileUpdateHandler(BaseHandler):
                         ),
                         content_type="text",
                     ), None
+
+            if extracted_data:
+                await self._refresh_profile_context(ctx)
 
             # Continuar al fallback para generar respuesta contextual
             return await self._fallback_handler.handle(ctx)
@@ -116,6 +142,7 @@ class ProfileUpdateHandler(BaseHandler):
 
             if extracted_data:
                 logger.info("Real-time profile update user=%s: %s", ctx.user.id, extracted_data)
+                await self._refresh_profile_context(ctx)
 
             # Bloqueo interactivo si hay duda médica
             if meta_flags.get("needs_health_clarification"):

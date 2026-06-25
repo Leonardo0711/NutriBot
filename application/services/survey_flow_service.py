@@ -6,6 +6,7 @@ from __future__ import annotations
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.reply_objects import BotReply
 from domain.value_objects import SessionMode
+from application.services.survey_policy import VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
 
 
 class SurveyFlowService:
@@ -34,7 +35,11 @@ class SurveyFlowService:
             and original_mode == SessionMode.ACTIVE_CHAT.value
             and is_requesting_survey
         )
-        survey_projected_count = max(5, projected_interactions_count) if force_survey_start else projected_interactions_count
+        survey_projected_count = (
+            max(VALID_NUTRITION_INTERACTIONS_FOR_SURVEY, projected_interactions_count)
+            if force_survey_start
+            else projected_interactions_count
+        )
 
         addon = await self._survey_service.process(
             session,

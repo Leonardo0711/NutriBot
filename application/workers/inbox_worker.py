@@ -283,7 +283,7 @@ class InboxWorker:
                         safe_reply = str((payload_json or {}).get("body") or "").strip()
 
                     if not safe_reply:
-                        safe_reply = "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
+                        safe_reply = "Perdón, tuve un problema interno. Intenta nuevamente en unos segundos."
                         outbound_type = "text"
                         payload_json = None
                         logger.warning(

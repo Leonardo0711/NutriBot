@@ -1,6 +1,6 @@
 """
-Nutribot Backend â€” ProfileExtractionService
-Servicio de AplicaciÃ³n Orientado a Objetos para extraer perfil.
+Nutribot Backend - ProfileExtractionService
+Servicio de Aplicación Orientado a Objetos para extraer perfil.
 """
 import asyncio
 import json
@@ -236,7 +236,7 @@ class ProfileExtractionService:
         "region": ("region", "departamento"),
     }
 
-    EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intenciÃ³n del usuario para Nutribot.
+    EXTRACTION_SYSTEM_PROMPT = """Eres un Analista de Datos experto en COMPRENDER la intención del usuario para Nutribot.
 REGLAS CRITICAS DE ROBUSTEZ:
 1. PRIORIDAD ABSOLUTA: Si el usuario menciona un dato (ej: 'mido 1.71', 'mi peso es 80'), EXTRAELO siempre.
 2. ESCUDO CONTRA DUDAS: Si el usuario hace una PREGUNTA o expresa confusion (ej: 'Como?', 'Por que?', 'Que es?', 'no entiendo', '??', 'que alergias?'), NO extraigas nada. Devuelve un objeto vacio {}.
@@ -1749,11 +1749,11 @@ REGLAS CRITICAS DE ROBUSTEZ:
         value: str, 
         threshold: float = 0.7
     ) -> Optional[Dict[str, Any]]:
-        """Busca similitud semÃ¡ntica en el catÃ¡logo maestro."""
+        """Busca similitud semántica en el catálogo maestro."""
         if not value or value.upper() == "NINGUNA":
             return None
 
-        # Generar embedding del valor extraÃ­do
+        # Generar embedding del valor extraído
         try:
             resp = await self._openai_client.embeddings.create(
                 input=[value],
@@ -1761,10 +1761,10 @@ REGLAS CRITICAS DE ROBUSTEZ:
             )
             embedding = resp.data[0].embedding
         except Exception as e:
-            logger.error(f"Error generando embedding para validaciÃ³n: {e}")
+            logger.error(f"Error generando embedding para validación: {e}")
             return None
 
-        # BÃºsqueda vectorial en BD
+        # Búsqueda vectorial en BD
         query = text("""
             SELECT id, nombre, categoria, (embedding <=> :emb) as distancia
             FROM catalogo_maestro
@@ -1790,7 +1790,7 @@ REGLAS CRITICAS DE ROBUSTEZ:
         txt = cls._normalize_text(value)
         if not txt:
             return False
-        # El escudo de tÃ©rminos absurdos sigue siendo Ãºtil para filtrado rÃ¡pido pre-BD
+        # El escudo de términos absurdos sigue siendo útil para filtrado rápido pre-BD
         return any(term in txt for term in cls.ABSURD_TERMS)
 
     def _check_health_ambiguity(self, value: str, user_text: str = "") -> Optional[str]:
@@ -2081,18 +2081,18 @@ REGLAS CRITICAS DE ROBUSTEZ:
             
             if field == "enfermedades":
                 meta_flags["clarification_prompt"] = (
-                    f"Mencionaste '{claims_str}', pero no reconozco esa condicion medica en mi registro clinico. "
-                    "Podrias confirmarme si esta bien escrito o de que se trata exactamente?"
+                    f"Mencionaste '{claims_str}', pero no reconozco esa condición médica en mi registro clínico. "
+                    "¿Podrías confirmarme si está bien escrito o de qué se trata exactamente?"
                 )
             elif field in ("alergias", "restricciones_alimentarias"):
                 meta_flags["clarification_prompt"] = (
-                    f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alergenos. "
-                    "Podrias confirmarme si esta bien escrito?"
+                    f"Mencionaste '{claims_str}', pero no logro identificarlo en mi registro de alimentos/alérgenos. "
+                    "¿Podrías confirmarme si está bien escrito?"
                 )
             else:
                 meta_flags["clarification_prompt"] = (
-                    f"Mencionaste '{claims_str}', pero no logre reconocer ese termino. "
-                    "Podrias aclararlo un poco?"
+                    f"Mencionaste '{claims_str}', pero no logré reconocer ese término. "
+                    "¿Podrías aclararlo un poco?"
                 )
             break # Ask for clarification on the first one we find
 
@@ -2906,12 +2906,12 @@ REGLAS CRITICAS DE ROBUSTEZ:
 
         logger.info("ProfileExtractionService: Data staged for user=%s in V3 schema", usuario_id)
 
-        # â”€â”€ Trigger: Generar/actualizar orden dietÃ©tica basada en reglas â”€â”€
-        # Solo si se actualizaron enfermedades o restricciones y el servicio estÃ¡ disponible.
+        # Trigger: generar/actualizar orden dietética basada en reglas.
+        # Solo si se actualizaron enfermedades o restricciones y el servicio está disponible.
         _disease_or_restriction_fields = {"enfermedades", "alergias", "restricciones_alimentarias"}
         if self._nutritional_rules and _disease_or_restriction_fields.intersection(updates.keys()):
             try:
-                # Esta generacion es aditiva; si falla no debe invalidar el turno principal.
+                # Esta generación es aditiva; si falla no debe invalidar el turno principal.
                 async with session.begin_nested():
                     await self._nutritional_rules.generate_or_update_dietary_order(session, usuario_id)
             except Exception as e:

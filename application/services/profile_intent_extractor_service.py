@@ -209,6 +209,27 @@ class ProfileIntentExtractorService:
                     source="FAST_NUMERIC",
                 )
 
+            if canonical == "enfermedades" and any(
+                marker in norm
+                for marker in (
+                    "no se",
+                    "no lo se",
+                    "no se que tipo",
+                    "no se cual",
+                    "solo anemia",
+                    "solo eso",
+                    "eso nomas",
+                    "nada mas",
+                    "asi nomas",
+                )
+            ):
+                return ProfileIntentResult(
+                    is_profile_update=False,
+                    confidence=1.0,
+                    evidence_text=text,
+                    source="FAST_HEALTH_DETAIL_REFUSAL",
+                )
+
         return None
 
     def _try_fast_sexo(self, text: str, expected_field: str) -> ProfileIntentResult | None:

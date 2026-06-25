@@ -20,6 +20,7 @@ from domain.entities import ConversationState, NormalizedMessage
 from domain.reply_objects import BotReply
 from domain.value_objects import MessageType, OnboardingStatus
 from domain.utils import get_now_peru
+from application.services.survey_policy import VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,11 @@ FORM_QUESTIONS: dict[str, str] = {
     "esperando_p5": "En una escala del 1 al 5, desde su experiencia, ¿mis respuestas le fueron útiles, apropiadas e informativas?",
     "esperando_p6": "En una escala del 1 al 5, ¿percibió que traté de forma adecuada cualquier error o equivocación?",
     "esperando_p7": "En una escala del 1 al 5, ¿le resultó fácil y sencillo interactuar conmigo?",
-    "esperando_audio_optin": "Por si acaso: tambien tengo modo audio 🎧.",
-    "esperando_audio_prueba": "Por si acaso: tambien tengo modo audio 🎧.",
+    "esperando_audio_optin": "Por si acaso: también tengo modo audio 🎧.",
+    "esperando_audio_prueba": "Por si acaso: también tengo modo audio 🎧.",
     "esperando_p8": "En una escala del 1 al 5, ¿considera que mis respuestas en audio fueron claras?",
-    "esperando_imagen_optin": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
-    "esperando_imagen_prueba": "Por si acaso: tambien tengo reconocimiento de imagen 🖼️.",
+    "esperando_imagen_optin": "Por si acaso: también tengo reconocimiento de imagen 🖼️.",
+    "esperando_imagen_prueba": "Por si acaso: también tengo reconocimiento de imagen 🖼️.",
     "esperando_p9": "En una escala del 1 al 5, ¿logré interpretar correctamente lo que muestra la imagen que me enviaste?",
     "esperando_p10": "En una escala del 1 al 5, ¿me enfoqué únicamente en responderte preguntas sobre nutrición?",
     "esperando_nps": "En una escala del 1 al 10, ¿qué tan probable es que me recomiendes a un amigo o familiar?",
@@ -100,7 +101,7 @@ class SurveyResponseExtractor:
     _NO_WORDS = re.compile(r"(?:\b|^)(no|nop|nopi|noo|nooo|nel|rechazo|no autorizo)(?:\b|$)", re.IGNORECASE)
     _WHY_PATTERN = re.compile(r"(para que|por que|que uso|que finalidad)", re.IGNORECASE)
     _YES_SHORT_EXACT = {
-        "si", "sÃ­", "sii", "sip", "yes", "claro", "dale", "ok", "okay", "de acuerdo",
+        "si", "sí", "sii", "sip", "yes", "claro", "dale", "ok", "okay", "de acuerdo",
         "acepto", "autorizo", "si claro", "si normal", "si acepto", "si autorizo",
         "ya", "yap", "yaa",
     }
@@ -109,7 +110,7 @@ class SurveyResponseExtractor:
         "no gracias", "no deseo", "no quiero",
     }
     _ACK_TOKENS = {
-        "si", "sÃ­", "no", "ok", "okay", "dale", "claro", "gracias", "listo", "lista",
+        "si", "sí", "no", "ok", "okay", "dale", "claro", "gracias", "listo", "lista",
         "perfecto", "perfecta", "entendido", "entendida", "yap", "ya", "yaa",
         "jaja", "jajaja", "jajajaja", "de", "acuerdo",
     }
@@ -713,26 +714,26 @@ class SurveyService:
             if uso_audio:
                 return (
                     self._next_unanswered_state_from("esperando_p8", parciales),
-                    "Excelente 🙌 como ya usaste el modo audio, ahora si cuentame del 1 al 5 como te fue.",
+                    "Excelente 🙌 como ya usaste el modo audio, ahora sí cuéntame del 1 al 5 cómo te fue.",
                 )
             parciales["p8_no_aplica"] = True
             parciales.pop("p8", None)
             return (
                 self._next_unanswered_state_from("esperando_imagen_optin", parciales),
-                "Tip NutriBot: tambien tengo modo audio 🎧. Cuando quieras probarlo, solo enviame una consulta por voz.",
+                "Tip NutriBot: también tengo modo audio 🎧. Cuando quieras probarlo, solo envíame una consulta por voz.",
             )
 
         if current_state in {"esperando_imagen_optin", "esperando_imagen_prueba"}:
             if uso_imagen:
                 return (
                     self._next_unanswered_state_from("esperando_p9", parciales),
-                    "Excelente 🙌 como ya usaste imagen, ahora si cuentame del 1 al 5 como te fue.",
+                    "Excelente 🙌 como ya usaste imagen, ahora sí cuéntame del 1 al 5 cómo te fue.",
                 )
             parciales["p9_no_aplica"] = True
             parciales.pop("p9", None)
             return (
                 self._next_unanswered_state_from("esperando_p10", parciales),
-                "Tip NutriBot: tambien tengo reconocimiento de imagen 🖼️. Cuando quieras probarlo, enviame una foto de comida o etiqueta nutricional.",
+                "Tip NutriBot: también tengo reconocimiento de imagen 🖼️. Cuando quieras probarlo, envíame una foto de comida o etiqueta nutricional.",
             )
 
         return current_state, ""
@@ -1008,14 +1009,31 @@ class SurveyService:
                 if not self._should_consume_pending_form_turn(progress.estado_actual, normalized):
                     state.mode = "active_chat"
                     state.awaiting_question_code = None
-                    state.meaningful_interactions_count = 0
+                    effective = (
+                        projected_interactions_count
+                        if projected_interactions_count is not None
+                        else state.meaningful_interactions_count
+                    )
+                    if (
+                        effective >= VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
+                        and state.usability_completion_pct < 100
+                        and not self._is_reinvite_cooldown_active(state)
+                    ):
+                        state.mode = "collecting_usability"
+                        state.awaiting_question_code = progress.estado_actual
+                        state.meaningful_interactions_count = 0
+                        state.last_form_prompt_at = get_now_peru()
+                        return self._build_question_reply(
+                            progress.estado_actual,
+                            prefix="Si puedes, retomamos la encuesta donde quedamos 😊",
+                        )
                     return None
                 state.mode = "collecting_usability"
                 state.awaiting_question_code = progress.estado_actual
                 return await self._process_form_response(session, state, normalized)
 
             effective = projected_interactions_count if projected_interactions_count is not None else state.meaningful_interactions_count
-            if effective >= 5 and state.usability_completion_pct < 100:
+            if effective >= VALID_NUTRITION_INTERACTIONS_FOR_SURVEY and state.usability_completion_pct < 100:
                 if self._is_reinvite_cooldown_active(state):
                     return None
 

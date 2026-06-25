@@ -35,20 +35,20 @@ class LlmReplyService:
         "distrito": ("distrito",),
     }
     _CANONICAL_PROFILE_QUESTION = {
-        "edad": "Para empezar, cuantos anos tienes? 🎂",
-        "peso_kg": "Cuanto pesas aproximadamente en kilos? ⚖️",
-        "altura_cm": "Cuanto mides? 📐\nPuedes decirme en metros o centimetros.\nEj: 1.65 m, 170 cm...",
-        "alergias": "Tienes alguna alergia o intolerancia a alimentos? 🍎\nEjemplos: alergia al mani, intolerancia a la lactosa, alergia a los mariscos...\nSi no tienes ninguna, dime 'ninguna'",
-        "enfermedades": "Tienes alguna enfermedad o condicion medica que deba tener en cuenta? 🏥\nEjemplos: diabetes, hipertension (presion alta), hipotiroidismo, anemia, gastritis...\nSi no tienes ninguna, dime 'ninguna'",
-        "restricciones_alimentarias": "Hay alimentos que prefieras evitar o no puedas comer? 🚫\nEjemplos: no como cerdo, evito los lacteos, no como mariscos...\nSi no tienes ninguna restriccion, dime 'ninguna'",
-        "tipo_dieta": "Sigues algun tipo de alimentacion en particular? 🥗\nEjemplos: omnivora (de todo), vegetariana, vegana o ninguna en especial",
-        "objetivo_nutricional": "Cual es tu objetivo principal con la alimentacion? 🎯\nEjemplos: bajar de peso, ganar masa muscular, mejorar mis habitos, comer mas saludable",
-        "provincia": "En que provincia del Peru te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
-        "distrito": "Y en que distrito estas? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq...",
+        "edad": "Para empezar, ¿cuántos años tienes? 🎂",
+        "peso_kg": "¿Cuánto pesas aproximadamente en kilos? ⚖️",
+        "altura_cm": "¿Cuánto mides? 📐\nPuedes decirme en metros o centímetros.\nEj: 1.65 m, 170 cm...",
+        "alergias": "¿Tienes alguna alergia o intolerancia a alimentos? 🍎\nEjemplos: alergia al maní, intolerancia a la lactosa, alergia a los mariscos...\nSi no tienes ninguna, dime 'ninguna'",
+        "enfermedades": "¿Tienes alguna enfermedad o condición médica que deba tener en cuenta? 🏥\nEjemplos: diabetes, hipertensión (presión alta), hipotiroidismo, anemia, gastritis...\nSi no tienes ninguna, dime 'ninguna'",
+        "restricciones_alimentarias": "¿Hay alimentos que prefieras evitar o no puedas comer? 🚫\nEjemplos: no como cerdo, evito los lácteos, no como mariscos...\nSi no tienes ninguna restricción, dime 'ninguna'",
+        "tipo_dieta": "¿Sigues algún tipo de alimentación en particular? 🥗\nEjemplos: omnívora (de todo), vegetariana, vegana o ninguna en especial",
+        "objetivo_nutricional": "¿Cuál es tu objetivo principal con la alimentación? 🎯\nEjemplos: bajar de peso, ganar masa muscular, mejorar mis hábitos, comer más saludable",
+        "provincia": "¿En qué provincia del Perú te encuentras? 😊\nEj: Lima, Arequipa, Cusco, Trujillo...",
+        "distrito": "¿Y en qué distrito estás? 🏠\nEj: San Miguel, Miraflores, Cayma, Wanchaq...",
     }
     _DISCLAIMER = (
-        "\n\nRecuerda: esta orientacion es referencial y no reemplaza "
-        "una evaluacion personalizada por nutricion."
+        "\n\nRecuerda: esta orientación es referencial y no reemplaza "
+        "una evaluación personalizada por nutrición."
     )
     _DISCLAIMER_TRIGGERS = [
         "imc",
@@ -203,14 +203,14 @@ class LlmReplyService:
             )
             return fast, new_response_id
 
-        if self._must_redirect_to_nutrition_scope(route, normalized.text):
+        if not extracted_data and self._must_redirect_to_nutrition_scope(route, normalized.text):
             return (self._scope_redirect_reply(), new_response_id)
 
-        if self._must_redirect_to_nutrition_scope(route, normalized.text):
+        if False and self._must_redirect_to_nutrition_scope(route, normalized.text):
             return (
-                "Puedo ayudarte con nutricion y bienestar 😊\n\n"
-                "Por ejemplo: recetas saludables, menus segun tu perfil, control de porciones, "
-                "hidratacion, ejercicio y habitos.\n\n"
+                "Puedo ayudarte con nutrición y bienestar 😊\n\n"
+                "Por ejemplo: recetas saludables, menús según tu perfil, control de porciones, "
+                "hidratación, ejercicio y hábitos.\n\n"
                 "Si quieres, te ayudo ahora con algo de eso 🍏",
                 new_response_id,
             )
@@ -234,7 +234,7 @@ class LlmReplyService:
                 "\n\nDirectiva interna: acabas de registrar estos datos del perfil: "
                 + ", ".join(confirm_list)
                 + ". Empieza con una confirmacion breve y natural (ejemplo: "
-                + "'Listo, ya registre tu nuevo peso'). "
+                + "'Listo, ya registré tu nuevo peso'). "
                 + "Si haces una pregunta de seguimiento, debe ser SOLO UNA y debe pertenecer al perfil estructurado: "
                 + "edad, peso, talla, alergias, enfermedades, restricciones, tipo de dieta, objetivo, provincia o distrito. "
                 + "No pidas datos extra fuera de ese perfil."
@@ -272,18 +272,18 @@ class LlmReplyService:
                         "REGLA 5: Simplemente añade una advertencia muy breve al principio del mensaje sobre el riesgo.\n"
                     )
             extra_instr += (
-                "\n\nDirectiva interna clinica:\n"
-                "- No inventes subtipos o etiquetas clinicas no confirmadas (ej: MODY, secundaria, severa).\n"
+                "\n\nDirectiva interna clínica:\n"
+                "- No inventes subtipos o etiquetas clínicas no confirmadas (ej: MODY, secundaria, severa).\n"
                 "- Menciona solo condiciones realmente presentes en el perfil."
             )
             extra_instr += (
-                "\n\nDirectiva interna de personalizacion:\n"
-                "Usa siempre los datos del perfil para personalizar las recomendaciones de alimentacion."
+                "\n\nDirectiva interna de personalización:\n"
+                "Usa siempre los datos del perfil para personalizar las recomendaciones de alimentación."
             )
             final_profile_context = (
                 "Datos de perfil confirmados para personalizar la respuesta:\n"
                 f"{profile_text}\n\n"
-                f"Cita base sugerida para introducir la recomendacion (puedes parafrasearla): \"{citation}\""
+                f"Cita base sugerida para introducir la recomendación (puedes parafrasearla): \"{citation}\""
             )
 
         final_instructions = self._system_instructions + extra_instr
@@ -365,9 +365,9 @@ class LlmReplyService:
     @staticmethod
     def _scope_redirect_reply() -> str:
         return (
-            "Me encantaria ayudarte, pero NutriBot esta enfocado en nutricion, salud y bienestar.\n\n"
-            "Si quieres, puedo ayudarte con menus, recetas saludables, porciones, hidratacion, "
-            "actividad fisica, habitos o dudas de alimentacion segun tu perfil."
+            "Me encantaría ayudarte, pero NutriBot está enfocado en nutrición, salud y bienestar.\n\n"
+            "Si quieres, puedo ayudarte con menús, recetas saludables, porciones, hidratación, "
+            "actividad física, hábitos o dudas de alimentación según tu perfil."
         )
 
     @staticmethod
@@ -394,7 +394,7 @@ class LlmReplyService:
         )
         if should_append_tip:
             reply += (
-                "\n\nTip NutriBot: para personalizar mas tus recomendaciones, "
+                "\n\nTip NutriBot: para personalizar más tus recomendaciones, "
                 "escribe *quiero actualizar mi perfil nutricional*."
             )
         return reply
@@ -612,20 +612,20 @@ class LlmReplyService:
         conflict_text = ", ".join(requested_conflicts) if requested_conflicts else "tu perfil alimentario"
         subject = cls._extract_recipe_subject_from_request(user_request_text)
         return (
-            "Advertencia NutriBot: segun tu perfil nutricional, hay conflicto con "
+            "Advertencia NutriBot: según tu perfil nutricional, hay conflicto con "
             f"{conflict_text}. Te comparto igual la receta que pediste para referencia, usala con precaucion.\n\n"
             f"Receta referencial de {subject}:\n\n"
             "Ingredientes:\n"
-            "- Ingrediente principal segun tu pedido\n"
+            "- Ingrediente principal según tu pedido\n"
             "- 1 cebolla mediana picada\n"
             "- 2 dientes de ajo picados\n"
             "- 1 cucharada de aceite\n"
             "- Sal y condimentos al gusto\n\n"
-            "Preparacion:\n"
-            "1. Sofrie cebolla y ajo hasta dorar.\n"
+            "Preparación:\n"
+            "1. Sofríe cebolla y ajo hasta dorar.\n"
             "2. Agrega el ingrediente principal y cocina hasta que quede bien hecho.\n"
             "3. Ajusta sal y condimentos, y sirve caliente.\n"
-            "4. Si deseas, acompana con una guarnicion simple (arroz, ensalada o verduras)."
+            "4. Si deseas, acompaña con una guarnición simple (arroz, ensalada o verduras)."
         )
 
     @staticmethod
@@ -798,7 +798,7 @@ class LlmReplyService:
             elif is_sensitive:
                 safe += "\n\nSi quieres, te ayudo a armar un plan seguro y realista, paso a paso."
             elif is_recommendation:
-                safe += "\n\nSi quieres, lo afinamos poquito a poco segun tu perfil 🍏"
+                safe += "\n\nSi quieres, lo afinamos poquito a poco según tu perfil 🍏"
             elif is_positive:
                 safe += "\n\nSeguimos cuando quieras 😊"
 
@@ -911,7 +911,7 @@ class LlmReplyService:
         safe = (text or "").strip()
         if not safe:
             logger.warning("Fallback por respuesta vacia en orchestrator user=%s", uid)
-            return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
+            return "Perdón, tuve un problema interno. Intenta nuevamente en unos segundos."
 
         normalized_first_pass = self._normalize_text_for_match(safe)
         if any(
@@ -932,6 +932,7 @@ class LlmReplyService:
         # Pipeline final unico: localizacion -> tono -> markdown WhatsApp -> disclaimer -> trim.
         safe = self._strip_internal_leaks(safe)
         safe = self._localization.peruanize(safe)
+        safe = self._fix_known_profile_prompt_typos(safe)
         safe = self._enforce_single_profile_question(safe)
         if not self._is_survey_or_form_text(safe):
             safe = self.polish_tone(safe)
@@ -943,7 +944,25 @@ class LlmReplyService:
 
         if not safe:
             logger.warning("Fallback por respuesta vacia post-pipeline user=%s", uid)
-            return "Perdon, tuve un problema interno. Intenta nuevamente en unos segundos."
+            return "Perdón, tuve un problema interno. Intenta nuevamente en unos segundos."
+        return safe
+
+    @staticmethod
+    def _fix_known_profile_prompt_typos(text: str) -> str:
+        safe = text or ""
+        fixes = (
+            (r"\bPara empezar,\s*cuantos\s+anos\s+tienes\?", "Para empezar, ¿cuántos años tienes?"),
+            (r"\bPara empezar,\s*cuantos\s+años\s+tienes\?", "Para empezar, ¿cuántos años tienes?"),
+            (r"\bCuanto\s+pesas\s+aproximadamente\s+en\s+kilos\?", "¿Cuánto pesas aproximadamente en kilos?"),
+            (r"\bCuánto\s+pesas\s+aproximadamente\s+en\s+kilos\?", "¿Cuánto pesas aproximadamente en kilos?"),
+            (r"\bCuanto\s+mides\?", "¿Cuánto mides?"),
+            (r"\bcuanto\s+mides\?", "¿cuánto mides?"),
+            (r"\bcentimetros\b", "centímetros"),
+            (r"\banos\b", "años"),
+            (r"\bya registre\b", "ya registré"),
+        )
+        for pattern, replacement in fixes:
+            safe = re.sub(pattern, replacement, safe, flags=re.IGNORECASE)
         return safe
 
     @classmethod
@@ -1023,7 +1042,7 @@ class LlmReplyService:
 
         if not final_bot_reply.payload_json:
             return BotReply(
-                text="Perdon, tuve un problema interno. Intenta nuevamente en unos segundos.",
+                text="Perdón, tuve un problema interno. Intenta nuevamente en unos segundos.",
                 content_type="text",
             )
 

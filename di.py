@@ -188,6 +188,7 @@ class Container:
             profile_extractor=self.profile_extractor,
             profile_context=self.profile_context,
             fallback_handler=self.generic_chat_handler,
+            profile_reader=self.profile_reader,
         )
         self.onboarding_handler = OnboardingHandler(
             onboarding_service=self.onboarding_service,

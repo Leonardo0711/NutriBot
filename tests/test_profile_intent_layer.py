@@ -7,11 +7,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from domain.profile_intent import ProfileIntentResult, ProfileIntentValue
+from domain.profile_snapshot import ProfileHealth, ProfileLocation, ProfileMeasurements, ProfileSnapshot
 from domain.turn_context import TurnContext
 from domain.router import RouteResult, Intent
 from domain.entities import ConversationState, NormalizedMessage, User
 from domain.reply_objects import BotReply
-from domain.value_objects import OnboardingStatus, SessionMode
+from domain.value_objects import OnboardingStatus, OnboardingStep, SessionMode
 
 
 # ─── Fixtures ───────────────────────────────────────────────────────────
@@ -152,6 +153,7 @@ async def test_profile_update_handler_uses_apply_profile_intent():
         profile_extractor=mock_extractor,
         profile_context=MagicMock(),
         fallback_handler=mock_fallback,
+        profile_reader=MagicMock(fetch_snapshot=AsyncMock(return_value=None)),
     )
 
     await handler.handle(ctx)
@@ -160,6 +162,109 @@ async def test_profile_update_handler_uses_apply_profile_intent():
     mock_extractor.apply_profile_intent.assert_called_once()
     call_kwargs = mock_extractor.apply_profile_intent.call_args
     assert call_kwargs.kwargs.get("intent") == intent or call_kwargs[1].get("intent") == intent
+
+
+@pytest.mark.asyncio
+async def test_profile_update_handler_refreshes_snapshot_before_fallback():
+    """Después de guardar peso/edad, el fallback debe ver el perfil actualizado."""
+    from application.services.handlers.profile_update_handler import ProfileUpdateHandler
+
+    intent = _make_intent("peso_kg", "REPLACE", ["94"])
+    ctx = _make_ctx(profile_intent=intent, route_intent=Intent.PROFILE_UPDATE, text="Peso 94")
+    old_snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(age_years=63, weight_kg=None, height_cm=None),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+    new_snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(age_years=63, weight_kg=94.0, height_cm=None),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+    ctx.snapshot = old_snapshot
+    ctx.profile_text = "Peso: Pendiente"
+    ctx.summary = "Peso: Pendiente"
+    ctx.nutritional_rules_text = None
+
+    mock_extractor = AsyncMock()
+    mock_extractor.contains_absurd_claim = MagicMock(return_value=False)
+    mock_extractor.apply_profile_intent = AsyncMock(
+        return_value=MagicMock(clean_data={"peso_kg": 94.0}, meta_flags={})
+    )
+
+    mock_profile_context = MagicMock()
+    mock_profile_context.build_prompt_and_summary.return_value = ("Peso: 94.0kg", "Peso: 94.0kg")
+
+    mock_reader = AsyncMock()
+    mock_reader.fetch_snapshot = AsyncMock(return_value=new_snapshot)
+
+    async def fallback_handle(received_ctx):
+        assert received_ctx.snapshot.measurements.weight_kg == 94.0
+        assert received_ctx.profile_text == "Peso: 94.0kg"
+        return BotReply(text="ok", content_type="text"), None
+
+    mock_fallback = AsyncMock()
+    mock_fallback.handle = AsyncMock(side_effect=fallback_handle)
+
+    handler = ProfileUpdateHandler(
+        profile_extractor=mock_extractor,
+        profile_context=mock_profile_context,
+        fallback_handler=mock_fallback,
+        profile_reader=mock_reader,
+    )
+
+    await handler.handle(ctx)
+
+    mock_reader.fetch_snapshot.assert_called_once()
+    mock_fallback.handle.assert_called_once()
+
+
+def test_llm_reply_service_fixes_known_profile_prompt_typos():
+    from application.services.llm_reply_service import LlmReplyService
+
+    text = "Para empezar, cuantos anos tienes?\nCuanto pesas aproximadamente en kilos?"
+    fixed = LlmReplyService._fix_known_profile_prompt_typos(text)
+
+    assert "cuántos años" in fixed
+    assert "¿Cuánto pesas" in fixed
+    assert "anos" not in fixed
+
+
+@pytest.mark.asyncio
+async def test_onboarding_self_heals_completed_weight_step():
+    from application.services.onboarding_service import OnboardingService
+
+    svc = OnboardingService.__new__(OnboardingService)
+    state = MagicMock(spec=ConversationState)
+    state.usuario_id = 1
+
+    snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(age_years=63, weight_kg=94.0, height_cm=None),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+    phase = [OnboardingStep.EDAD, OnboardingStep.PESO, OnboardingStep.ALTURA]
+
+    svc._get_profile_snapshot = AsyncMock(return_value=snapshot)
+    svc._phase_for_step = MagicMock(return_value=phase)
+    svc._find_next_missing_step = AsyncMock(return_value=OnboardingStep.ALTURA.value)
+    svc._set_onboarding_state = MagicMock()
+
+    next_step = await svc._advance_if_numeric_step_already_completed(
+        AsyncMock(),
+        state,
+        OnboardingStep.PESO.value,
+    )
+
+    assert next_step == OnboardingStep.ALTURA.value
+    svc._set_onboarding_state.assert_called_once_with(
+        state,
+        OnboardingStatus.IN_PROGRESS,
+        OnboardingStep.ALTURA.value,
+    )
 
 
 # ─── Test 4: Onboarding preserva operation del profile_intent ───────────
@@ -422,8 +527,8 @@ async def test_onboarding_apply_profile_intent_persists_extra_restriction():
 def test_survey_snooze_full_flow():
     """
     Flujo:
-    1. Usuario actualiza perfil → se pausa encuesta (snooze +5)
-    2. No vuelve antes de 5 interacciones NUTRITION_VALUE
+    1. Usuario actualiza perfil → se pausa encuesta (snooze +2)
+    2. No vuelve antes de 2 interacciones NUTRITION_VALUE
     3. Vuelve solo después de alcanzar el umbral
     """
     from application.services.conversation_state_service import ConversationStateService
@@ -438,22 +543,34 @@ def test_survey_snooze_full_flow():
     state.survey_updated_at = None
     state.version = 1
 
-    # 1. Pausar encuesta por mantenimiento de perfil (+5 turnos)
+    # 1. Pausar encuesta por mantenimiento de perfil (+2 turnos)
     svc.pause_survey_for_profile_maintenance(state, reason="PROFILE_MAINTENANCE")
-    assert state.survey_next_eligible_count == 15  # 10 + 5
+    assert state.survey_next_eligible_count == 12  # 10 + 2
     assert state.survey_paused_reason == "PROFILE_MAINTENANCE"
 
-    # 2. Con 12 interacciones, todavía NO se puede ofrecer
+    # 2. Con 11 interacciones, todavía NO se puede ofrecer
+    state.meaningful_interactions_count = 11
+    assert svc.can_offer_survey(state) is False
+
+    # 3. Con 12 interacciones, SÍ se puede y se limpia el snooze
     state.meaningful_interactions_count = 12
-    assert svc.can_offer_survey(state) is False
-
-    # 3. Con 14 interacciones, todavía NO
-    state.meaningful_interactions_count = 14
-    assert svc.can_offer_survey(state) is False
-
-    # 4. Con 15 interacciones, SÍ se puede y se limpia el snooze
-    state.meaningful_interactions_count = 15
     assert svc.can_offer_survey(state) is True
+    assert state.survey_next_eligible_count is None
+    assert state.survey_paused_reason is None
+
+
+def test_survey_stale_profile_snooze_uses_current_threshold():
+    """Un snooze antiguo de +5 no debe bloquear si el umbral actual ya se cumplió."""
+    from application.services.conversation_state_service import ConversationStateService
+
+    svc = ConversationStateService()
+    state = MagicMock(spec=ConversationState)
+    state.meaningful_interactions_count = 1
+    state.survey_next_eligible_count = 5
+    state.survey_paused_reason = "PROFILE_MAINTENANCE"
+    state.version = 1
+
+    assert svc.can_offer_survey(state, projected_interactions_count=2) is True
     assert state.survey_next_eligible_count is None
     assert state.survey_paused_reason is None
 
@@ -497,7 +614,7 @@ async def test_e2e_real_conversation_flow():
     2. Bot: ... (onboarding_status='in_progress', step='peso')
     3. Usuario: 'peso 70 y prefiero no comer lácteos' 
        -> Onboarding guarda peso, y apply_profile_intent guarda EVITA_LACTEOS.
-       -> PROFILE_MAINTENANCE (pausa encuesta, snooze +5, no incrementa).
+       -> PROFILE_MAINTENANCE (pausa encuesta, snooze +2, no incrementa).
     4. Usuario: 'qué puedo desayunar' 
        -> NUTRITION_QUERY -> NUTRITION_VALUE (incrementa encuesta).
     """
@@ -606,5 +723,3 @@ async def test_e2e_real_conversation_flow():
     
     final_kind_3 = orch._classify_turn_kind(ctx3, handler_generic)
     assert final_kind_3 == "NUTRITION_VALUE"
-
-
