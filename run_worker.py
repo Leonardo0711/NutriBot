@@ -108,7 +108,7 @@ async def run_workers(mode: str) -> None:
     except Exception:
         pass
     try:
-        await container.evolution_client.close()
+        await container.whatsapp_client.close()
     except Exception:
         pass
     await close_redis()

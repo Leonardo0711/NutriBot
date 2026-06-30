@@ -22,11 +22,16 @@ class Settings(BaseSettings):
     openai_use_previous_response: bool = False
 
     # --- Evolution API ---
+    whatsapp_provider: str = "evolution"
     evolution_api_url: str = "http://localhost:8080"
     evolution_api_key: str = ""
     evolution_instance: str = "nutribot"
 
     # --- Meta WhatsApp Cloud API ---
+    meta_graph_api_version: str = "v25.0"
+    meta_whatsapp_token: str = ""
+    meta_phone_number_id: str = ""
+    meta_waba_id: str = ""
     meta_verify_token: str = ""
     meta_app_secret: str = ""
 

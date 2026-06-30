@@ -8,6 +8,7 @@ from infrastructure.db.conversation_repo import SqlAlchemyConversationRepository
 from infrastructure.db.user_repo import SqlAlchemyUserRepository
 from infrastructure.db.rag_repo import RagRepository
 from infrastructure.evolution.client import EvolutionApiClient
+from infrastructure.meta_whatsapp.client import MetaWhatsAppClient
 from infrastructure.openai.embeddings_adapter import OpenAIEmbeddingsAdapter
 from infrastructure.openai.media_service import DefaultMediaService
 from infrastructure.openai.responses_adapter import OpenAIResponsesAdapter
@@ -87,7 +88,13 @@ class Container:
         self.user_repo = SqlAlchemyUserRepository()
         self.conv_repo = SqlAlchemyConversationRepository()
         self.rag_repo = RagRepository()
-        self.evolution_client = EvolutionApiClient()
+        provider = (self.settings.whatsapp_provider or "evolution").strip().lower()
+        if provider == "meta":
+            self.whatsapp_client = MetaWhatsAppClient()
+        else:
+            self.whatsapp_client = EvolutionApiClient()
+        # Alias legacy para no romper imports/cierres antiguos mientras Evolution queda como fallback.
+        self.evolution_client = self.whatsapp_client
 
         # Shared OpenAI Setup
         self.openai_client = AsyncOpenAI(api_key=self.settings.openai_api_key)
@@ -102,7 +109,7 @@ class Container:
         )
         self.media_service = DefaultMediaService(
             stt_service=self.stt_adapter,
-            evolution_client=self.evolution_client,
+            whatsapp_client=self.whatsapp_client,
         )
         self.tts_adapter = OpenAITextToSpeechAdapter(
             client=self.openai_client,
@@ -222,13 +229,13 @@ class Container:
             media_service=self.media_service,
             embeddings=self.embeddings_adapter,
             rag_repo=self.rag_repo,
-            evolution_client=self.evolution_client,
+            evolution_client=self.whatsapp_client,
             orchestrator=self.message_orchestrator
         )
 
         self.outbox_worker = OutboxWorker(
             session_factory=self.session_factory,
-            evolution_client=self.evolution_client,
+            whatsapp_client=self.whatsapp_client,
             tts_adapter=self.tts_adapter
         )
 

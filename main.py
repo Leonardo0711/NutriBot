@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        await container.evolution_client.close()
+        await container.whatsapp_client.close()
     except Exception:
         pass
 

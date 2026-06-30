@@ -112,18 +112,21 @@ async def verify_meta_webhook(
 @router.post("/webhook/meta")
 async def receive_meta_webhook(request: Request) -> dict[str, Any]:
     settings = get_settings()
-    if not settings.meta_app_secret:
-        raise HTTPException(status_code=503, detail="meta_not_configured")
 
     raw_body = await request.body()
-    signature = request.headers.get("X-Hub-Signature-256", "")
-    expected = "sha256=" + hmac.new(
-        settings.meta_app_secret.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=401, detail="invalid_signature")
+    if settings.meta_app_secret:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(
+            settings.meta_app_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise HTTPException(status_code=401, detail="invalid_signature")
+    else:
+        logger.warning(
+            "META_APP_SECRET vacio: aceptando webhook Meta sin validacion de firma (modo temporal)"
+        )
 
     try:
         payload = await request.json()
@@ -138,5 +141,20 @@ async def receive_meta_webhook(request: Request) -> dict[str, Any]:
         await ingest_evolution_payload(message, client_ip)
         for message in messages
     ]
-    logger.info("Meta webhook recibido ip=%s mensajes=%d", client_ip, len(messages))
-    return {"status": "accepted", "messages": len(messages), "results": results}
+    status_count = sum(
+        len((change.get("value") or {}).get("statuses", []) or [])
+        for entry in payload.get("entry", []) or []
+        for change in entry.get("changes", []) or []
+    )
+    logger.info(
+        "Meta webhook recibido ip=%s mensajes=%d statuses=%d",
+        client_ip,
+        len(messages),
+        status_count,
+    )
+    return {
+        "status": "accepted",
+        "messages": len(messages),
+        "statuses": status_count,
+        "results": results,
+    }

@@ -1,27 +1,34 @@
 """
 Nutribot Backend - OutboxWorker
 Worker de outbox: consume IDs desde Redis (o SQL fallback)
-y envia mensajes via Evolution.
+y envia mensajes via el proveedor WhatsApp configurado.
 """
 from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy import Integer
 from sqlalchemy.dialects.postgresql import JSONB
 
 from config import get_settings
-from infrastructure.evolution.client import EvolutionApiClient
 from infrastructure.openai.tts_adapter import OpenAITextToSpeechAdapter
 from infrastructure.redis.client import dequeue, OUTBOX_QUEUE
 
 logger = logging.getLogger(__name__)
 
 class OutboxWorker:
-    def __init__(self, session_factory, evolution_client: EvolutionApiClient, tts_adapter: OpenAITextToSpeechAdapter):
+    def __init__(
+        self,
+        session_factory,
+        whatsapp_client: Any = None,
+        tts_adapter: OpenAITextToSpeechAdapter | None = None,
+        evolution_client: Any = None,
+    ):
         self.session_factory = session_factory
-        self.evolution_client = evolution_client
+        self.whatsapp_client = whatsapp_client or evolution_client
+        self.evolution_client = self.whatsapp_client
         self.tts_adapter = tts_adapter
 
     async def deliver_pending_messages(self) -> int:

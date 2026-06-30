@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from domain.entities import IncomingWebhookMessage, NormalizedMessage
 from domain.ports import MediaService
 from domain.value_objects import MessageType
-from infrastructure.evolution.client import EvolutionApiClient
 from infrastructure.openai.stt_adapter import OpenAISpeechToTextAdapter
 
 logger = logging.getLogger(__name__)
@@ -23,10 +22,11 @@ class DefaultMediaService(MediaService):
     def __init__(
         self,
         stt_service: Optional[OpenAISpeechToTextAdapter] = None,
-        evolution_client: Optional[EvolutionApiClient] = None,
+        whatsapp_client: Optional[Any] = None,
+        evolution_client: Optional[Any] = None,
     ) -> None:
         self._stt = stt_service or OpenAISpeechToTextAdapter()
-        self._evolution = evolution_client or EvolutionApiClient()
+        self._whatsapp = whatsapp_client or evolution_client
 
     async def normalize(self, msg: IncomingWebhookMessage) -> NormalizedMessage:
         """
@@ -49,7 +49,7 @@ class DefaultMediaService(MediaService):
             # Nota de voz: descargar + transcribir
             used_audio = True
             if msg.media_url:
-                audio_bytes = await self._evolution.download_media(msg.media_url)
+                audio_bytes = await self._whatsapp.download_media(msg.media_url) if self._whatsapp else None
                 if audio_bytes:
                     transcription = await self._stt.transcribe(
                         audio_bytes, msg.media_mimetype or "audio/ogg"
@@ -66,7 +66,7 @@ class DefaultMediaService(MediaService):
         elif msg.content_type == MessageType.IMAGE:
             # Imagen: descargar + codificar base64 para Vision
             if msg.media_url:
-                image_bytes = await self._evolution.download_media(msg.media_url)
+                image_bytes = await self._whatsapp.download_media(msg.media_url) if self._whatsapp else None
                 if image_bytes:
                     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
                     image_mimetype = msg.media_mimetype or "image/jpeg"
