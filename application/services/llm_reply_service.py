@@ -13,6 +13,7 @@ from application.services.localization_service import LocalizationService
 from application.services.profile_context_service import ProfileContextService
 from domain.context_builder import build_llm_context, try_fast_response
 from domain.entities import ConversationState, NormalizedMessage
+from domain.normalizer import fuzzy_match_any
 from domain.ports import LLMService
 from domain.profile_snapshot import ProfileSnapshot
 from domain.reply_objects import BotReply
@@ -130,7 +131,9 @@ class LlmReplyService:
         "caloria", "calorias", "macro", "proteina", "carbohidrato", "grasa",
         "fibra", "vitamina", "mineral", "hidrata", "agua", "salud", "bienestar",
         "hierro", "hemoglobina", "anemia", "absorcion", "absorber",
-        "ejercicio", "actividad fisica", "entrenamiento", "sueño", "sueno", "dormir",
+        "ejercicio", "ejercit", "actividad fisica", "actividad", "fisica",
+        "entrenamiento", "entrena", "rutina", "cardio", "caminar", "fuerza",
+        "sueño", "sueno", "dormir",
         "peso", "talla", "imc", "perfil", "alergia", "alergias", "restriccion",
         "restricciones", "diabetes", "hipertension", "hipotiroidismo",
         # Verbos de cocina / preparación
@@ -145,6 +148,24 @@ class LlmReplyService:
         "mani", "cacahuate", "almendra", "nuez", "porcion", "plato",
         "cafe", "te", "infusion", "mate", "bebida",
     )
+    _WELLNESS_SCOPE_ROOTS = (
+        "nutric", "aliment", "comid", "comer", "recet", "menu", "men",
+        "almuer", "desayun", "cen", "snack", "refriger", "plato",
+        "salud", "bienestar", "hidrat", "agua", "habit",
+        "ejer", "entren", "activ", "fisic", "rutina", "cardio",
+        "camin", "fuerz", "movim", "deport",
+        "peso", "adelgaz", "baj", "sub", "masa", "muscul", "imc",
+        "calor", "protein", "carbo", "gras", "fibra", "vitamin",
+        "mineral", "azucar", "glucos", "colesterol", "hierro",
+        "hemoglobin", "anemi", "diabet", "presion", "hipert",
+    )
+    _WELLNESS_SCOPE_FUZZY_TERMS = [
+        "nutricion", "alimentacion", "comida", "receta", "menu",
+        "almuerzo", "desayuno", "cena", "saludable", "hidratacion",
+        "ejercicio", "ejercitar", "entrenar", "entrenamiento",
+        "actividad", "fisica", "rutina", "proteina", "calorias",
+        "diabetes", "hipertension", "anemia",
+    ]
     _OFF_TOPIC_SCOPE_TOKENS = (
         "one piece", "anime", "manga", "episodio", "pelicula", "serie",
         "dragon ball", "goku", "vegeta",
@@ -310,6 +331,12 @@ class LlmReplyService:
                 snapshot=snapshot,
                 user_request_text=normalized.text,
             )
+        if self._should_append_general_profile_note(
+            route=route,
+            snapshot=snapshot,
+            reply=reply,
+        ):
+            reply = self._append_general_profile_note(reply)
         return reply, new_response_id
 
     @classmethod
@@ -335,7 +362,7 @@ class LlmReplyService:
             return False
 
         # Si hay señal de alcance nutricional/bienestar, no redirigir.
-        if any(token in normalized for token in cls._WELLNESS_SCOPE_TOKENS):
+        if cls._has_wellness_scope_signal(normalized):
             return False
 
         if cls._looks_like_contextual_followup(normalized):
@@ -351,6 +378,17 @@ class LlmReplyService:
             return True
 
         return False
+
+    @classmethod
+    def _has_wellness_scope_signal(cls, normalized: str) -> bool:
+        if not normalized:
+            return False
+        if any(token in normalized for token in cls._WELLNESS_SCOPE_TOKENS):
+            return True
+        tokens = re.findall(r"[a-z0-9]+", normalized)
+        if any(any(tok.startswith(root) for root in cls._WELLNESS_SCOPE_ROOTS) for tok in tokens):
+            return True
+        return bool(fuzzy_match_any(normalized, cls._WELLNESS_SCOPE_FUZZY_TERMS, threshold=0.73))
 
     @classmethod
     def _looks_like_contextual_followup(cls, normalized: str) -> bool:
@@ -421,6 +459,45 @@ class LlmReplyService:
             seen.add(key)
             items.append(raw)
         return tuple(items)
+
+    @classmethod
+    def _has_basic_profile(cls, snapshot: ProfileSnapshot) -> bool:
+        return bool(
+            snapshot.measurements.age_years is not None
+            and snapshot.measurements.weight_kg is not None
+            and snapshot.measurements.height_cm is not None
+        )
+
+    @classmethod
+    def _should_append_general_profile_note(
+        cls,
+        *,
+        route: RouteResult,
+        snapshot: ProfileSnapshot,
+        reply: Optional[str],
+    ) -> bool:
+        if not reply:
+            return False
+        if route.intent.value not in {"NUTRITION_QUERY", "RECOMMENDATION_REQUEST"}:
+            return False
+        if cls._has_basic_profile(snapshot):
+            return False
+        normalized = cls._normalize_text_for_match(reply)
+        if "orientacion general" in normalized or "perfil nutricional" in normalized:
+            return False
+        if cls._is_survey_or_form_text(reply):
+            return False
+        return True
+
+    @staticmethod
+    def _append_general_profile_note(reply: str) -> str:
+        note = (
+            "Nota NutriBot: esta es una orientación general porque aún no tengo "
+            "completo tu perfil básico. Si quieres una recomendación más "
+            "personalizada, dime *quiero completar mi perfil nutricional* "
+            "y empezamos paso a paso."
+        )
+        return f"{(reply or '').rstrip()}\n\n{note}"
 
     @classmethod
     def _find_conflicting_items_in_text(cls, text: str, snapshot: ProfileSnapshot) -> list[str]:

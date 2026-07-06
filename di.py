@@ -9,6 +9,7 @@ from infrastructure.db.user_repo import SqlAlchemyUserRepository
 from infrastructure.db.rag_repo import RagRepository
 from infrastructure.evolution.client import EvolutionApiClient
 from infrastructure.meta_whatsapp.client import MetaWhatsAppClient
+from infrastructure.twilio_whatsapp.client import TwilioWhatsAppClient
 from infrastructure.openai.embeddings_adapter import OpenAIEmbeddingsAdapter
 from infrastructure.openai.media_service import DefaultMediaService
 from infrastructure.openai.responses_adapter import OpenAIResponsesAdapter
@@ -91,6 +92,8 @@ class Container:
         provider = (self.settings.whatsapp_provider or "evolution").strip().lower()
         if provider == "meta":
             self.whatsapp_client = MetaWhatsAppClient()
+        elif provider == "twilio":
+            self.whatsapp_client = TwilioWhatsAppClient()
         else:
             self.whatsapp_client = EvolutionApiClient()
         # Alias legacy para no romper imports/cierres antiguos mientras Evolution queda como fallback.
@@ -196,6 +199,7 @@ class Container:
             profile_context=self.profile_context,
             fallback_handler=self.generic_chat_handler,
             profile_reader=self.profile_reader,
+            state_service=self.state_service,
         )
         self.onboarding_handler = OnboardingHandler(
             onboarding_service=self.onboarding_service,

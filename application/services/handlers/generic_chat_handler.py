@@ -12,6 +12,7 @@ from application.services.llm_reply_service import LlmReplyService
 from application.services.profile_interception_service import ProfileInterceptionService
 from application.services.survey_flow_service import SurveyFlowService
 from application.services.conversation_state_service import ConversationStateService
+from application.services.interactive_message_factory import build_yes_no_buttons
 from domain.value_objects import OnboardingStatus
 
 
@@ -31,6 +32,17 @@ class GenericChatHandler(BaseHandler):
     async def handle(self, ctx: TurnContext) -> Tuple[Optional[BotReply], Optional[str]]:
         reply = None
         mode_before_survey = ctx.state.mode
+
+        if ctx.normalized.interactive_id == "profile:basic:no":
+            self._state_service.set_onboarding_paused(ctx.state, days_until_retry=3)
+            return BotReply(
+                text=(
+                    "No hay problema 😊 seguimos conversando normal.\n\n"
+                    "Si luego quieres una orientación más personalizada, escribe "
+                    "*quiero completar mi perfil nutricional*."
+                ),
+                content_type="text",
+            ), None
 
         # Si hay encuesta/formulario pendiente, intentar consumir el turno antes
         # de pagar LLM. Si es una consulta real, SurveyService devuelve None y
@@ -135,6 +147,14 @@ class GenericChatHandler(BaseHandler):
         )
 
         # 5. Inyeccion de Encuestas (Satisfaccion, etc.)
+        await self._maybe_offer_basic_profile_invite(
+            ctx=ctx,
+            reply=reply,
+            new_response_id=new_response_id,
+            should_count_before_survey=should_count_before_survey,
+            survey_allowed=survey_allowed,
+        )
+
         # Respetar ventana de snooze antes de ofrecer encuesta
         final_bot_reply, survey_was_interrupted, survey_engaged_turn = await self._survey_flow.compose_reply_with_survey(
             session=ctx.session,
@@ -167,6 +187,65 @@ class GenericChatHandler(BaseHandler):
         final_bot_reply = self._llm_reply.sanitize_final_reply(final_bot_reply, ctx.user.id)
         
         return final_bot_reply, new_response_id
+
+    async def _maybe_offer_basic_profile_invite(
+        self,
+        *,
+        ctx: TurnContext,
+        reply: Optional[str],
+        new_response_id: Optional[str],
+        should_count_before_survey: bool,
+        survey_allowed: bool,
+    ) -> None:
+        if not reply or not should_count_before_survey:
+            return
+        if survey_allowed or ctx.is_requesting_survey or ctx.onboarding_interception_happened:
+            return
+        if ctx.state.awaiting_question_code:
+            return
+        if ctx.state.onboarding_status in {
+            OnboardingStatus.IN_PROGRESS.value,
+            OnboardingStatus.PAUSED.value,
+            OnboardingStatus.SKIPPED.value,
+        }:
+            return
+        if not self._basic_profile_missing(ctx):
+            return
+
+        text = (
+            "Tip NutriBot 🍏: puedo darte una orientación más personalizada si completas "
+            "tu perfil básico: edad, peso y talla.\n\n"
+            "¿Quieres completarlo ahora?"
+        )
+        addon = BotReply(
+            text=text,
+            content_type="interactive_buttons",
+            payload_json=build_yes_no_buttons(
+                text,
+                "profile:basic:yes",
+                "profile:basic:no",
+                yes_label="Sí",
+                no_label="No",
+            ),
+        )
+        addon_seed = new_response_id or ctx.normalized.provider_message_id
+        await self._schedule_separate_message(
+            session=ctx.session,
+            uid=ctx.user.id,
+            phone=ctx.user.numero_whatsapp,
+            addon=addon,
+            idemp_key=f"profile-invite:{ctx.user.id}:{addon_seed}",
+        )
+        self._state_service.set_turns_since_last_prompt(ctx.state, 0)
+
+    @staticmethod
+    def _basic_profile_missing(ctx: TurnContext) -> bool:
+        measurements = ctx.snapshot.measurements
+        return not (
+            measurements.age_years is not None
+            and measurements.weight_kg is not None
+            and measurements.height_cm is not None
+        )
 
     async def _schedule_separate_message(self, session, uid: int, phone: str, addon: BotReply, idemp_key: str):
         import logging

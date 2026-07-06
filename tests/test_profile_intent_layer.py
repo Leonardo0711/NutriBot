@@ -170,7 +170,7 @@ async def test_profile_update_handler_refreshes_snapshot_before_fallback():
     from application.services.handlers.profile_update_handler import ProfileUpdateHandler
 
     intent = _make_intent("peso_kg", "REPLACE", ["94"])
-    ctx = _make_ctx(profile_intent=intent, route_intent=Intent.PROFILE_UPDATE, text="Peso 94")
+    ctx = _make_ctx(profile_intent=intent, route_intent=Intent.NUTRITION_QUERY, text="Peso 94, dame un menu")
     old_snapshot = ProfileSnapshot(
         user_id=1,
         measurements=ProfileMeasurements(age_years=63, weight_kg=None, height_cm=None),
@@ -219,6 +219,104 @@ async def test_profile_update_handler_refreshes_snapshot_before_fallback():
 
     mock_reader.fetch_snapshot.assert_called_once()
     mock_fallback.handle.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_profile_update_handler_saves_basic_fields_together_without_fallback():
+    from application.services.handlers.profile_update_handler import ProfileUpdateHandler
+
+    ctx = _make_ctx(
+        route_intent=Intent.PROFILE_UPDATE,
+        text="tengo 46 a\u00f1os, peso 73 kg y mido 1.72 m",
+    )
+    ctx.state = ConversationState(usuario_id=1)
+    ctx.user = User(id=1, numero_whatsapp="51999999999")
+
+    complete_snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(age_years=46, weight_kg=73.0, height_cm=172.0),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+
+    mock_extractor = AsyncMock()
+    mock_extractor.contains_absurd_claim = MagicMock(return_value=False)
+    mock_extractor.save_clean_data = AsyncMock()
+
+    mock_profile_context = MagicMock()
+    mock_profile_context.build_prompt_and_summary.return_value = ("perfil actualizado", "perfil actualizado")
+
+    mock_reader = AsyncMock()
+    mock_reader.fetch_snapshot = AsyncMock(return_value=complete_snapshot)
+
+    mock_fallback = AsyncMock()
+    mock_fallback.handle = AsyncMock(return_value=(BotReply(text="no deberia", content_type="text"), None))
+
+    handler = ProfileUpdateHandler(
+        profile_extractor=mock_extractor,
+        profile_context=mock_profile_context,
+        fallback_handler=mock_fallback,
+        profile_reader=mock_reader,
+    )
+
+    reply, _ = await handler.handle(ctx)
+
+    mock_extractor.save_clean_data.assert_called_once()
+    saved_data = mock_extractor.save_clean_data.call_args.args[1]
+    assert saved_data == {"edad": 46, "peso_kg": 73.0, "altura_cm": 172.0}
+    mock_fallback.handle.assert_not_called()
+    assert ctx.state.onboarding_status == OnboardingStatus.COMPLETED.value
+    assert "perfil b\u00e1sico" in reply.text
+    assert "46" in reply.text
+    assert "73.0 kg" in reply.text
+    assert "1.72 m" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_profile_update_handler_after_weight_asks_height_not_age():
+    from application.services.handlers.profile_update_handler import ProfileUpdateHandler
+
+    ctx = _make_ctx(
+        route_intent=Intent.PROFILE_UPDATE,
+        text="73 kilos",
+    )
+    ctx.state = ConversationState(usuario_id=1)
+    ctx.user = User(id=1, numero_whatsapp="51999999999")
+
+    snapshot_after_weight = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(age_years=46, weight_kg=73.0, height_cm=None),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+
+    mock_extractor = AsyncMock()
+    mock_extractor.contains_absurd_claim = MagicMock(return_value=False)
+    mock_extractor.save_clean_data = AsyncMock()
+
+    mock_profile_context = MagicMock()
+    mock_profile_context.build_prompt_and_summary.return_value = ("perfil actualizado", "perfil actualizado")
+
+    mock_reader = AsyncMock()
+    mock_reader.fetch_snapshot = AsyncMock(return_value=snapshot_after_weight)
+
+    mock_fallback = AsyncMock()
+    mock_fallback.handle = AsyncMock(return_value=(BotReply(text="no deberia", content_type="text"), None))
+
+    handler = ProfileUpdateHandler(
+        profile_extractor=mock_extractor,
+        profile_context=mock_profile_context,
+        fallback_handler=mock_fallback,
+        profile_reader=mock_reader,
+    )
+
+    reply, _ = await handler.handle(ctx)
+
+    mock_fallback.handle.assert_not_called()
+    assert ctx.state.onboarding_status == OnboardingStatus.IN_PROGRESS.value
+    assert ctx.state.onboarding_step == OnboardingStep.ALTURA.value
+    assert "\u00bfCu\u00e1nto mides?" in reply.text
+    assert "\u00bfcu\u00e1ntos a\u00f1os" not in reply.text.lower()
 
 
 def test_llm_reply_service_fixes_known_profile_prompt_typos():
@@ -347,6 +445,42 @@ def test_survey_counts_only_nutrition_value():
         and "NUTRITION_VALUE" == "NUTRITION_VALUE"
     )
     assert should_count_nv is True
+
+
+def test_profile_fact_inside_nutrition_query_counts_as_nutrition_value():
+    from application.services.message_orchestrator import MessageOrchestratorService
+
+    intent = _make_intent("enfermedades", "ADD", ["anemia"])
+    ctx = _make_ctx(
+        route_intent=Intent.NUTRITION_QUERY,
+        text="tengo anemia, que puedo comer",
+        profile_intent=intent,
+    )
+
+    orch = MessageOrchestratorService.__new__(MessageOrchestratorService)
+
+    assert orch._preclassify_turn_kind(ctx) == "NUTRITION_VALUE"
+    ctx.turn_kind = "NUTRITION_VALUE"
+    ctx.extracted_data = {"enfermedades": ["anemia"]}
+    assert orch._classify_turn_kind(ctx, handler=MagicMock()) == "NUTRITION_VALUE"
+
+
+def test_plain_profile_fact_still_does_not_count_for_survey():
+    from application.services.message_orchestrator import MessageOrchestratorService
+
+    intent = _make_intent("enfermedades", "ADD", ["anemia"])
+    ctx = _make_ctx(
+        route_intent=Intent.PROFILE_UPDATE,
+        text="tengo anemia",
+        profile_intent=intent,
+    )
+
+    orch = MessageOrchestratorService.__new__(MessageOrchestratorService)
+
+    assert orch._preclassify_turn_kind(ctx) == "PROFILE_MAINTENANCE"
+    ctx.turn_kind = "PROFILE_MAINTENANCE"
+    ctx.extracted_data = {"enfermedades": ["anemia"]}
+    assert orch._classify_turn_kind(ctx, handler=MagicMock()) == "PROFILE_MAINTENANCE"
 
 
 # ─── Test 7: PROFILE_MAINTENANCE snoozes survey ─────────────────────────
@@ -573,6 +707,90 @@ def test_survey_stale_profile_snooze_uses_current_threshold():
     assert svc.can_offer_survey(state, projected_interactions_count=2) is True
     assert state.survey_next_eligible_count is None
     assert state.survey_paused_reason is None
+
+
+def test_survey_threshold_is_two_interactions():
+    from application.services.survey_policy import VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
+
+    assert VALID_NUTRITION_INTERACTIONS_FOR_SURVEY == 2
+
+
+@pytest.mark.asyncio
+async def test_recommendation_with_missing_profile_does_not_start_onboarding():
+    from application.services.profile_interception_service import ProfileInterceptionService
+
+    svc = ProfileInterceptionService(
+        onboarding_service=AsyncMock(),
+        profile_context=MagicMock(),
+        state_service=MagicMock(),
+    )
+    state = MagicMock(spec=ConversationState)
+    state.onboarding_status = OnboardingStatus.NOT_STARTED.value
+    snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+
+    reply, happened = await svc.maybe_intercept_for_missing_profile(
+        session=AsyncMock(),
+        state=state,
+        user_id=1,
+        snapshot=snapshot,
+        reply=None,
+        onboarding_interception_happened=False,
+        is_short_greeting=False,
+        is_asking_for_recommendation=True,
+    )
+
+    assert reply is None
+    assert happened is False
+    svc._state_service.set_onboarding_in_progress.assert_not_called()
+
+
+def test_general_profile_note_is_appended_for_incomplete_profile():
+    from application.services.llm_reply_service import LlmReplyService
+
+    snapshot = ProfileSnapshot(
+        user_id=1,
+        measurements=ProfileMeasurements(),
+        health=ProfileHealth(),
+        location=ProfileLocation(),
+    )
+    route = RouteResult(
+        intent=Intent.RECOMMENDATION_REQUEST,
+        confidence=0.9,
+        reason="test",
+    )
+
+    assert LlmReplyService._should_append_general_profile_note(
+        route=route,
+        snapshot=snapshot,
+        reply="Puedes desayunar avena con fruta.",
+    ) is True
+
+    with_note = LlmReplyService._append_general_profile_note("Puedes desayunar avena con fruta.")
+    assert "orientación general" in with_note
+    assert "quiero completar mi perfil nutricional" in with_note
+
+
+def test_basic_onboarding_phase_only_requires_age_weight_height():
+    from domain.value_objects import (
+        ONBOARDING_OPTIONAL_PHASES,
+        ONBOARDING_PHASE_1,
+        OnboardingStep,
+    )
+
+    assert ONBOARDING_PHASE_1 == [
+        OnboardingStep.INVITACION,
+        OnboardingStep.EDAD,
+        OnboardingStep.PESO,
+        OnboardingStep.ALTURA,
+    ]
+    assert OnboardingStep.OBJETIVO in ONBOARDING_OPTIONAL_PHASES
+    assert OnboardingStep.ALERGIAS in ONBOARDING_OPTIONAL_PHASES
+    assert OnboardingStep.ENFERMEDADES in ONBOARDING_OPTIONAL_PHASES
 
 
 # ─── Test 12: Las preguntas de encuesta no duplican el hint de escala ────

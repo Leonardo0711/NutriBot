@@ -13,7 +13,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.entities import ConversationState
-from domain.value_objects import OnboardingStatus, OnboardingStep, ONBOARDING_STEPS_ORDER, ONBOARDING_PHASE_1, ONBOARDING_PHASE_2
+from domain.value_objects import (
+    OnboardingStatus,
+    OnboardingStep,
+    ONBOARDING_STEPS_ORDER,
+    ONBOARDING_PHASE_1,
+    ONBOARDING_PHASE_2,
+    ONBOARDING_PHASE_3,
+)
 from domain.utils import get_now_peru
 from domain.parsers import parse_age, parse_weight, parse_height, standardize_text_list
 from domain.normalizer import normalize_text, fuzzy_match
@@ -794,6 +801,8 @@ class OnboardingService:
     def _phase_for_step(step_code: Optional[str]) -> list:
         if step_code and any(step.value == step_code for step in ONBOARDING_PHASE_2):
             return ONBOARDING_PHASE_2
+        if step_code and any(step.value == step_code for step in ONBOARDING_PHASE_3):
+            return ONBOARDING_PHASE_3
         return ONBOARDING_PHASE_1
 
     async def _skip_current_step_and_advance(
@@ -804,10 +813,11 @@ class OnboardingService:
         current_step: str,
     ) -> str:
         await self._mark_field_as_skipped(session, state.usuario_id, current_step)
+        active_phase = self._phase_for_step(current_step)
         next_step = await self._find_next_missing_step(
             session,
             state.usuario_id,
-            phase=ONBOARDING_PHASE_1,
+            phase=active_phase,
         )
         if next_step:
             self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
@@ -816,6 +826,8 @@ class OnboardingService:
                 f"{ONBOARDING_QUESTIONS[next_step]}"
             )
         self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
+        if any(step.value == current_step for step in ONBOARDING_PHASE_2 + ONBOARDING_PHASE_3):
+            return "Listo ðŸ˜Š ya completÃ© esos datos extra de tu perfil."
         return await self._build_phase1_completion_message(session, state.usuario_id)
 
     async def _build_phase1_completion_message(self, session: AsyncSession, usuario_id: int) -> str:
@@ -1212,7 +1224,7 @@ FORMATO DE SALIDA (JSON):
             snapshot = await self._get_profile_snapshot(session, state.usuario_id)
             existing_health = snapshot.value_for_step("enfermedades") if snapshot else None
             if existing_health:
-                phase_steps = [s for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
+                phase_steps = [s for s in self._phase_for_step(current_step) if s != OnboardingStep.INVITACION]
                 current_idx = next(
                     (i for i, step in enumerate(phase_steps) if step.value == current_step),
                     -1,
@@ -1227,7 +1239,7 @@ FORMATO DE SALIDA (JSON):
                     self._set_onboarding_state(state, OnboardingStatus.IN_PROGRESS, next_step)
                     return f"Entendido, lo dejamos como anemia general por ahora. 😊\n\n{ONBOARDING_QUESTIONS[next_step]}"
                 self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-                return await self._build_phase1_completion_message(session, state.usuario_id)
+                return "Listo ðŸ˜Š ya completÃ© esos datos extra de tu perfil."
 
         # --- NEW Switchboard Logic (The Unified Brain) ---
         analysis = await self._analyze_turn(user_text, current_step, history)
@@ -1249,7 +1261,7 @@ FORMATO DE SALIDA (JSON):
         if current_step and current_step != OnboardingStep.INVITACION.value:
             # --- MODO OBSTINADO (Prioritarios = Phase 1 fields) ---
             PRIORITARY_STEPS = [s.value for s in ONBOARDING_PHASE_1 if s != OnboardingStep.INVITACION]
-            PHASE2_STEPS = [s.value for s in ONBOARDING_PHASE_2]
+            OPTIONAL_STEPS = [s.value for s in ONBOARDING_PHASE_2 + ONBOARDING_PHASE_3]
             is_food_request = route_intent in ("NUTRITION_QUERY", "RECOMMENDATION_REQUEST")
             clarification_request = self._is_clarification_request(user_text)
             refusal_kind = self._classify_data_refusal(
@@ -1258,6 +1270,12 @@ FORMATO DE SALIDA (JSON):
                 is_food_request=is_food_request,
                 history=history,
             )
+            # Si esta en fase basica pero hace una consulta nutricional real,
+            # no bloqueamos la respuesta por pedir edad/peso/talla.
+            if current_step in PRIORITARY_STEPS and is_food_request and intent != "ANSWER":
+                self._set_onboarding_state(state, OnboardingStatus.PAUSED, None)
+                return None
+
             if refusal_kind == "HARD_SKIP":
                 return await self._skip_current_step_and_advance(
                     session=session,
@@ -1317,7 +1335,7 @@ FORMATO DE SALIDA (JSON):
                 intent = "ANSWER"
 
             # Fase 2 es progresiva: si cambia de tema, no bloqueamos la conversacion.
-            if current_step in PHASE2_STEPS and is_food_request and intent in ("DOUBT", "GREETING", "SKIP"):
+            if current_step in OPTIONAL_STEPS and is_food_request and intent in ("DOUBT", "GREETING", "SKIP"):
                 self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
                 return None
 
@@ -1555,7 +1573,7 @@ FORMATO DE SALIDA (JSON):
             return f"{ONBOARDING_QUESTIONS[next_step]}"
         else:
             self._set_onboarding_state(state, OnboardingStatus.COMPLETED, None)
-            if any(step.value == current_step for step in ONBOARDING_PHASE_2):
+            if any(step.value == current_step for step in ONBOARDING_PHASE_2 + ONBOARDING_PHASE_3):
                 return "Listo 😊 ya completé los datos extra de tu perfil."
             # Phase 1 completada → dar valor inmediato y pasar a active_chat
             return await self._build_phase1_completion_message(session, state.usuario_id)

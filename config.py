@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     meta_verify_token: str = ""
     meta_app_secret: str = ""
 
+    # --- Twilio WhatsApp ---
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_from: str = ""
+    twilio_messaging_service_sid: str = ""
+    twilio_validate_signature: bool = False
+
     # --- Workers ---
     inbox_poll_interval_seconds: float = 0.1
     outbox_poll_interval_seconds: float = 0.1
@@ -42,6 +49,11 @@ class Settings(BaseSettings):
     zombie_timeout_minutes: int = 10
     max_retry_count: int = 3
     processing_lock_ttl_seconds: int = 60
+
+    # --- Outbound humanization ---
+    humanize_outbox_enabled: bool = True
+    humanize_typing_enabled: bool = True
+    humanize_delay_max_seconds: float = 4.5
 
     # --- RAG ---
     openai_embedding_model: str = "text-embedding-3-small"
@@ -52,6 +64,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     debug: bool = False
     nutribot_mode: str = "monolith"
+    public_base_url: str = "https://api-nutribot.ietsidis.com"
 
     # --- Legacy Rate Limiting (compatibilidad) ---
     rate_limit_max_messages: int = 10

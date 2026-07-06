@@ -77,12 +77,15 @@ ONBOARDING_PHASE_1 = [
     OnboardingStep.EDAD,
     OnboardingStep.PESO,
     OnboardingStep.ALTURA,
-    OnboardingStep.ALERGIAS,
-    OnboardingStep.OBJETIVO,
 ]
 
 ONBOARDING_PHASE_2 = [
+    OnboardingStep.OBJETIVO,
+    OnboardingStep.ALERGIAS,
     OnboardingStep.TIPO_DIETA,
+]
+
+ONBOARDING_PHASE_3 = [
     OnboardingStep.ENFERMEDADES,
     OnboardingStep.RESTRICCIONES,
     OnboardingStep.PROVINCIA,
@@ -90,7 +93,9 @@ ONBOARDING_PHASE_2 = [
 ]
 
 # Backward-compat: orden completo para búsquedas exhaustivas
-ONBOARDING_STEPS_ORDER = ONBOARDING_PHASE_1 + ONBOARDING_PHASE_2
+ONBOARDING_OPTIONAL_PHASES = ONBOARDING_PHASE_2 + ONBOARDING_PHASE_3
+
+ONBOARDING_STEPS_ORDER = ONBOARDING_PHASE_1 + ONBOARDING_PHASE_2 + ONBOARDING_PHASE_3
 
 class ExtractionStatus(str, Enum):
     """Estado de confianza de una extracción de perfil."""

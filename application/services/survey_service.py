@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import timedelta
 from typing import Optional, Any
 
 from openai import AsyncOpenAI
@@ -20,6 +19,7 @@ from domain.entities import ConversationState, NormalizedMessage
 from domain.reply_objects import BotReply
 from domain.value_objects import MessageType, OnboardingStatus
 from domain.utils import get_now_peru
+from application.services.interactive_message_factory import build_scale_list, build_yes_no_buttons
 from application.services.survey_policy import VALID_NUTRITION_INTERACTIONS_FOR_SURVEY
 
 logger = logging.getLogger(__name__)
@@ -317,6 +317,12 @@ class SurveyResponseExtractor:
             if interactive_id == "survey:auth:no":
                 return {"intent": "ANSWER", "value": "No"}
 
+        if state_name == "esperando_asegurado_essalud":
+            if interactive_id == "survey:essalud:yes":
+                return {"intent": "ANSWER", "value": "Si"}
+            if interactive_id == "survey:essalud:no":
+                return {"intent": "ANSWER", "value": "No"}
+
         if state_name == CONSENT_STATE:
             if interactive_id == "survey:consent:yes":
                 return {"intent": "ANSWER", "value": "Si"}
@@ -441,7 +447,6 @@ class SurveyResponseExtractor:
 
 
 class SurveyService:
-    REINVITE_COOLDOWN = timedelta(hours=6)
     _FEATURE_STATES = {
         "esperando_audio_optin",
         "esperando_audio_prueba",
@@ -536,14 +541,7 @@ class SurveyService:
 
     @classmethod
     def _is_reinvite_cooldown_active(cls, state: ConversationState) -> bool:
-        if not state.last_form_prompt_at:
-            return False
-        now_peru = get_now_peru()
-        try:
-            delta = now_peru - state.last_form_prompt_at
-        except Exception:
-            return False
-        return delta < cls.REINVITE_COOLDOWN
+        return False
 
     @staticmethod
     def _normalize_email(value: Any) -> Optional[str]:
@@ -792,14 +790,61 @@ class SurveyService:
             deduped_lines.append(clean)
 
         text_msg = "\n\n".join(deduped_lines).strip()
+        scale_prefix = _SCALE_PREFIX.get(state_name)
+        if scale_prefix:
+            max_value = 10 if state_name == "esperando_nps" else 5
+            return BotReply(
+                text=text_msg,
+                content_type="interactive_list",
+                payload_json=build_scale_list(
+                    text_msg,
+                    scale_prefix,
+                    1,
+                    max_value,
+                    title="Elige una respuesta",
+                ),
+            )
+        if state_name == "esperando_asegurado_essalud":
+            return BotReply(
+                text=text_msg,
+                content_type="interactive_buttons",
+                payload_json=build_yes_no_buttons(
+                    text_msg,
+                    "survey:essalud:yes",
+                    "survey:essalud:no",
+                    yes_label="Sí",
+                    no_label="No",
+                ),
+            )
+        if state_name == "esperando_autorizacion":
+            return BotReply(
+                text=text_msg,
+                content_type="interactive_buttons",
+                payload_json=build_yes_no_buttons(
+                    text_msg,
+                    "survey:auth:yes",
+                    "survey:auth:no",
+                    yes_label="Sí",
+                    no_label="No",
+                ),
+            )
         return BotReply(text=text_msg, content_type="text")
-
     def _build_consent_reply(self) -> BotReply:
         text_msg = (
             "¿Me podrías ayudar a seguir mejorando contestando algunas preguntas?\n\n"
             "Si estás de acuerdo, empezamos."
         )
-        return BotReply(text=text_msg, content_type="text")
+        return BotReply(
+            text=text_msg,
+            content_type="interactive_buttons",
+            payload_json=build_yes_no_buttons(
+                text_msg,
+                "survey:consent:yes",
+                "survey:consent:no",
+                yes_label="Sí",
+                no_label="No",
+            ),
+        )
 
     async def _load_active_progress(self, session: AsyncSession, usuario_id: int):
         result = await session.execute(
@@ -1023,6 +1068,9 @@ class SurveyService:
                         state.awaiting_question_code = progress.estado_actual
                         state.meaningful_interactions_count = 0
                         state.last_form_prompt_at = get_now_peru()
+                        state.mode = "active_chat"
+                        state.awaiting_question_code = CONSENT_STATE
+                        return self._build_consent_reply()
                         return self._build_question_reply(
                             progress.estado_actual,
                             prefix="Si puedes, retomamos la encuesta donde quedamos 😊",

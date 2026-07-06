@@ -203,6 +203,8 @@ class MessageOrchestratorService:
         Se refinará después del handler en _classify_turn_kind().
         """
         if ctx.profile_intent and ctx.profile_intent.is_profile_update:
+            if self._is_nutrition_value_turn(ctx):
+                return "NUTRITION_VALUE"
             return "PROFILE_MAINTENANCE"
 
         if ctx.state.onboarding_status in (
@@ -214,7 +216,7 @@ class MessageOrchestratorService:
         if ctx.state.mode == SessionMode.COLLECTING_USABILITY.value:
             return "SURVEY_RESPONSE"
 
-        if ctx.route.intent in (Intent.NUTRITION_QUERY, Intent.RECOMMENDATION_REQUEST):
+        if self._is_nutrition_value_turn(ctx):
             return "NUTRITION_VALUE"
 
         return "OTHER"
@@ -224,6 +226,9 @@ class MessageOrchestratorService:
         Clasificación centralizada del tipo de turno DESPUÉS de ejecutar el handler.
         Determina si el contador de interacciones significativas debe incrementarse.
         """
+        if self._is_nutrition_value_turn(ctx):
+            return "NUTRITION_VALUE"
+
         # Si ya fue clasificado como PROFILE_MAINTENANCE por el extractor, mantener
         if ctx.turn_kind == "PROFILE_MAINTENANCE":
             return "PROFILE_MAINTENANCE"
@@ -241,14 +246,49 @@ class MessageOrchestratorService:
             return "PROFILE_MAINTENANCE"
 
         # Solo consultas nutricionales reales cuentan como NUTRITION_VALUE
-        if ctx.route.intent in (Intent.NUTRITION_QUERY, Intent.RECOMMENDATION_REQUEST):
-            return "NUTRITION_VALUE"
-
-        if getattr(ctx, "is_asking_for_recommendation", False):
-            return "NUTRITION_VALUE"
-
         # Todo lo demás (saludos, agradecimientos, mensajes neutros) no cuenta
         return "OTHER"
+
+    def _is_nutrition_value_turn(self, ctx) -> bool:
+        """
+        Una consulta nutricional debe contar aunque venga mezclada con datos de
+        perfil. Responder o actualizar perfil puro no cuenta.
+        """
+        if ctx.state.mode == SessionMode.COLLECTING_USABILITY.value:
+            return False
+        if ctx.state.onboarding_status in (
+            OnboardingStatus.INVITED.value,
+            OnboardingStatus.IN_PROGRESS.value,
+        ):
+            return False
+        is_nutrition_route = bool(
+            ctx.route.intent in (Intent.NUTRITION_QUERY, Intent.RECOMMENDATION_REQUEST)
+            or getattr(ctx, "is_asking_for_recommendation", False)
+        )
+        if not is_nutrition_route:
+            return False
+        if ctx.profile_intent and ctx.profile_intent.is_profile_update:
+            return self._has_nutrition_request_signal(ctx.normalized.text or "")
+        return True
+
+    @staticmethod
+    def _has_nutrition_request_signal(text: str) -> bool:
+        ascii_text = "".join(
+            ch for ch in unicodedata.normalize("NFKD", text.lower())
+            if not unicodedata.combining(ch)
+        )
+        return bool(
+            "?" in text
+            or re.search(
+                r"\b("
+                r"que\s+puedo|q\s+puedo|puedo\s+comer|debo\s+comer|"
+                r"recomiend|recomend|dieta|menu|aliment|consej|"
+                r"desayun|almuerz|cena|receta|porciones?|"
+                r"controlar|mejorar|ayuda|ayudame"
+                r")\b",
+                ascii_text,
+            )
+        )
 
     async def _extract_profile_intent(self, ctx):
         """

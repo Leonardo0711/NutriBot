@@ -4,11 +4,19 @@ Nutribot Backend - Interactive Message Factory
 from __future__ import annotations
 
 
+def _scale_row(prefix: str, value: int, max_value: int) -> dict:
+    return {
+        "id": f"{prefix}:{value}",
+        "title": str(value),
+        "description": "",
+    }
+
+
 def build_yes_no_buttons(
     body: str,
     button_yes_id: str,
     button_no_id: str,
-    yes_label: str = "Si",
+    yes_label: str = "Sí",
     no_label: str = "No",
 ) -> dict:
     return {
@@ -44,11 +52,7 @@ def build_scale_list(
             {
                 "title": title,
                 "rows": [
-                    {
-                        "id": f"{prefix}:{i}",
-                        "title": str(i),
-                        "description": "",
-                    }
+                    _scale_row(prefix, i, max_value)
                     for i in range(min_value, max_value + 1)
                 ],
             }

@@ -10,7 +10,7 @@ from application.services.onboarding_service import OnboardingService
 from application.services.profile_context_service import ProfileContextService
 from domain.entities import ConversationState
 from domain.profile_snapshot import ProfileSnapshot
-from domain.value_objects import ONBOARDING_PHASE_2, OnboardingStatus
+from domain.value_objects import ONBOARDING_OPTIONAL_PHASES, OnboardingStatus
 
 
 class ProfileInterceptionService:
@@ -66,7 +66,7 @@ class ProfileInterceptionService:
             user_id,
             ignore_skips=True,
             treat_ninguna_as_missing=False,
-            phase=[s for s in ONBOARDING_PHASE_2] if state.onboarding_status == OnboardingStatus.COMPLETED.value else None,
+            phase=[s for s in ONBOARDING_OPTIONAL_PHASES] if state.onboarding_status == OnboardingStatus.COMPLETED.value else None,
         )
         if next_step:
             step_label = self._profile_context.human_step_label(next_step)
@@ -103,34 +103,24 @@ class ProfileInterceptionService:
             return reply, onboarding_interception_happened
 
         if is_asking_for_recommendation:
-            missing_essential = self._profile_context.missing_essential_fields(snapshot)
-            if not missing_essential:
-                return reply, onboarding_interception_happened
-
-            missing_step = await self._onboarding_service._find_next_missing_step(session, user_id, phase=None)
-            if not missing_step:
-                return reply, onboarding_interception_happened
-
-            step_name = self._profile_context.human_step_label(missing_step)
-            examples = self._get_field_examples(step_name)
-            reply = (
-                "Claro, te ayudo con eso 😊\n\n"
-                f"Para afinar la recomendación, primero me compartes {step_name}{examples}?"
-            )
-            self._state_service.set_onboarding_in_progress(state, missing_step)
-            return reply, True
+            # Una consulta nutricional no debe quedar bloqueada por perfil incompleto.
+            # La respuesta se genera igual y LlmReplyService agrega una nota de
+            # orientacion general cuando falten datos basicos.
+            return reply, onboarding_interception_happened
 
         if is_short_greeting:
             if state.onboarding_status == OnboardingStatus.NOT_STARTED.value:
                 reply = (
-                    "Hola 😊 Soy NutriBot, tu asistente de nutrición de EsSalud.\n\n"
-                    "Estoy aquí para ayudarte con orientación y recomendaciones de alimentación saludable.\n\n"
-                    "Pregúntame lo que necesites, estoy para ayudarte 🍎"
+                    "¡Hola! 😊 Soy NutriBot, tu asistente de nutrición de EsSalud.\n\n"
+                    "Estoy aquí para acompañarte con orientación sencilla sobre alimentación saludable, "
+                    "bienestar, actividad física y hábitos diarios.\n\n"
+                    "Pregúntame con confianza; si luego quieres recomendaciones más personalizadas, "
+                    "también puedo ayudarte a completar tu perfil nutricional 🍏"
                 )
             else:
                 reply = (
-                    "Hola de nuevo 😊\n\n"
-                    "Qué gusto verte por aquí. ¿En qué te puedo ayudar hoy? 🍏"
+                    "¡Hola de nuevo! 😊 Qué gusto leerte.\n\n"
+                    "¿En qué te ayudo hoy con nutrición, salud o bienestar? 🍏"
                 )
             self._state_service.set_onboarding_invited(state)
             return reply, True
@@ -162,7 +152,7 @@ class ProfileInterceptionService:
         next_phase2 = await self._onboarding_service._find_next_missing_step(
             session,
             user_id,
-            phase=[s for s in ONBOARDING_PHASE_2],
+            phase=[s for s in ONBOARDING_OPTIONAL_PHASES],
             start_from_idx=0,
         )
         if not next_phase2:

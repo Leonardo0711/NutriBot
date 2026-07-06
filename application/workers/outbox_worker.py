@@ -5,14 +5,18 @@ y envia mensajes via el proveedor WhatsApp configurado.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
+import secrets
 from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy import Integer
 from sqlalchemy.dialects.postgresql import JSONB
 
 from config import get_settings
+from application.services.response_humanizer import ResponseHumanizer
 from infrastructure.openai.tts_adapter import OpenAITextToSpeechAdapter
 from infrastructure.redis.client import dequeue, OUTBOX_QUEUE
 
@@ -30,6 +34,7 @@ class OutboxWorker:
         self.whatsapp_client = whatsapp_client or evolution_client
         self.evolution_client = self.whatsapp_client
         self.tts_adapter = tts_adapter
+        self._humanizer = ResponseHumanizer()
 
     async def deliver_pending_messages(self) -> int:
         """Consume mensajes: primero de Redis, luego fallback SQL."""
@@ -118,6 +123,7 @@ class OutboxWorker:
 
     async def _deliver_single(self, msg) -> bool:
         msg_content = msg.content
+        humanizer_text = msg.content
         send_as_audio = False
         interactive_payload = getattr(msg, "payload_json", None) or {}
         if isinstance(interactive_payload, str):
@@ -126,6 +132,8 @@ class OutboxWorker:
             except Exception:
                 interactive_payload = {}
         ctype = msg.content_type
+        idempotency_key = getattr(msg, "idempotency_key", None)
+        phone = getattr(msg, "phone", None)
 
         if ctype == "audio_tts":
             try:
@@ -140,6 +148,7 @@ class OutboxWorker:
         elif ctype == "audio":
             # Compatibilidad con registros legacy cuyo payload ya es base64 de audio.
             send_as_audio = True
+            humanizer_text = ""
 
         async with self.session_factory() as session:
             async with session.begin():
@@ -157,6 +166,16 @@ class OutboxWorker:
                     {"id": msg.id},
                 )
 
+        humanized = self._humanizer.prepare(
+            text=humanizer_text,
+            content_type=ctype,
+            idempotency_key=idempotency_key,
+            phone=phone,
+        )
+        if ctype == "text":
+            msg_content = humanized.text
+        await self._apply_humanized_pacing(humanized)
+
         if ctype == "interactive_buttons":
             result = await self.evolution_client.send_buttons_with_result(
                 msg.phone,
@@ -170,11 +189,19 @@ class OutboxWorker:
                 idempotency_key=msg.idempotency_key,
             )
         elif send_as_audio:
-            result = await self.evolution_client.send_audio_base64_with_result(
-                msg.phone,
-                msg_content,
-                idempotency_key=msg.idempotency_key,
-            )
+            if hasattr(self.evolution_client, "send_audio_url_with_result"):
+                media_url = await self._store_outgoing_audio(msg.id, msg_content)
+                result = await self.evolution_client.send_audio_url_with_result(
+                    msg.phone,
+                    media_url,
+                    idempotency_key=msg.idempotency_key,
+                )
+            else:
+                result = await self.evolution_client.send_audio_base64_with_result(
+                    msg.phone,
+                    msg_content,
+                    idempotency_key=msg.idempotency_key,
+                )
         else:
             result = await self.evolution_client.send_text_with_result(
                 msg.phone,
@@ -214,6 +241,48 @@ class OutboxWorker:
             non_retryable=not result.retryable,
         )
         return False
+
+    async def _apply_humanized_pacing(self, humanized) -> None:
+        """Best-effort typing indicator and short organic pause before sending."""
+        if humanized.typing_message_id and hasattr(self.evolution_client, "send_typing_indicator"):
+            try:
+                await self.evolution_client.send_typing_indicator(humanized.typing_message_id)
+            except Exception:
+                logger.debug("Typing indicator best-effort failed", exc_info=True)
+        if humanized.delay_seconds > 0:
+            await asyncio.sleep(humanized.delay_seconds)
+
+    async def _store_outgoing_audio(self, outgoing_message_id: int, audio_base64: str) -> str:
+        """Persist audio briefly so Twilio can fetch it through a public MediaUrl."""
+        audio_bytes = base64.b64decode(audio_base64)
+        token = secrets.token_urlsafe(32)
+        settings = get_settings()
+        public_base_url = (settings.public_base_url or "https://api-nutribot.ietsidis.com").rstrip("/")
+
+        async with self.session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO outgoing_media_files
+                            (token, outgoing_message_id, content_type, data, expires_at)
+                        VALUES (
+                            :token,
+                            :outgoing_message_id,
+                            'audio/ogg',
+                            :data,
+                            TIMEZONE('America/Lima', NOW()) + INTERVAL '24 hours'
+                        )
+                        """
+                    ),
+                    {
+                        "token": token,
+                        "outgoing_message_id": outgoing_message_id,
+                        "data": audio_bytes,
+                    },
+                )
+
+        return f"{public_base_url}/media/outgoing/{token}"
 
     async def _mark_sent(
         self,

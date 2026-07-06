@@ -33,6 +33,38 @@ class TestHardening:
         assert extractor.try_fast_extract("esperando_p1", "5") == {"intent": "ANSWER", "value": "5"}
         assert extractor.try_fast_extract("esperando_p3", " 5 ") == {"intent": "ANSWER", "value": "5"}
 
+    def test_survey_scale_questions_use_interactive_lists(self):
+        service = SurveyService(None, "dummy-model")
+        extractor = SurveyResponseExtractor(None, "dummy-model")
+
+        p1 = service._build_question_reply("esperando_p1")
+        assert p1.content_type == "interactive_list"
+        assert p1.payload_json["sections"][0]["rows"][0]["id"] == "survey:p1:1"
+        assert p1.payload_json["sections"][0]["rows"][0]["title"] == "1"
+        assert p1.payload_json["sections"][0]["rows"][0]["description"] == ""
+        assert p1.payload_json["sections"][0]["rows"][-1]["id"] == "survey:p1:5"
+        assert p1.payload_json["sections"][0]["rows"][-1]["title"] == "5"
+        assert "1 =" not in p1.text
+        assert len(p1.payload_json["sections"][0]["rows"]) == 5
+
+        nps = service._build_question_reply("esperando_nps")
+        assert nps.content_type == "interactive_list"
+        assert nps.payload_json["sections"][0]["rows"][0]["id"] == "survey:nps:1"
+        assert nps.payload_json["sections"][0]["rows"][0]["title"] == "1"
+        assert nps.payload_json["sections"][0]["rows"][-1]["id"] == "survey:nps:10"
+        assert nps.payload_json["sections"][0]["rows"][-1]["title"] == "10"
+        assert "10 =" not in nps.text
+        assert len(nps.payload_json["sections"][0]["rows"]) == 10
+
+        assert extractor.extract_structured("esperando_p1", "survey:p1:4", "") == {
+            "intent": "ANSWER",
+            "value": "4",
+        }
+        assert extractor.extract_structured("esperando_nps", "survey:nps:10", "") == {
+            "intent": "ANSWER",
+            "value": "10",
+        }
+
     def test_survey_interrupts_on_free_form_question_during_scale(self):
         extractor = SurveyResponseExtractor(None, "dummy-model")
         msg = "jajajaj yap y sobre dormir seria mejor de costado boca arriba boca abajo en el piso"
@@ -165,6 +197,11 @@ class TestHardening:
     def test_scope_redirect_allows_nutrition_query(self):
         route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
         assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "me puedes dar un menu saludable para hoy")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "dame un almuerzo para hoy")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "me das un consejo para ejercitarme")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "me das un konsejo pa ejersitarme")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "q puedo almuersar hoy")
+        assert not LlmReplyService._must_redirect_to_nutrition_scope(route, "kiero entrenar pero tengo sobrepeso")
 
     def test_scope_redirect_allows_coffee_nutrition_followup(self):
         route = RouteResult(intent=Intent.DOUBT, confidence=0.8, reason="Pregunta generica detectada")
@@ -199,6 +236,42 @@ class TestHardening:
             content_type="text",
         )
         assert route.intent == Intent.NUTRITION_QUERY
+
+        lunch_route = classify_message(
+            raw_text="dame un almuerzo para hoy",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert lunch_route.intent == Intent.RECOMMENDATION_REQUEST
+
+        exercise_route = classify_message(
+            raw_text="Me das un consejo para ejercitarme?",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert exercise_route.intent == Intent.NUTRITION_QUERY
+
+        typo_exercise_route = classify_message(
+            raw_text="me das un konsejo pa ejersitarme",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert typo_exercise_route.intent == Intent.NUTRITION_QUERY
+
+        typo_lunch_route = classify_message(
+            raw_text="q puedo almuersar hoy",
+            current_mode="active_chat",
+            onboarding_status="completed",
+            onboarding_step=None,
+            content_type="text",
+        )
+        assert typo_lunch_route.intent == Intent.NUTRITION_QUERY
 
     def test_rag_policy_skips_ambiguous_human_followup_but_keeps_llm_available(self):
         route = RouteResult(intent=Intent.DOUBT, confidence=0.7, reason="Pregunta generica detectada")
@@ -316,7 +389,7 @@ class TestHardening:
         state = ConversationState(
             usuario_id=100,
             mode=SessionMode.ACTIVE_CHAT.value,
-            meaningful_interactions_count=9,
+            meaningful_interactions_count=1,
             last_form_prompt_at=get_now_peru(),
         )
         normalized = NormalizedMessage(
@@ -329,9 +402,47 @@ class TestHardening:
             session=None,
             state=state,
             normalized=normalized,
-            projected_interactions_count=9,
+            projected_interactions_count=1,
         )
         assert addon is None
+
+    @pytest.mark.asyncio
+    async def test_survey_reinvite_cooldown_allows_after_valid_threshold(self):
+        service = SurveyService(None, "dummy-model")
+        state = ConversationState(
+            usuario_id=104,
+            mode=SessionMode.ACTIVE_CHAT.value,
+            meaningful_interactions_count=2,
+            last_form_prompt_at=get_now_peru(),
+            usability_completion_pct=0,
+        )
+        normalized = NormalizedMessage(
+            provider_message_id="m-cooldown-threshold",
+            phone="+51999999999",
+            content_type=MessageType.TEXT,
+            text="dame una cena saludable",
+        )
+
+        async def fake_get_active_form(session):
+            return SimpleNamespace(id=1)
+
+        async def fake_load_active_progress(session, uid):
+            return None
+
+        service._get_active_form = fake_get_active_form
+        service._load_active_progress = fake_load_active_progress
+
+        addon = await service.process(
+            session=object(),
+            state=state,
+            normalized=normalized,
+            projected_interactions_count=2,
+        )
+
+        assert addon is not None
+        assert "ayudar a seguir mejorando" in addon.text
+        assert state.awaiting_question_code == "esperando_consentimiento_encuesta"
+        assert state.meaningful_interactions_count == 0
 
     @pytest.mark.asyncio
     async def test_survey_pending_form_resumes_even_during_reinvite_cooldown(self):
@@ -437,10 +548,10 @@ class TestHardening:
         )
 
         assert addon is not None
-        assert "retomamos la encuesta" in addon.text
-        assert "En una escala del 1 al 5" in addon.text
-        assert state.mode == SessionMode.COLLECTING_USABILITY.value
-        assert state.awaiting_question_code == "esperando_p6"
+        assert "ayudar a seguir mejorando" in addon.text
+        assert addon.content_type == "interactive_buttons"
+        assert state.mode == SessionMode.ACTIVE_CHAT.value
+        assert state.awaiting_question_code == "esperando_consentimiento_encuesta"
         assert state.meaningful_interactions_count == 0
 
     @pytest.mark.asyncio

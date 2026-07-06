@@ -122,6 +122,29 @@ NUTRITION_KEYWORDS = [
     "vitamina", "mineral", "fibra", "azucar", "colesterol",
     "frutas", "verduras", "vegetales", "cafe", "te", "infusion",
     "infusiones", "mate", "bebida", "bebidas",
+    "ejercicio", "ejercitar", "ejercitarme", "entrenamiento",
+    "entrenar", "actividad fisica", "actividad física", "rutina",
+    "cardio", "caminar", "fuerza",
+]
+
+NUTRITION_SEMANTIC_ROOTS = (
+    "nutric", "aliment", "comid", "comer", "recet", "menu", "men",
+    "almuer", "desayun", "cen", "snack", "refriger", "plato",
+    "salud", "bienestar", "hidrat", "agua", "habito", "habit",
+    "ejer", "entren", "activ", "fisic", "rutina", "cardio",
+    "camin", "fuerz", "movim", "deport",
+    "peso", "adelgaz", "baj", "sub", "masa", "muscul", "imc",
+    "calor", "protein", "carbo", "gras", "fibra", "vitamin",
+    "mineral", "azucar", "glucos", "colesterol", "hierro",
+    "hemoglobin", "anemi", "diabet", "presion", "hipert",
+)
+
+NUTRITION_FUZZY_TERMS = [
+    "nutricion", "alimentacion", "comida", "receta", "menu",
+    "almuerzo", "desayuno", "cena", "saludable", "hidratacion",
+    "ejercicio", "ejercitar", "entrenar", "entrenamiento",
+    "actividad", "fisica", "rutina", "proteina", "calorias",
+    "diabetes", "hipertension", "anemia",
 ]
 
 # Verbos/frases de cocina que indican pregunta nutricional/culinaria
@@ -239,6 +262,31 @@ def _starts_with_keyword(text: str, keyword: str) -> bool:
     return text.startswith(keyword + " ")
 
 
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text or "")
+
+
+def _has_semantic_root(text: str, roots: tuple[str, ...]) -> bool:
+    tokens = _tokens(text)
+    return any(any(tok.startswith(root) for root in roots) for tok in tokens)
+
+
+def _has_fuzzy_term(text: str, terms: list[str], threshold: float = 0.73) -> bool:
+    return bool(fuzzy_match_any(text, terms, threshold=threshold))
+
+
+def _has_nutrition_signal(text: str) -> bool:
+    if not text:
+        return False
+    if any(_contains_keyword(text, nk) for nk in NUTRITION_KEYWORDS):
+        return True
+    if _has_semantic_root(text, NUTRITION_SEMANTIC_ROOTS):
+        return True
+    if _has_fuzzy_term(text, NUTRITION_FUZZY_TERMS):
+        return True
+    return False
+
+
 # ──────────────────────────────────────────────
 # Router Principal
 # ──────────────────────────────────────────────
@@ -335,7 +383,7 @@ def classify_message(
     # 10. DUDA/PREGUNTA
     if norm.endswith("?") or any(_contains_keyword(norm, dw) for dw in DOUBT_WORDS):
         # Verificar si es pregunta nutricional — múltiples señales semánticas
-        has_nutrition_kw = any(_contains_keyword(norm, nk) for nk in NUTRITION_KEYWORDS)
+        has_nutrition_kw = _has_nutrition_signal(norm)
         has_cooking_verb = any(cv in norm for cv in COOKING_VERB_PATTERNS)
         has_food_noun = any(_contains_keyword(norm, fn) for fn in FOOD_NOUNS)
         # "como se prepara el pollo al mani" → cooking verb + food noun = nutricional
@@ -704,6 +752,7 @@ def _clean_profile_value(value: str) -> str:
 def _detect_nutrition_intent(norm: str) -> Optional[RouteResult]:
     """Detecta si el mensaje es una consulta nutricional."""
     match_count = sum(1 for nk in NUTRITION_KEYWORDS if _contains_keyword(norm, nk))
+    semantic_match = _has_nutrition_signal(norm)
     has_cooking_verb = any(cv in norm for cv in COOKING_VERB_PATTERNS)
     food_count = sum(1 for fn in FOOD_NOUNS if _contains_keyword(norm, fn))
 
@@ -737,6 +786,12 @@ def _detect_nutrition_intent(norm: str) -> Optional[RouteResult]:
                 0.75,
                 reason="Keyword nutricional con contexto",
             )
+    elif semantic_match and len(norm.split()) >= 3:
+        return RouteResult(
+            Intent.NUTRITION_QUERY,
+            0.76,
+            reason="Señal semántica de nutrición/bienestar detectada",
+        )
     elif food_count >= 1 and len(norm.split()) >= 3:
         # Menciona un alimento con contexto suficiente: "dame pollo al mani"
         return RouteResult(

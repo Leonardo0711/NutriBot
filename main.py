@@ -23,6 +23,8 @@ from infrastructure.db.connection import dispose_engine
 from infrastructure.redis.client import close_redis
 from interface.webhook_controller import router as webhook_router
 from interface.meta_webhook_controller import router as meta_webhook_router
+from interface.twilio_webhook_controller import router as twilio_webhook_router
+from interface.outgoing_media_controller import router as outgoing_media_router
 from di import container
 
 logging.basicConfig(
@@ -120,6 +122,8 @@ app = FastAPI(
 
 app.include_router(webhook_router)
 app.include_router(meta_webhook_router)
+app.include_router(twilio_webhook_router)
+app.include_router(outgoing_media_router)
 
 
 @app.get("/health")

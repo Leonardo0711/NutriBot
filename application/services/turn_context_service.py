@@ -71,7 +71,10 @@ class TurnContextService:
             Intent.RECOMMENDATION_REQUEST,
         )
         is_short_greeting = route.intent == Intent.GREETING
-        is_requesting_personalization = route.intent == Intent.PERSONALIZE_REQUEST
+        is_requesting_personalization = (
+            route.intent == Intent.PERSONALIZE_REQUEST
+            or normalized.interactive_id == "profile:basic:yes"
+        )
         is_requesting_survey = route.intent == Intent.SURVEY_CONTINUE
 
         # 5. Cargar contexto de reglas nutricionales (solo para intents relevantes)
@@ -101,4 +104,3 @@ class TurnContextService:
             is_requesting_personalization=is_requesting_personalization,
             is_requesting_survey=is_requesting_survey,
         )
-
