@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 class OpenAITextToSpeechAdapter(TTSService):
     """Genera audio TTS usando OpenAI y lo retorna como base64 en memoria."""
 
+    audio_content_type = "audio/ogg"
+
     def __init__(
         self,
         client: AsyncOpenAI | None = None,

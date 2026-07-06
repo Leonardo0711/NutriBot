@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from config import get_settings
 from application.services.response_humanizer import ResponseHumanizer
-from infrastructure.openai.tts_adapter import OpenAITextToSpeechAdapter
+from domain.ports import TTSService
 from infrastructure.redis.client import dequeue, OUTBOX_QUEUE
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class OutboxWorker:
         self,
         session_factory,
         whatsapp_client: Any = None,
-        tts_adapter: OpenAITextToSpeechAdapter | None = None,
+        tts_adapter: TTSService | None = None,
         evolution_client: Any = None,
     ):
         self.session_factory = session_factory
@@ -125,6 +125,7 @@ class OutboxWorker:
         msg_content = msg.content
         humanizer_text = msg.content
         send_as_audio = False
+        audio_content_type = "audio/ogg"
         interactive_payload = getattr(msg, "payload_json", None) or {}
         if isinstance(interactive_payload, str):
             try:
@@ -140,6 +141,7 @@ class OutboxWorker:
                 # No mutamos content_type/content: conservar intencion logica
                 # evita romper los retries si el envio falla.
                 msg_content = await self.tts_adapter.generate_audio_base64(msg.content)
+                audio_content_type = getattr(self.tts_adapter, "audio_content_type", "audio/ogg")
                 send_as_audio = True
             except Exception:
                 logger.exception("TTS fallo para mensaje id=%s", msg.id)
@@ -190,7 +192,11 @@ class OutboxWorker:
             )
         elif send_as_audio:
             if hasattr(self.evolution_client, "send_audio_url_with_result"):
-                media_url = await self._store_outgoing_audio(msg.id, msg_content)
+                media_url = await self._store_outgoing_audio(
+                    msg.id,
+                    msg_content,
+                    content_type=audio_content_type,
+                )
                 result = await self.evolution_client.send_audio_url_with_result(
                     msg.phone,
                     media_url,
@@ -252,7 +258,12 @@ class OutboxWorker:
         if humanized.delay_seconds > 0:
             await asyncio.sleep(humanized.delay_seconds)
 
-    async def _store_outgoing_audio(self, outgoing_message_id: int, audio_base64: str) -> str:
+    async def _store_outgoing_audio(
+        self,
+        outgoing_message_id: int,
+        audio_base64: str,
+        content_type: str = "audio/ogg",
+    ) -> str:
         """Persist audio briefly so Twilio can fetch it through a public MediaUrl."""
         audio_bytes = base64.b64decode(audio_base64)
         token = secrets.token_urlsafe(32)
@@ -269,7 +280,7 @@ class OutboxWorker:
                         VALUES (
                             :token,
                             :outgoing_message_id,
-                            'audio/ogg',
+                            :content_type,
                             :data,
                             TIMEZONE('America/Lima', NOW()) + INTERVAL '24 hours'
                         )
@@ -278,6 +289,7 @@ class OutboxWorker:
                     {
                         "token": token,
                         "outgoing_message_id": outgoing_message_id,
+                        "content_type": content_type,
                         "data": audio_bytes,
                     },
                 )

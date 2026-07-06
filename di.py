@@ -15,6 +15,7 @@ from infrastructure.openai.media_service import DefaultMediaService
 from infrastructure.openai.responses_adapter import OpenAIResponsesAdapter
 from infrastructure.openai.stt_adapter import OpenAISpeechToTextAdapter
 from infrastructure.openai.tts_adapter import OpenAITextToSpeechAdapter
+from infrastructure.elevenlabs.tts_adapter import ElevenLabsTextToSpeechAdapter
 from application.services.localization_service import LocalizationService
 from application.services.nutrition_assessment_service import NutritionAssessmentService
 from application.services.profile_extraction_service import ProfileExtractionService
@@ -114,11 +115,15 @@ class Container:
             stt_service=self.stt_adapter,
             whatsapp_client=self.whatsapp_client,
         )
-        self.tts_adapter = OpenAITextToSpeechAdapter(
-            client=self.openai_client,
-            model=self.settings.openai_tts_model,
-            voice=self.settings.openai_tts_voice,
-        )
+        tts_provider = (self.settings.tts_provider or "openai").strip().lower()
+        if tts_provider == "elevenlabs":
+            self.tts_adapter = ElevenLabsTextToSpeechAdapter()
+        else:
+            self.tts_adapter = OpenAITextToSpeechAdapter(
+                client=self.openai_client,
+                model=self.settings.openai_tts_model,
+                voice=self.settings.openai_tts_voice,
+            )
 
         self.localization_service = LocalizationService()
         self.nutrition_assessment = NutritionAssessmentService()

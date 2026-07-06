@@ -21,6 +21,18 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "coral"
     openai_use_previous_response: bool = False
 
+    # --- Text to Speech ---
+    tts_provider: str = "openai"
+    elevenlabs_tts_api_key: str = ""
+    elevenlabs_tts_voice_id: str = ""
+    elevenlabs_tts_model: str = "eleven_flash_v2_5"
+    elevenlabs_tts_output_format: str = "mp3_44100_128"
+    elevenlabs_tts_speed: float = 0.92
+    elevenlabs_tts_stability: float = 0.52
+    elevenlabs_tts_similarity_boost: float = 0.78
+    elevenlabs_tts_style: float = 0.20
+    elevenlabs_tts_use_speaker_boost: bool = True
+
     # --- Evolution API ---
     whatsapp_provider: str = "evolution"
     evolution_api_url: str = "http://localhost:8080"
