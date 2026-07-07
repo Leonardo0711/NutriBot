@@ -862,6 +862,12 @@ class LlmReplyService:
                     raw,
                     flags=re.IGNORECASE,
                 ).strip()
+                without_greeting = re.sub(
+                    r"^de\s+nuevo\b(?:\W|\s)*",
+                    "",
+                    without_greeting,
+                    flags=re.IGNORECASE,
+                ).strip()
                 lines[idx] = without_greeting
                 changed = True
 

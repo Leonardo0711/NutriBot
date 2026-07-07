@@ -127,6 +127,17 @@ class TestHardening:
                 for bad_char in check_patterns:
                     assert bad_char not in content, f"Encontrado {repr(bad_char)} en {rel_path}"
 
+    def test_strip_redundant_hola_de_nuevo_opening(self):
+        text = (
+            "¡Hola de nuevo! Considerando que tienes 23 años, aquí te dejo ideas "
+            "para acompañar tu lasaña."
+        )
+
+        cleaned = LlmReplyService._strip_redundant_opening_fillers(text)
+
+        assert cleaned.startswith("Considerando que tienes 23 años")
+        assert "de nuevo!" not in cleaned.lower()
+
     def test_anti_noise_onboarding(self):
         extractor = ProfileExtractionService(None, "dummy-model")
         assert not extractor.contains_absurd_claim("ok")
