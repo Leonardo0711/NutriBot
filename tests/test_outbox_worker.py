@@ -14,6 +14,6 @@ def test_split_text_for_whatsapp_chunks_long_recipe():
     chunks = OutboxWorker._split_text_for_whatsapp(text)
 
     assert len(chunks) > 1
-    assert all(len(chunk) <= TWILIO_SAFE_TEXT_LIMIT + 8 for chunk in chunks)
-    assert chunks[0].startswith("(1/")
+    assert all(len(chunk) <= TWILIO_SAFE_TEXT_LIMIT for chunk in chunks)
+    assert not any(chunk.startswith("(") for chunk in chunks)
     assert "Ingredientes" in chunks[0]

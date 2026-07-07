@@ -23,7 +23,8 @@ from infrastructure.redis.client import dequeue, OUTBOX_QUEUE
 
 logger = logging.getLogger(__name__)
 
-TWILIO_SAFE_TEXT_LIMIT = 1450
+TWILIO_SAFE_TEXT_LIMIT = 1200
+SPLIT_MESSAGE_DELAY_SECONDS = 3
 
 class OutboxWorker:
     def __init__(
@@ -307,10 +308,7 @@ class OutboxWorker:
                 continue
             chunks.extend(OutboxWorker._split_long_block(block, limit))
 
-        total = len(chunks)
-        if total <= 1:
-            return chunks
-        return [f"({idx}/{total}) {chunk}" for idx, chunk in enumerate(chunks, start=1)]
+        return chunks
 
     @staticmethod
     def _split_long_block(block: str, limit: int) -> list[str]:
@@ -369,7 +367,7 @@ class OutboxWorker:
                             "phone": parent_msg.phone,
                             "content": chunk,
                             "key": f"{prefix}:{idx}",
-                            "delay_seconds": idx,
+                            "delay_seconds": idx * SPLIT_MESSAGE_DELAY_SECONDS,
                         },
                     )
 
