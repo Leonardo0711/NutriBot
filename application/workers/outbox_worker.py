@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import secrets
 from typing import Any
 from sqlalchemy import bindparam, text
@@ -21,6 +22,8 @@ from domain.ports import TTSService
 from infrastructure.redis.client import dequeue, OUTBOX_QUEUE
 
 logger = logging.getLogger(__name__)
+
+TWILIO_SAFE_TEXT_LIMIT = 1450
 
 class OutboxWorker:
     def __init__(
@@ -209,6 +212,18 @@ class OutboxWorker:
                     idempotency_key=msg.idempotency_key,
                 )
         else:
+            chunks = self._split_text_for_whatsapp(msg_content)
+            if len(chunks) > 1:
+                await self._enqueue_split_text_messages(
+                    parent_msg=msg,
+                    chunks=chunks,
+                )
+                await self._mark_sent(
+                    msg.id,
+                    provider_delivery_id=f"split:{msg.id}",
+                    provider_response={"split": True, "parts": len(chunks)},
+                )
+                return True
             result = await self.evolution_client.send_text_with_result(
                 msg.phone,
                 msg_content,
@@ -226,6 +241,19 @@ class OutboxWorker:
         # Fallback: if interactive list/button fails, try sending as text to ensure user gets a response
         if not result.success and ctype in {"interactive_buttons", "interactive_list"}:
             logger.warning("Interactive message failed with 400. Falling back to plain text for phone %s", msg.phone)
+            chunks = self._split_text_for_whatsapp(msg_content)
+            if len(chunks) > 1:
+                await self._enqueue_split_text_messages(
+                    parent_msg=msg,
+                    chunks=chunks,
+                    idempotency_prefix=f"fb_{msg.idempotency_key or msg.id}",
+                )
+                await self._mark_sent(
+                    msg.id,
+                    provider_delivery_id=f"split:{msg.id}",
+                    provider_response={"split": True, "parts": len(chunks), "fallback": True},
+                )
+                return True
             result = await self.evolution_client.send_text_with_result(
                 msg.phone,
                 msg_content,
@@ -247,6 +275,103 @@ class OutboxWorker:
             non_retryable=not result.retryable,
         )
         return False
+
+    @staticmethod
+    def _split_text_for_whatsapp(text_value: str, limit: int = TWILIO_SAFE_TEXT_LIMIT) -> list[str]:
+        text_value = (text_value or "").strip()
+        if not text_value:
+            return [""]
+        if len(text_value) <= limit:
+            return [text_value]
+
+        paragraphs = re.split(r"(\n\s*\n)", text_value)
+        blocks: list[str] = []
+        current = ""
+        for part in paragraphs:
+            if not part:
+                continue
+            candidate = f"{current}{part}" if current else part
+            if len(candidate) <= limit:
+                current = candidate
+                continue
+            if current.strip():
+                blocks.append(current.strip())
+            current = part
+        if current.strip():
+            blocks.append(current.strip())
+
+        chunks: list[str] = []
+        for block in blocks:
+            if len(block) <= limit:
+                chunks.append(block)
+                continue
+            chunks.extend(OutboxWorker._split_long_block(block, limit))
+
+        total = len(chunks)
+        if total <= 1:
+            return chunks
+        return [f"({idx}/{total}) {chunk}" for idx, chunk in enumerate(chunks, start=1)]
+
+    @staticmethod
+    def _split_long_block(block: str, limit: int) -> list[str]:
+        words = block.split()
+        if not words:
+            return []
+
+        chunks: list[str] = []
+        current = ""
+        for word in words:
+            if len(word) > limit:
+                if current:
+                    chunks.append(current.strip())
+                    current = ""
+                chunks.extend(word[i:i + limit] for i in range(0, len(word), limit))
+                continue
+            candidate = f"{current} {word}".strip()
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                chunks.append(current.strip())
+                current = word
+        if current:
+            chunks.append(current.strip())
+        return chunks
+
+    async def _enqueue_split_text_messages(
+        self,
+        *,
+        parent_msg,
+        chunks: list[str],
+        idempotency_prefix: str | None = None,
+    ) -> None:
+        prefix = idempotency_prefix or f"split:{parent_msg.id}"
+        async with self.session_factory() as session:
+            async with session.begin():
+                stmt = text(
+                    """
+                    INSERT INTO outgoing_messages
+                        (usuario_id, phone, content_type, content, payload_json,
+                         idempotency_key, status, scheduled_at, created_at, updated_at)
+                    VALUES
+                        (:uid, :phone, 'text', :content, '{}'::jsonb,
+                         :key, 'pending',
+                         TIMEZONE('America/Lima', NOW()) + (:delay_seconds * INTERVAL '1 second'),
+                         TIMEZONE('America/Lima', NOW()),
+                         TIMEZONE('America/Lima', NOW()))
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    """
+                )
+                for idx, chunk in enumerate(chunks, start=1):
+                    await session.execute(
+                        stmt,
+                        {
+                            "uid": parent_msg.usuario_id,
+                            "phone": parent_msg.phone,
+                            "content": chunk,
+                            "key": f"{prefix}:{idx}",
+                            "delay_seconds": idx,
+                        },
+                    )
 
     async def _apply_humanized_pacing(self, humanized) -> None:
         """Best-effort typing indicator and short organic pause before sending."""
