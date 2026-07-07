@@ -50,8 +50,8 @@ CONTEXT_RULES = {
     Intent.CONFIRMATION: {
         "history_limit": 4,
         "include_rag": False,
-        "include_profile": False,
-        "max_tokens": 150,
+        "include_profile": True,
+        "max_tokens": 350,
     },
     Intent.DENIAL: {
         "history_limit": 4,

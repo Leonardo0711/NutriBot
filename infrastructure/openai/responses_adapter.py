@@ -5,6 +5,8 @@ Genera respuestas usando OpenAI Responses API con encadenamiento por previous_re
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -57,8 +59,14 @@ class OpenAIResponsesAdapter(LLMService):
                 settings.openai_use_previous_response
                 and state.last_openai_response_id
             )
-            # Si ya hay previous_response_id, no reenviamos historial textual para evitar duplicar tokens.
-            include_history = not has_prev_response
+            # Si ya hay previous_response_id, normalmente no reenviamos historial
+            # textual para evitar duplicar tokens. Excepcion: respuestas cortas
+            # tipo "si/ok/dale" necesitan el ultimo ofrecimiento visible porque
+            # algunos turnos previos pudieron salir por fast-path sin response_id.
+            include_history = (
+                not has_prev_response
+                or self._should_include_history_with_previous(normalized.text, history)
+            )
             user_input = self._build_user_input(
                 normalized,
                 rag_context,
@@ -120,6 +128,56 @@ class OpenAIResponsesAdapter(LLMService):
         except Exception:
             logger.exception("Error generando reply con Responses API")
             raise
+
+    @classmethod
+    def _should_include_history_with_previous(
+        cls,
+        user_text: str | None,
+        history: Optional[list[dict]],
+    ) -> bool:
+        if not history:
+            return False
+
+        normalized = unicodedata.normalize("NFKD", user_text or "")
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = re.sub(r"[^a-z0-9\s]", " ", normalized.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if normalized not in {
+            "si",
+            "sii",
+            "sip",
+            "ok",
+            "okay",
+            "dale",
+            "claro",
+            "ya",
+            "yap",
+            "continua",
+            "continuemos",
+        }:
+            return False
+
+        for item in reversed(history):
+            if item.get("role") != "assistant":
+                continue
+            assistant_text = str(item.get("content") or "")
+            assistant_norm = unicodedata.normalize("NFKD", assistant_text)
+            assistant_norm = "".join(ch for ch in assistant_norm if not unicodedata.combining(ch)).lower()
+            if "?" not in assistant_text:
+                return False
+            return any(
+                marker in assistant_norm
+                for marker in (
+                    "te gustaria",
+                    "quieres",
+                    "listo para hablar",
+                    "puedo ayudarte",
+                    "te ayudo",
+                    "acompan",
+                    "continuamos",
+                )
+            )
+        return False
 
     def _build_user_input(
         self,

@@ -297,6 +297,26 @@ class TestHardening:
         )
         assert mixed.intent != Intent.GREETING
 
+    def test_short_confirmation_after_nutrition_offer_is_not_fast_path(self):
+        route = RouteResult(intent=Intent.CONFIRMATION, confidence=0.9, reason="Confirmacion")
+        history = [
+            {
+                "role": "assistant",
+                "content": "¿Te gustaría saber cómo acompañarla con ensaladas o algún otro platillo?",
+            }
+        ]
+        assert LlmReplyService._should_defer_short_followup_to_llm(route, "Si", history)
+
+    def test_short_confirmation_to_survey_does_not_defer_to_llm(self):
+        route = RouteResult(intent=Intent.CONFIRMATION, confidence=0.9, reason="Confirmacion")
+        history = [
+            {
+                "role": "assistant",
+                "content": "¿Me podrías ayudar a seguir mejorando contestando algunas preguntas? Si estás de acuerdo, empezamos.",
+            }
+        ]
+        assert not LlmReplyService._should_defer_short_followup_to_llm(route, "Si", history)
+
     @pytest.mark.asyncio
     async def test_profile_update_data_bypasses_scope_redirect(self):
         class DummyLLM:

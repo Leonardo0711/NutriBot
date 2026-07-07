@@ -17,7 +17,7 @@ from domain.normalizer import fuzzy_match_any
 from domain.ports import LLMService
 from domain.profile_snapshot import ProfileSnapshot
 from domain.reply_objects import BotReply
-from domain.router import RouteResult
+from domain.router import Intent, RouteResult
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +182,34 @@ class LlmReplyService:
         "entonces", "no puedo", "puedo", "debo", "eso", "ese", "esa",
         "lo mismo", "igual", "tambien", "tmb", "asu", "ah ya", "ok pero",
     )
+    _SHORT_FOLLOWUP_EXACT = {
+        "si",
+        "sí",
+        "sii",
+        "sip",
+        "ok",
+        "okay",
+        "dale",
+        "claro",
+        "ya",
+        "yap",
+        "continua",
+        "continúa",
+        "continuemos",
+    }
+    _ASSISTANT_OFFER_MARKERS = (
+        "te gustaria",
+        "te gustaria saber",
+        "quieres que",
+        "quieres saber",
+        "quieres que te",
+        "listo para hablar",
+        "puedo ayudarte con",
+        "te ayudo con",
+        "dime si",
+        "acompan",
+        "continuamos con",
+    )
 
     def __init__(
         self,
@@ -215,7 +243,9 @@ class LlmReplyService:
         if onboarding_interception_happened or reply is not None:
             return reply, new_response_id
 
-        fast = try_fast_response(route)
+        fast = None
+        if not self._should_defer_short_followup_to_llm(route, normalized.text, history):
+            fast = try_fast_response(route)
         if fast:
             logger.info(
                 "FastPath: user=%s intent=%s reply sin LLM",
@@ -272,6 +302,13 @@ class LlmReplyService:
             citation = self._profile_context.recommendation_citation(snapshot)
             restricted_items = self._restricted_profile_items(snapshot)
             user_requested_conflicts = self._find_conflicting_items_in_text(normalized.text, snapshot)
+            if self._has_basic_profile(snapshot):
+                extra_instr += (
+                    "\n\nDirectiva interna de continuidad:\n"
+                    "- El perfil ya contiene edad, peso y talla. No preguntes de nuevo por esos datos.\n"
+                    "- Si el usuario pide un cálculo o recomendación y ya hay datos suficientes, usa esos valores confirmados.\n"
+                    "- Si falta un dato no esencial, responde con lo disponible y pide solo una aclaración breve al final si realmente es necesaria."
+                )
             if restricted_items:
                 restricted_txt = ", ".join(restricted_items)
                 extra_instr += (
@@ -338,6 +375,40 @@ class LlmReplyService:
         ):
             reply = self._append_general_profile_note(reply)
         return reply, new_response_id
+
+    @classmethod
+    def _should_defer_short_followup_to_llm(
+        cls,
+        route: RouteResult,
+        user_text: str,
+        history: list[dict] | None,
+    ) -> bool:
+        if route.intent not in {Intent.CONFIRMATION, Intent.DENIAL, Intent.SMALL_TALK}:
+            return False
+
+        normalized_user = cls._normalize_text_for_match(user_text or "")
+        normalized_user = re.sub(r"[^a-z0-9\s]", " ", normalized_user)
+        normalized_user = re.sub(r"\s+", " ", normalized_user).strip()
+        if normalized_user not in cls._SHORT_FOLLOWUP_EXACT:
+            return False
+
+        last_assistant = cls._last_assistant_text(history)
+        if not last_assistant:
+            return False
+        if cls._is_survey_or_form_text(last_assistant):
+            return False
+
+        normalized_assistant = cls._normalize_text_for_match(last_assistant)
+        if "?" not in last_assistant:
+            return False
+        return any(marker in normalized_assistant for marker in cls._ASSISTANT_OFFER_MARKERS)
+
+    @staticmethod
+    def _last_assistant_text(history: list[dict] | None) -> str:
+        for item in reversed(history or []):
+            if item.get("role") == "assistant":
+                return str(item.get("content") or "")
+        return ""
 
     @classmethod
     def _must_redirect_to_nutrition_scope(cls, route: RouteResult, user_text: str) -> bool:
