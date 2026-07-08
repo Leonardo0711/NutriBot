@@ -65,6 +65,17 @@ class TestHardening:
             "value": "10",
         }
 
+    def test_survey_email_opt_out_counts_as_answered(self):
+        service = SurveyService(None, "dummy-model")
+        reply = service._build_question_reply("esperando_correo")
+
+        assert service._is_state_answered(
+            "esperando_correo",
+            {"correo": None, "correo_opt_out": True},
+        )
+        assert "opcional" in reply.text.lower()
+        assert "campañas" in reply.text.lower()
+
     def test_survey_interrupts_on_free_form_question_during_scale(self):
         extractor = SurveyResponseExtractor(None, "dummy-model")
         msg = "jajajaj yap y sobre dormir seria mejor de costado boca arriba boca abajo en el piso"
