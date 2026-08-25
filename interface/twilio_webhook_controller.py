@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -25,6 +26,21 @@ def _digits(value: str) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+_TWILIO_BSUID_RE = re.compile(r"^[A-Za-z]{2}\.[A-Za-z0-9]{1,128}$")
+
+
+def _whatsapp_identity(value: str) -> str:
+    """Keep either an E.164 phone or Twilio's opaque WhatsApp BSUID."""
+    raw = str(value or "").strip()
+    if raw.lower().startswith("whatsapp:"):
+        raw = raw.split(":", 1)[1].strip()
+    if raw.startswith("+") or raw.isdigit():
+        return _digits(raw)
+    if _TWILIO_BSUID_RE.fullmatch(raw):
+        return raw
+    return ""
+
+
 def _message_type_from_media(content_type: str) -> str:
     content_type = (content_type or "").lower()
     if content_type.startswith("image/"):
@@ -37,13 +53,13 @@ def _message_type_from_media(content_type: str) -> str:
 def normalize_twilio_message(form: dict[str, str]) -> dict[str, Any] | None:
     """Convert Twilio form fields to NutriBot's internal webhook shape."""
     message_sid = (form.get("MessageSid") or form.get("SmsMessageSid") or form.get("SmsSid") or "").strip()
-    from_value = form.get("WaId") or form.get("From") or ""
-    phone = _digits(from_value)
+    from_value = form.get("WaId") or form.get("From") or form.get("ExternalUserId") or ""
+    whatsapp_identity = _whatsapp_identity(from_value)
     body = form.get("Body") or ""
     button_payload = (form.get("ButtonPayload") or "").strip()
     button_text = (form.get("ButtonText") or body or "").strip()
 
-    if not message_sid or not phone:
+    if not message_sid or not whatsapp_identity:
         return None
 
     num_media = int(form.get("NumMedia") or "0")
@@ -87,7 +103,7 @@ def normalize_twilio_message(form: dict[str, str]) -> dict[str, Any] | None:
         "data": {
             "key": {
                 "id": message_sid,
-                "remoteJid": f"{phone}@s.whatsapp.net",
+                "remoteJid": f"{whatsapp_identity}@s.whatsapp.net",
                 "fromMe": False,
             },
             "messageType": message_type,

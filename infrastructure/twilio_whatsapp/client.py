@@ -15,6 +15,8 @@ from infrastructure.evolution.client import DeliveryResult
 
 logger = logging.getLogger(__name__)
 
+_TWILIO_BSUID_RE = re.compile(r"^[A-Za-z]{2}\.[A-Za-z0-9]{1,128}$")
+
 
 class TwilioWhatsAppClient:
     """Twilio Programmable Messaging adapter with the outbox result shape."""
@@ -56,7 +58,12 @@ class TwilioWhatsAppClient:
 
     @classmethod
     def _normalize_to(cls, phone: str) -> str:
-        digits = cls._digits(phone)
+        raw = str(phone or "").strip()
+        if raw.lower().startswith("whatsapp:"):
+            raw = raw.split(":", 1)[1].strip()
+        if _TWILIO_BSUID_RE.fullmatch(raw):
+            return f"whatsapp:{raw}"
+        digits = cls._digits(raw)
         return f"whatsapp:+{digits}" if digits else ""
 
     @classmethod

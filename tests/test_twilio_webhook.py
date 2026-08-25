@@ -1,4 +1,5 @@
 from interface.twilio_webhook_controller import normalize_twilio_message
+from infrastructure.twilio_whatsapp.client import TwilioWhatsAppClient
 
 
 def test_normalize_twilio_text_message():
@@ -58,3 +59,29 @@ def test_normalize_twilio_button_reply():
     message = payload["data"]["message"]["buttonsResponseMessage"]
     assert message["selectedButtonId"] == "profile:basic:yes"
     assert message["selectedDisplayText"] == "Sí"
+
+
+def test_normalize_twilio_message_with_private_bsuid():
+    payload = normalize_twilio_message(
+        {
+            "MessageSid": "SM-BSUID",
+            "From": "whatsapp:PE.1A2B3C4D5E6F",
+            "ExternalUserId": "whatsapp:PE.1A2B3C4D5E6F",
+            "Body": "hola desde un usuario privado",
+            "NumMedia": "0",
+        }
+    )
+
+    assert payload is not None
+    assert payload["data"]["key"]["remoteJid"] == "PE.1A2B3C4D5E6F@s.whatsapp.net"
+
+
+def test_twilio_recipient_keeps_private_bsuid():
+    assert (
+        TwilioWhatsAppClient._normalize_to("PE.1A2B3C4D5E6F")
+        == "whatsapp:PE.1A2B3C4D5E6F"
+    )
+
+
+def test_twilio_recipient_keeps_regular_phone_behavior():
+    assert TwilioWhatsAppClient._normalize_to("51930502319") == "whatsapp:+51930502319"
